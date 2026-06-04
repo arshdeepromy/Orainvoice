@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Fleet portal">
+        <div class="page-head"><div><div class="eyebrow">B2B · Fleet portal</div><h1>Fleet portal admin</h1><p class="sub">Self-service activity from fleet accounts</p></div></div>
+        <div class="tabs">
+          <a class="tab on" href="FleetPortalAdmin.html">Overview</a>
+          <a class="tab" href="FleetBookings.html">Bookings</a>
+          <a class="tab" href="FleetQuotes.html">Quotes</a>
+          <a class="tab" href="FleetAccounts.html">Accounts</a>
+          <a class="tab" href="FleetChecklistFailures.html">Checklist fails</a>
+          <a class="tab" href="FleetPortalSettings.html">Settings</a>
+        </div>
+        <div class="kpis"><div class="kpi"><div class="top"><span class="label">Active accounts</span></div><div class="val" >14</div></div><div class="kpi"><div class="top"><span class="label">Pending bookings</span></div><div class="val" style="color:var(--warn)">5</div></div><div class="kpi"><div class="top"><span class="label">Open quotes</span></div><div class="val" >8</div></div><div class="kpi"><div class="top"><span class="label">Checklist fails</span></div><div class="val" style="color:var(--danger)">2</div></div></div><section class="card"><div class="tbl-wrap"><table><thead><tr><th class="">Account</th><th class="r">Vehicles</th><th class="r">Open bookings</th><th class="r">Spend (MTD)</th><th class="">Status</th></tr></thead><tbody><tr class="clickable" onclick="location.href='FleetAccountDetail.html'"><td class=""><span class="cust">Northland Freight</span></td><td class="r"><span class="amt">38</span></td><td class="r"><span class="amt">3</span></td><td class="r"><span class="amt">$12,400</span></td><td class=""><span class="badge active"><span class="b-dot"></span>Active</span></td></tr><tr class="clickable" onclick="location.href='FleetAccountDetail.html'"><td class=""><span class="cust">Coastal Builders</span></td><td class="r"><span class="amt">12</span></td><td class="r"><span class="amt">1</span></td><td class="r"><span class="amt">$4,800</span></td><td class=""><span class="badge active"><span class="b-dot"></span>Active</span></td></tr></tbody></table></div></section>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="" data-title="Fleet portal"></script>
+</body>
+</html>

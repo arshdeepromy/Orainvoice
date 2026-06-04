@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0B1220" />
+
+    <!-- Warm up the Google Fonts connection. Mirrors the preconnect hints
+         in every OraInvoice_Handoff prototype <head>; the actual IBM Plex
+         font load happens via @import in src/styles/fonts.css, which
+         reuses this connection. Preconnect cannot be expressed in CSS. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+
+    <title>OraInvoice — Invoicing and Job Management for NZ Trade Businesses</title>
+    <meta
+      name="description"
+      content="OraInvoice is the all-in-one invoicing, quoting and job management platform for New Zealand trade businesses — mechanics, electricians, plumbers and builders. 100% NZ hosted."
+    />
+    <meta name="author" content="Oraflows Limited" />
+
+    <!-- Asset paths are resolved against the Vite `base` ('/new/'),
+         so use relative ('./') references for files served from public/. -->
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>OraInvoice for Trades · Electricians, Plumbers & Builders</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+  body { background: var(--card); }
+  .nav { position: sticky; top: 0; z-index: 30; background: rgba(255,255,255,.85); backdrop-filter: blur(10px); border-bottom: 1px solid var(--border); }
+  .nav .in { max-width: 1140px; margin: 0 auto; padding: 14px 24px; display: flex; align-items: center; gap: 20px; }
+  .nav .brand { display: flex; align-items: center; gap: 10px; } .nav .brand .m { width: 32px; height: 32px; border-radius: 9px; background: var(--accent); display: grid; place-items: center; color: #fff; } .nav .brand .m svg { width: 18px; height: 18px; }
+  .nav .brand .n { font-size: 16px; font-weight: 700; } .nav .brand .n .dim { color: var(--muted-2); font-weight: 500; }
+  .nav .links { display: flex; gap: 4px; } .nav .links a { padding: 8px 12px; border-radius: 8px; font-size: 13.5px; font-weight: 500; color: var(--muted); } .nav .links a:hover, .nav .links a.on { background: var(--canvas); color: var(--text); }
+  .nav .cta { margin-left: auto; display: flex; gap: 10px; }
+  @media (max-width:720px){ .nav .links { display: none; } }
+  .hero { max-width: 1140px; margin: 0 auto; padding: 64px 24px 40px; display: grid; grid-template-columns: 1.05fr .95fr; gap: 48px; align-items: center; }
+  @media (max-width:880px){ .hero { grid-template-columns: 1fr; padding-top: 44px; } }
+  .hero .pill { display: inline-flex; align-items: center; gap: 8px; padding: 6px 13px; border-radius: 20px; background: var(--warn-soft); color: var(--warn); font-size: 12.5px; font-weight: 600; }
+  .hero h1 { font-size: 46px; font-weight: 700; letter-spacing: -.03em; line-height: 1.08; margin: 20px 0 0; }
+  .hero p { font-size: 17px; color: var(--muted); line-height: 1.6; margin: 18px 0 0; max-width: 48ch; }
+  .hero .actions { display: flex; gap: 12px; margin-top: 26px; flex-wrap: wrap; }
+  .hero-card { border: 1px solid var(--border); border-radius: 18px; box-shadow: 0 24px 60px -24px rgba(11,18,32,.32); overflow: hidden; }
+  .hc-top { height: 44px; background: var(--sb-bg); display: flex; align-items: center; padding: 0 16px; gap: 7px; } .hc-top i { width: 10px; height: 10px; border-radius: 50%; background: rgba(255,255,255,.2); }
+  .hc-body { padding: 20px; background: var(--canvas); }
+  .hc-job { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 12px; }
+  .hc-job .r { display: flex; justify-content: space-between; align-items: center; }
+  .hc-job .t { font-weight: 600; font-size: 14px; } .hc-job .s { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .section { max-width: 1140px; margin: 0 auto; padding: 64px 24px; }
+  .section-head { text-align: center; max-width: 56ch; margin: 0 auto 44px; }
+  .section-head h2 { font-size: 32px; font-weight: 700; letter-spacing: -.02em; } .section-head p { font-size: 15.5px; color: var(--muted); margin: 12px 0 0; line-height: 1.6; }
+  .feat-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 20px; } @media (max-width:880px){ .feat-grid { grid-template-columns: 1fr; } }
+  .feat { border: 1px solid var(--border); border-radius: var(--r-card); padding: 24px; } .feat:hover { box-shadow: var(--shadow-card); }
+  .feat .ic { width: 42px; height: 42px; border-radius: 11px; display: grid; place-items: center; margin-bottom: 14px; } .feat .ic svg { width: 21px; height: 21px; }
+  .feat h3 { font-size: 16px; font-weight: 700; } .feat p { font-size: 13px; color: var(--muted); line-height: 1.6; margin: 7px 0 0; }
+  .trades-row { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; margin-top: 8px; }
+  .trade-chip { display: inline-flex; align-items: center; gap: 9px; padding: 10px 16px; border: 1px solid var(--border); border-radius: 30px; font-size: 14px; font-weight: 600; }
+  .trade-chip svg { width: 17px; height: 17px; color: var(--accent); }
+  .cta-band { background: var(--sb-bg); background-image: radial-gradient(100% 120% at 50% 0%, rgba(181,116,15,.22), transparent 60%); border-radius: 24px; max-width: 1140px; margin: 0 auto 72px; padding: 56px 24px; text-align: center; color: #fff; }
+  .cta-band h2 { font-size: 32px; font-weight: 700; } .cta-band p { color: rgba(255,255,255,.66); margin: 12px auto 0; max-width: 48ch; }
+  .footer { border-top: 1px solid var(--border); } .footer .in { max-width: 1140px; margin: 0 auto; padding: 28px 24px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; font-size: 12.5px; color: var(--muted); }
+  .footer .fl { display: flex; gap: 18px; } .footer .fl a:hover { color: var(--text); }
+</style>
+</head>
+<body>
+<div class="nav"><div class="in">
+  <a class="brand" href="LandingPage.html"><div class="m"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h7l5 5v11a2 2 0 01-2 2z"/></svg></div><div class="n"><b>Ora</b><span class="dim">Invoice</span></div></a>
+  <div class="links"><a class="on" href="Trades.html">Trades</a><a href="Workshop.html">Workshops</a><a href="LandingPage.html#pricing">Pricing</a></div>
+  <div class="cta"><a class="btn btn-ghost btn-sm" href="Login.html">Sign in</a><a class="btn btn-primary btn-sm" href="Signup.html">Start free trial</a></div>
+</div></div>
+
+<section class="hero">
+  <div>
+    <span class="pill"><svg viewBox="0 0 24 24" width="14" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/></svg>For NZ tradies</span>
+    <h1>Quote on site. Get paid before you pack up.</h1>
+    <p>OraInvoice handles quotes, job sheets, compliance certs and invoicing from your phone — so the paperwork is done before you've washed the van.</p>
+    <div class="actions"><a class="btn btn-primary btn-lg" href="Signup.html">Start your free trial</a><a class="btn btn-ghost btn-lg" href="Workshop.html">For workshops →</a></div>
+  </div>
+  <div class="hero-card">
+    <div class="hc-top"><i></i><i></i><i></i></div>
+    <div class="hc-body">
+      <div class="hc-job"><div class="r"><div><div class="t">Switchboard upgrade</div><div class="s">42 Rata St · L. Foster</div></div><span class="badge inprogress"><span class="b-dot"></span>On site</span></div></div>
+      <div class="hc-job"><div class="r"><div><div class="t">Hot water cylinder</div><div class="s">8 Cobham Rd · Quote sent</div></div><span class="badge sent"><span class="b-dot"></span>$1,240</span></div></div>
+      <div class="hc-job"><div class="r"><div><div class="t">COC — new circuit</div><div class="s">Certificate issued</div></div><span class="badge paid"><span class="b-dot"></span>Paid</span></div></div>
+    </div>
+  </div>
+</section>
+
+<section class="section" style="padding-top:24px">
+  <div class="trades-row">
+    <span class="trade-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9z"/></svg>Electricians</span>
+    <span class="trade-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/></svg>Plumbers &amp; gas</span>
+    <span class="trade-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21h18M5 21V7l8-4v18M19 21V11l-6-3"/></svg>Builders</span>
+    <span class="trade-chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/></svg>Landscapers</span>
+  </div>
+</section>
+
+<section class="section" style="padding-top:0">
+  <div class="section-head"><h2>Less admin. More billable hours.</h2><p>Everything a trade business needs to run the day — on the tools and off.</p></div>
+  <div class="feat-grid">
+    <div class="feat"><div class="ic" style="background:var(--warn-soft);color:var(--warn)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h7l5 5v11a2 2 0 01-2 2z"/></svg></div><h3>Mobile quoting</h3><p>Build a quote on site, add photos, and send it before you leave the driveway.</p></div>
+    <div class="feat"><div class="ic" style="background:var(--accent-soft);color:var(--accent)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 14l6-6m-5.5.5h.01m4.99 5h.01M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16l3.5-2 3.5 2 3.5-2 3.5 2z"/></svg></div><h3>Compliance certs</h3><p>Generate COC, gas and WoF certificates that meet NZ requirements.</p></div>
+    <div class="feat"><div class="ic" style="background:var(--ok-soft);color:var(--ok)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/></svg></div><h3>Get paid on the spot</h3><p>Tap-to-pay and online invoices mean the money's in before the job's cold.</p></div>
+  </div>
+</section>
+
+<div class="cta-band">
+  <h2>Built for the way trades work.</h2>
+  <p>Try OraInvoice free for 14 days. No card, no lock-in.</p>
+  <div style="margin-top:24px"><a class="btn btn-primary btn-lg" href="Signup.html">Start free trial</a></div>
+</div>
+
+<div class="footer"><div class="in"><span>© 2025 OraInvoice</span><div class="fl"><a href="Trades.html">Trades</a><a href="Workshop.html">Workshops</a><a href="Privacy.html">Privacy</a><a href="LandingPage.html">Home</a></div></div></div>
+</body>
+</html>

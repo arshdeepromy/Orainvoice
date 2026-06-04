@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+  .node { display: flex; align-items: center; gap: 16px; padding: 16px 20px; border-bottom: 1px solid var(--border); }
+  .node:last-child { border-bottom: none; }
+  .node .led { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+  .node .led.ok { background: var(--ok); box-shadow: 0 0 0 4px var(--ok-soft); }
+  .node .led.warn { background: var(--warn); box-shadow: 0 0 0 4px var(--warn-soft); }
+  .node .nm { font-size: 14px; font-weight: 600; } .node .role { font-size: 12px; color: var(--muted); }
+  .node .kv { text-align: right; min-width: 110px; } .node .kv .v { font-family: var(--mono); font-weight: 600; font-size: 13.5px; } .node .kv .l { font-size: 11px; color: var(--muted-2); }
+  .topo { display: flex; align-items: center; justify-content: center; gap: 0; padding: 30px 20px; }
+  .topo .box { border: 1.5px solid var(--border); border-radius: var(--r-ctl); padding: 14px 18px; text-align: center; background: var(--card); min-width: 130px; }
+  .topo .box.primary { border-color: var(--accent); background: var(--accent-soft); }
+  .topo .box .t { font-family: var(--mono); font-size: 11px; color: var(--muted-2); text-transform: uppercase; letter-spacing: .06em; }
+  .topo .box .n { font-weight: 700; font-size: 14px; margin-top: 4px; }
+  .topo .box .s { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .topo .link { width: 56px; height: 2px; background: var(--ok); position: relative; }
+  .topo .link::after { content: "↺"; position: absolute; top: -19px; left: 50%; transform: translateX(-50%); font-size: 13px; color: var(--ok); }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Admin · HA">
+        <div class="page-head">
+          <div><div class="eyebrow">Platform admin</div><h1>HA &amp; replication</h1><p class="sub">Database cluster health, replication lag &amp; failover</p></div>
+          <div class="head-actions"><span class="badge active"><span class="b-dot"></span>Cluster healthy</span><button class="btn btn-ghost btn-sm">Run failover drill</button></div>
+        </div>
+        <div id="admin-nav" data-active="ha"></div>
+
+        <div class="kpis">
+          <div class="kpi"><div class="top"><span class="label">Replication lag</span><span class="ico green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4v5h.6M20 20v-5h-.6m0 0a8 8 0 01-15.3-2m15.4 2H15M4.6 9A8 8 0 0119.9 11M4.6 9H9"/></svg></span></div><div class="val">0.3<span class="c">s</span></div><div class="delta"><span class="since">standby in sync</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">Uptime (90d)</span><span class="ico blue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></span></div><div class="val">99.98<span class="c">%</span></div><div class="delta"><span class="since">2 min downtime</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">Last failover</span><span class="ico amber"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></span></div><div class="val" style="font-size:20px">14d ago</div><div class="delta"><span class="since">planned drill</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">Last backup</span><span class="ico purple"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 8v13H3V8M1 3h22v5H1zM10 12h4"/></svg></span></div><div class="val" style="font-size:20px">2h ago</div><div class="delta"><span class="since">verified ✓</span></div></div>
+        </div>
+
+        <section class="card" style="margin-bottom:var(--gap)">
+          <div class="card-head"><h2>Cluster topology</h2><span class="mono" style="font-size:11px;color:var(--muted-2)">PostgreSQL 16 · streaming replication</span></div>
+          <div class="topo">
+            <div class="box primary"><div class="t">Primary</div><div class="n">nz-akl-01</div><div class="s">read / write</div></div>
+            <div class="link"></div>
+            <div class="box"><div class="t">Standby</div><div class="n">nz-akl-02</div><div class="s">hot standby</div></div>
+            <div class="link"></div>
+            <div class="box"><div class="t">Replica</div><div class="n">nz-wlg-01</div><div class="s">read replica</div></div>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="card-head"><h2>Nodes</h2></div>
+          <div class="node"><span class="led ok"></span><div style="flex:1"><div class="nm">nz-akl-01 <span class="badge sent" style="margin-left:6px"><span class="b-dot"></span>Primary</span></div><div class="role">Auckland · primary · PostgreSQL 16.2</div></div><div class="kv"><div class="v">42 ms</div><div class="l">query p50</div></div><div class="kv"><div class="v">74%</div><div class="l">disk</div></div></div>
+          <div class="node"><span class="led ok"></span><div style="flex:1"><div class="nm">nz-akl-02 <span class="badge active" style="margin-left:6px"><span class="b-dot"></span>In sync</span></div><div class="role">Auckland · hot standby · lag 0.3s</div></div><div class="kv"><div class="v">0.3 s</div><div class="l">lag</div></div><div class="kv"><div class="v">73%</div><div class="l">disk</div></div></div>
+          <div class="node"><span class="led ok"></span><div style="flex:1"><div class="nm">nz-wlg-01 <span class="badge active" style="margin-left:6px"><span class="b-dot"></span>In sync</span></div><div class="role">Wellington · read replica · lag 0.8s</div></div><div class="kv"><div class="v">0.8 s</div><div class="l">lag</div></div><div class="kv"><div class="v">68%</div><div class="l">disk</div></div></div>
+          <div class="node"><span class="led warn"></span><div style="flex:1"><div class="nm">backup-worker <span class="badge warn" style="margin-left:6px"><span class="b-dot"></span>Catching up</span></div><div class="role">S3 sync · processing WAL archive</div></div><div class="kv"><div class="v">2h</div><div class="l">last snap</div></div><div class="kv"><div class="v">—</div><div class="l">disk</div></div></div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="admin" data-title="Admin · HA"></script>
+<script src="admin-nav.js"></script>
+</body>
+</html>

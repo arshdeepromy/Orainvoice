@@ -1468,6 +1468,12 @@ async def record_cash_payment_endpoint(
 
     # Send updated invoice email in background (fire-and-forget)
     import asyncio as _asyncio
+    # Capture the request origin NOW (the background task has no Request).
+    # Passed as base_url so the receipt email's invoice-view link uses the
+    # public domain the staff member is on, not settings.frontend_base_url
+    # (which on some deploys is a LAN IP, e.g. http://192.168.1.90:8999) —
+    # ISSUE-170.
+    _email_origin = request.headers.get("origin") or None
     async def _send_payment_email():
         try:
             from app.core.database import async_session_factory, _set_rls_org_id
@@ -1475,7 +1481,12 @@ async def record_cash_payment_endpoint(
             async with async_session_factory() as fresh_session:
                 async with fresh_session.begin():
                     await _set_rls_org_id(fresh_session, str(org_uuid))
-                    await email_invoice(fresh_session, org_id=org_uuid, invoice_id=payload.invoice_id)
+                    await email_invoice(
+                        fresh_session,
+                        org_id=org_uuid,
+                        invoice_id=payload.invoice_id,
+                        base_url=_email_origin,
+                    )
             logger.info("Payment receipt email sent for invoice %s", payload.invoice_id)
         except Exception as email_exc:
             logger.warning("Payment email failed for invoice %s: %s", payload.invoice_id, email_exc)

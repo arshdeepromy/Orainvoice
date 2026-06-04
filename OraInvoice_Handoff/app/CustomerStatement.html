@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" /><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin /><link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+</head>
+<body>
+<div class="app"><div id="sidebar"></div><div class="main"><div id="topbar"></div>
+<main class="content"><div class="page page-wide" data-screen-label="Customer Statement">
+<div class="crumbs"><a href="Reports.html">Reports</a><span class="sep">/</span><span style="color:var(--text)">Customer Statement</span></div>
+<div class="page-head"><div><div class="eyebrow">Reports</div><h1>Customer Statement</h1><p class="sub">Account activity statement</p></div><div class="head-actions"><button class="btn btn-ghost btn-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2M6 14h12v8H6z"/></svg>Print</button><button class="btn btn-ghost btn-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v16H4z M22 6l-10 7L2 6"/></svg>Email</button></div></div>
+<div class="toolbar"><div class="search-input" style="min-width:300px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 21l-5-5m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg><input value="Northland Freight Ltd" /></div><div class="field" style="flex-direction:row;align-items:center;gap:8px"><label style="white-space:nowrap">Period</label><select class="select" style="width:auto"><option>1 Apr – 31 May 2026</option><option>This month</option><option>Last 12 months</option></select></div></div>
+   <div class="detail-grid">
+   <section class="card"><div class="card-head"><h2>Transactions</h2><span class="id">Opening balance $4,820</span></div><div class="tbl-wrap"><table><thead><tr><th>Date</th><th>Reference</th><th>Detail</th><th class="r">Charge</th><th class="r">Payment</th><th class="r">Balance</th></tr></thead><tbody>
+   <tr><td><span class="mono" style="color:var(--muted)">2 Apr</span></td><td><span class="id">INV-1998</span></td><td><span style="font-size:13px">Fleet service · 4 vehicles</span></td><td class="r"><span class="amt">$2,180</span></td><td class="r"><span style="color:var(--muted-2)">—</span></td><td class="r"><span class="amt">$7,000</span></td></tr><tr><td><span class="mono" style="color:var(--muted)">11 Apr</span></td><td><span class="id">PMT-0421</span></td><td><span style="font-size:13px">Payment received — bank</span></td><td class="r"><span style="color:var(--muted-2)">—</span></td><td class="r"><span class="amt" style="color:var(--ok)">$4,820</span></td><td class="r"><span class="amt">$2,180</span></td></tr><tr><td><span class="mono" style="color:var(--muted)">24 Apr</span></td><td><span class="id">INV-2012</span></td><td><span style="font-size:13px">WOF · 7 vehicles</span></td><td class="r"><span class="amt">$1,260</span></td><td class="r"><span style="color:var(--muted-2)">—</span></td><td class="r"><span class="amt">$3,440</span></td></tr><tr><td><span class="mono" style="color:var(--muted)">2 May</span></td><td><span class="id">INV-2039</span></td><td><span style="font-size:13px">Brake service · NPR-447</span></td><td class="r"><span class="amt">$5,240</span></td><td class="r"><span style="color:var(--muted-2)">—</span></td><td class="r"><span class="amt">$8,680</span></td></tr><tr><td><span class="mono" style="color:var(--muted)">11 May</span></td><td><span class="id">PMT-0448</span></td><td><span style="font-size:13px">Payment received — bank</span></td><td class="r"><span style="color:var(--muted-2)">—</span></td><td class="r"><span class="amt" style="color:var(--ok)">$2,180</span></td><td class="r"><span class="amt">$6,500</span></td></tr><tr><td><span class="mono" style="color:var(--muted)">28 May</span></td><td><span class="id">INV-2061</span></td><td><span style="font-size:13px">Monthly fleet service</span></td><td class="r"><span class="amt">$3,180</span></td><td class="r"><span style="color:var(--muted-2)">—</span></td><td class="r"><span class="amt">$9,680</span></td></tr>
+   </tbody></table></div></section>
+   <aside class="stack">
+   <section class="card"><div class="card-head"><h2>Summary</h2></div><div class="card-body">
+   <div class="meta-row"><span class="k">Opening balance</span><span class="v mono">$4,820</span></div>
+   <div class="meta-row"><span class="k">Total charges</span><span class="v mono">$11,860</span></div>
+   <div class="meta-row"><span class="k">Total payments</span><span class="v mono" style="color:var(--ok)">−$7,000</span></div>
+   <div class="meta-row"><span class="k">Closing balance</span><span class="v mono" style="font-weight:600">$9,680</span></div>
+   </div></section>
+   <section class="card"><div class="card-head"><h2>Aged balance</h2></div><div class="card-body">
+   <div class="meta-row"><span class="k">Current</span><span class="v mono">$3,180</span></div>
+   <div class="meta-row"><span class="k">1–30 days</span><span class="v mono">$1,260</span></div>
+   <div class="meta-row"><span class="k">31–60 days</span><span class="v mono" style="color:var(--warn)">$5,240</span></div>
+   <div class="meta-row"><span class="k">60+ days</span><span class="v mono">$0</span></div>
+   </div></section>
+   <section class="card"><div class="card-head"><h2>Account</h2><a class="link" href="CustomerDetail.html">Open</a></div><div class="card-body">
+   <div class="meta-row"><span class="k">Account</span><span class="v mono">FLT-002</span></div>
+   <div class="meta-row"><span class="k">Terms</span><span class="v">20th month following</span></div>
+   <div class="meta-row"><span class="k">Credit limit</span><span class="v mono">$25,000</span></div>
+   </div></section>
+   </aside></div>
+</div></main></div></div>
+<script src="shell.js" data-active="reports" data-title="Customer Statement"></script>
+<script>document.querySelectorAll('.seg button').forEach(b=>b.addEventListener('click',()=>{b.parentElement.querySelectorAll('button').forEach(x=>x.classList.remove('on'));b.classList.add('on');}));</script>
+</body></html>

@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="../ds.css" />
+<link rel="stylesheet" href="fleet.css" />
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Fleet portal dashboard">
+        <div class="page-head"><div><div class="eyebrow">Mon 4 Nov 2025</div><h1>Welcome back, Dean</h1><p class="sub">Northland Freight · fleet overview</p></div></div>
+
+        <div class="kpis" style="grid-template-columns:repeat(4,1fr)">
+          <a class="kpi" href="Vehicles.html"><div class="top"><span class="label">Total vehicles</span><span class="ico blue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M5 11l1.5-4.5A2 2 0 018.4 5h7.2a2 2 0 011.9 1.5L19 11m-14 0h14"/></svg></span></div><div class="val">38</div></a>
+          <div class="kpi"><div class="top"><span class="label">Valid WOF &amp; COF</span><span class="ico green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M9 12l2 2 4-4"/></svg></span></div><div class="val" style="color:var(--ok)">31</div></div>
+          <a class="kpi" href="Reminders.html"><div class="top"><span class="label">Expiring ≤28 days</span><span class="ico amber"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></span></div><div class="val" style="color:var(--warn)">5</div></a>
+          <a class="kpi" href="Vehicles.html"><div class="top"><span class="label">Service overdue</span><span class="ico red"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M12 9v4m0 4h.01M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L14.7 3.9a2 2 0 00-3.4 0z"/></svg></span></div><div class="val" style="color:var(--danger)">2</div></a>
+        </div>
+        <div class="kpis" style="grid-template-columns:repeat(3,1fr)">
+          <a class="kpi" href="Checklists.html"><div class="top"><span class="label">Checklists today</span></div><div class="val">12</div></a>
+          <a class="kpi" href="Bookings.html"><div class="top"><span class="label">Pending bookings</span></div><div class="val" style="color:var(--warn)">3</div></a>
+          <a class="kpi" href="Quotes.html"><div class="top"><span class="label">Pending quotes</span></div><div class="val">2</div></a>
+        </div>
+
+        <div class="detail-grid" style="grid-template-columns:1.6fr 1fr">
+          <section class="card">
+            <div class="card-head"><h2>Recent checklist failures</h2><a class="link" href="Checklists.html">View all →</a></div>
+            <div class="card-body" style="padding:8px 10px">
+              <a href="ChecklistSubmit.html" class="meta-row" style="padding:11px 12px;text-decoration:none"><span class="k" style="display:flex;align-items:center;gap:10px"><span style="width:26px;height:26px;border-radius:50%;background:var(--danger-soft);color:var(--danger);display:grid;place-items:center;font-family:var(--mono);font-size:12px;font-weight:700">3</span>NPR-447 · 3 failed items</span><span class="v mono" style="color:var(--muted);font-weight:400">Today</span></a>
+              <a href="ChecklistSubmit.html" class="meta-row" style="padding:11px 12px;text-decoration:none"><span class="k" style="display:flex;align-items:center;gap:10px"><span style="width:26px;height:26px;border-radius:50%;background:var(--danger-soft);color:var(--danger);display:grid;place-items:center;font-family:var(--mono);font-size:12px;font-weight:700">2</span>NPR-220 · 2 failed items</span><span class="v mono" style="color:var(--muted);font-weight:400">2 days ago</span></a>
+              <a href="ChecklistSubmit.html" class="meta-row" style="padding:11px 12px;text-decoration:none;border-bottom:none"><span class="k" style="display:flex;align-items:center;gap:10px"><span style="width:26px;height:26px;border-radius:50%;background:var(--danger-soft);color:var(--danger);display:grid;place-items:center;font-family:var(--mono);font-size:12px;font-weight:700">1</span>HBR-012 · 1 failed item</span><span class="v mono" style="color:var(--muted);font-weight:400">5 days ago</span></a>
+            </div>
+          </section>
+          <section class="card"><div class="card-body">
+            <div class="section-label">Quick actions</div>
+            <a class="btn btn-ghost btn-block" href="Checklists.html" style="width:100%;justify-content:flex-start;margin-bottom:9px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>Start pre-trip checklist</a>
+            <a class="btn btn-ghost btn-block" href="Bookings.html" style="width:100%;justify-content:flex-start;margin-bottom:9px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 7V3m8 4V3M3 11h18M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>Request service booking</a>
+            <a class="btn btn-ghost btn-block" href="Vehicles.html" style="width:100%;justify-content:flex-start"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>Add a vehicle</a>
+          </div></section>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="fleet-shell.js" data-active="dashboard" data-title="Dashboard"></script>
+</body>
+</html>

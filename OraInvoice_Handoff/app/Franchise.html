@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Franchise">
+        <div class="page-head"><div><div class="eyebrow">Multi-site</div><h1>Franchise dashboard</h1><p class="sub">3 locations · group performance</p></div></div>
+        <div class="kpis"><div class="kpi"><div class="top"><span class="label">Group revenue (MTD)</span></div><div class="val" ><span class="c">$</span>142k</div></div><div class="kpi"><div class="top"><span class="label">Locations</span></div><div class="val" >3</div></div><div class="kpi"><div class="top"><span class="label">Stock transfers</span></div><div class="val" >8</div></div><div class="kpi"><div class="top"><span class="label">Top site</span></div><div class="val" >Kerikeri</div></div></div><section class="card"><div class="tbl-wrap"><table><thead><tr><th class="">Location</th><th class="">Manager</th><th class="r">Revenue (MTD)</th><th class="r">Jobs</th><th class="">Status</th></tr></thead><tbody><tr class="clickable" onclick="location.href='LocationDetail.html'"><td class=""><span class="cust">Kerikeri</span></td><td class="">Arsh R.</td><td class="r"><span class="amt">$48,250</span></td><td class="r"><span class="amt">86</span></td><td class=""><span class="badge active"><span class="b-dot"></span>Open</span></td></tr><tr class="clickable" onclick="location.href='LocationDetail.html'"><td class=""><span class="cust">Whangarei</span></td><td class="">Mere W.</td><td class="r"><span class="amt">$61,400</span></td><td class="r"><span class="amt">104</span></td><td class=""><span class="badge active"><span class="b-dot"></span>Open</span></td></tr><tr class="clickable" onclick="location.href='LocationDetail.html'"><td class=""><span class="cust">Kaitaia</span></td><td class="">Sam P.</td><td class="r"><span class="amt">$32,100</span></td><td class="r"><span class="amt">58</span></td><td class=""><span class="badge active"><span class="b-dot"></span>Open</span></td></tr></tbody></table></div></section>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="" data-title="Franchise"></script>
+</body>
+</html>

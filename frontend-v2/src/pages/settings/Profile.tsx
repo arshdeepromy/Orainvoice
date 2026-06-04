@@ -1,0 +1,368 @@
+import { useState, useEffect, useCallback } from 'react'
+import apiClient from '@/api/client'
+import { useAuth } from '@/contexts/AuthContext'
+import { PasswordRequirements, PasswordMatch, allPasswordRulesMet } from '@/components/auth/PasswordRequirements'
+
+import { MfaSettings } from '@/pages/settings/MfaSettings'
+interface UserProfile {
+  id: string
+  email: string
+  first_name: string | null
+  last_name: string | null
+  role: string
+  mfa_methods: string[]
+  has_password: boolean
+}
+
+interface EmailChangeResponseData {
+  message: string
+  expires_in: number
+}
+
+export function Profile() {
+  const { refreshProfile } = useAuth()
+  const [profile, setProfile] = useState<UserProfile | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+
+  // Name form
+  const [firstName, setFirstName] = useState('')
+  const [lastName, setLastName] = useState('')
+  const [nameSaving, setNameSaving] = useState(false)
+  const [nameMsg, setNameMsg] = useState('')
+
+  // Password form
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [pwSaving, setPwSaving] = useState(false)
+  const [pwMsg, setPwMsg] = useState('')
+  const [pwError, setPwError] = useState('')
+
+  // Email change form
+  const [newEmail, setNewEmail] = useState('')
+  const [emailStep, setEmailStep] = useState<'idle' | 'code_sent' | 'success'>('idle')
+  const [emailCode, setEmailCode] = useState('')
+  const [emailSaving, setEmailSaving] = useState(false)
+  const [emailMsg, setEmailMsg] = useState('')
+  const [emailError, setEmailError] = useState('')
+  const [pendingEmail, setPendingEmail] = useState('')
+
+  const fetchProfile = useCallback(async () => {
+    try {
+      const res = await apiClient.get<UserProfile>('/auth/me')
+      setProfile(res.data)
+      setFirstName(res.data?.first_name ?? '')
+      setLastName(res.data?.last_name ?? '')
+    } catch {
+      setError('Failed to load profile')
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { fetchProfile() }, [fetchProfile])
+
+  const handleNameSave = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setNameSaving(true)
+    setNameMsg('')
+    try {
+      const res = await apiClient.put<UserProfile>('/auth/me', {
+        first_name: firstName || null,
+        last_name: lastName || null,
+      })
+      setProfile(res.data)
+      setNameMsg('Name updated')
+      await refreshProfile()
+      setTimeout(() => setNameMsg(''), 3000)
+    } catch {
+      setNameMsg('Failed to update name')
+    } finally {
+      setNameSaving(false)
+    }
+  }
+
+  const handlePasswordChange = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setPwError('')
+    setPwMsg('')
+
+    if (newPassword !== confirmPassword) {
+      setPwError('Passwords do not match')
+      return
+    }
+    if (!allPasswordRulesMet(newPassword)) {
+      setPwError('Password does not meet requirements')
+      return
+    }
+
+    setPwSaving(true)
+    try {
+      await apiClient.post('/auth/change-password', {
+        current_password: currentPassword,
+        new_password: newPassword,
+      })
+      setPwMsg('Password changed successfully')
+      setCurrentPassword('')
+      setNewPassword('')
+      setConfirmPassword('')
+      setTimeout(() => setPwMsg(''), 3000)
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      setPwError(detail ?? 'Failed to change password')
+    } finally {
+      setPwSaving(false)
+    }
+  }
+
+  const handleEmailChangeRequest = async () => {
+    setEmailError('')
+    setEmailMsg('')
+    setEmailSaving(true)
+    try {
+      const res = await apiClient.post<EmailChangeResponseData>('/auth/email/change/request', {
+        new_email: newEmail,
+      })
+      setPendingEmail(newEmail)
+      setEmailStep('code_sent')
+      setEmailMsg(res.data?.message ?? 'Verification code sent to new email')
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      setEmailError(detail ?? 'Failed to request email change')
+    } finally {
+      setEmailSaving(false)
+    }
+  }
+
+  const handleEmailChangeVerify = async () => {
+    setEmailError('')
+    setEmailMsg('')
+    setEmailSaving(true)
+    try {
+      const res = await apiClient.post<UserProfile>('/auth/email/change/verify', {
+        code: emailCode,
+      })
+      setProfile(res.data)
+      setEmailStep('success')
+      setEmailMsg('Email updated successfully')
+      setNewEmail('')
+      setEmailCode('')
+      setPendingEmail('')
+      await refreshProfile()
+      setTimeout(() => {
+        setEmailMsg('')
+        setEmailStep('idle')
+      }, 3000)
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      setEmailError(detail ?? 'Failed to verify email change')
+    } finally {
+      setEmailSaving(false)
+    }
+  }
+
+  const handleEmailChangeCancel = () => {
+    setEmailStep('idle')
+    setEmailCode('')
+    setEmailError('')
+    setEmailMsg('')
+    setPendingEmail('')
+    setNewEmail('')
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-accent" role="status" aria-label="Loading profile" />
+      </div>
+    )
+  }
+
+  if (error || !profile) {
+    return <div className="text-danger py-4" role="alert">{error || 'Profile not found'}</div>
+  }
+
+  const emailUnchanged = !newEmail || newEmail === profile.email
+
+  return (
+    <div className="max-w-2xl space-y-8">
+      <div>
+        <h2 className="text-lg font-semibold text-text">Profile</h2>
+        <p className="text-sm text-muted-2 mt-1">{profile.email}</p>
+      </div>
+
+      {/* Name section */}
+      <form onSubmit={handleNameSave} className="bg-card rounded-card border border-border p-6 space-y-4">
+        <h3 className="text-sm font-medium text-text">Personal Information</h3>
+
+        {/* Email change */}
+        <div>
+          <label htmlFor="emailChange" className="block text-sm text-muted mb-1">Email</label>
+          {emailStep === 'idle' && (
+            <div className="space-y-2">
+              <input
+                id="emailChange"
+                type="email"
+                value={newEmail || profile.email}
+                onChange={e => setNewEmail(e.target.value)}
+                className="w-full rounded-ctl border border-border bg-card px-3 py-2 text-sm text-text focus:border-accent focus:outline-none focus:shadow-[0_0_0_3px_var(--accent-soft)]"
+              />
+              {!emailUnchanged && (
+                <p className="text-xs text-muted-2">
+                  Email change will take effect when you verify the new email
+                </p>
+              )}
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  disabled={emailUnchanged || emailSaving}
+                  onClick={handleEmailChangeRequest}
+                  className="rounded-ctl bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-press disabled:opacity-50 min-h-[44px]"
+                >
+                  {emailSaving ? 'Sending…' : 'Change Email'}
+                </button>
+              </div>
+            </div>
+          )}
+          {emailStep === 'code_sent' && (
+            <div className="space-y-2">
+              <div className="rounded-ctl bg-accent-soft border border-accent p-3">
+                <p className="text-sm text-accent">
+                  A verification code has been sent to <strong>{pendingEmail}</strong>
+                </p>
+              </div>
+              <div>
+                <label htmlFor="emailOtp" className="block text-sm text-muted mb-1">Verification code</label>
+                <input
+                  id="emailOtp"
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={6}
+                  value={emailCode}
+                  onChange={e => setEmailCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                  placeholder="Enter 6-digit code"
+                  className="w-full max-w-xs rounded-ctl border border-border bg-card px-3 py-2 text-sm text-text focus:border-accent focus:outline-none focus:shadow-[0_0_0_3px_var(--accent-soft)] tracking-widest"
+                  autoComplete="one-time-code"
+                />
+              </div>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  disabled={emailCode.length !== 6 || emailSaving}
+                  onClick={handleEmailChangeVerify}
+                  className="rounded-ctl bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-press disabled:opacity-50 min-h-[44px]"
+                >
+                  {emailSaving ? 'Verifying…' : 'Verify'}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleEmailChangeCancel}
+                  className="text-sm text-muted-2 hover:text-muted"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+          {emailError && <p className="text-sm text-danger" role="alert">{emailError}</p>}
+          {emailMsg && emailStep !== 'code_sent' && <p className="text-sm text-ok">{emailMsg}</p>}
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div>
+            <label htmlFor="firstName" className="block text-sm text-muted mb-1">First name</label>
+            <input
+              id="firstName"
+              type="text"
+              value={firstName}
+              onChange={e => setFirstName(e.target.value)}
+              className="w-full rounded-ctl border border-border bg-card px-3 py-2 text-sm text-text focus:border-accent focus:outline-none focus:shadow-[0_0_0_3px_var(--accent-soft)]"
+              maxLength={100}
+            />
+          </div>
+          <div>
+            <label htmlFor="lastName" className="block text-sm text-muted mb-1">Last name</label>
+            <input
+              id="lastName"
+              type="text"
+              value={lastName}
+              onChange={e => setLastName(e.target.value)}
+              className="w-full rounded-ctl border border-border bg-card px-3 py-2 text-sm text-text focus:border-accent focus:outline-none focus:shadow-[0_0_0_3px_var(--accent-soft)]"
+              maxLength={100}
+            />
+          </div>
+        </div>
+        <div className="flex items-center gap-3">
+          <button
+            type="submit"
+            disabled={nameSaving}
+            className="rounded-ctl bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-press disabled:opacity-50 min-h-[44px]"
+          >
+            {nameSaving ? 'Saving…' : 'Save name'}
+          </button>
+          {nameMsg && <span className="text-sm text-ok">{nameMsg}</span>}
+        </div>
+      </form>
+
+      {/* Password section */}
+      {profile.has_password && (
+        <form onSubmit={handlePasswordChange} className="bg-card rounded-card border border-border p-6 space-y-4">
+          <h3 className="text-sm font-medium text-text">Change Password</h3>
+          <div className="space-y-3 max-w-sm">
+            <div>
+              <label htmlFor="currentPassword" className="block text-sm text-muted mb-1">Current password</label>
+              <input
+                id="currentPassword"
+                type="password"
+                value={currentPassword}
+                onChange={e => setCurrentPassword(e.target.value)}
+                className="w-full rounded-ctl border border-border bg-card px-3 py-2 text-sm text-text focus:border-accent focus:outline-none focus:shadow-[0_0_0_3px_var(--accent-soft)]"
+                required
+                autoComplete="current-password"
+              />
+            </div>
+            <div>
+              <label htmlFor="newPassword" className="block text-sm text-muted mb-1">New password</label>
+              <input
+                id="newPassword"
+                type="password"
+                value={newPassword}
+                onChange={e => setNewPassword(e.target.value)}
+                className="w-full rounded-ctl border border-border bg-card px-3 py-2 text-sm text-text focus:border-accent focus:outline-none focus:shadow-[0_0_0_3px_var(--accent-soft)]"
+                required
+                autoComplete="new-password"
+              />
+              <PasswordRequirements password={newPassword} />
+            </div>
+            <div>
+              <label htmlFor="confirmPassword" className="block text-sm text-muted mb-1">Confirm new password</label>
+              <input
+                id="confirmPassword"
+                type="password"
+                value={confirmPassword}
+                onChange={e => setConfirmPassword(e.target.value)}
+                className="w-full rounded-ctl border border-border bg-card px-3 py-2 text-sm text-text focus:border-accent focus:outline-none focus:shadow-[0_0_0_3px_var(--accent-soft)]"
+                required
+                autoComplete="new-password"
+              />
+              <PasswordMatch password={newPassword} confirmPassword={confirmPassword} />
+            </div>
+          </div>
+          {pwError && <p className="text-sm text-danger" role="alert">{pwError}</p>}
+          {pwMsg && <p className="text-sm text-ok">{pwMsg}</p>}
+          <button
+            type="submit"
+            disabled={pwSaving || !currentPassword || !newPassword || !confirmPassword}
+            className="rounded-ctl bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-press disabled:opacity-50 min-h-[44px]"
+          >
+            {pwSaving ? 'Changing…' : 'Change password'}
+          </button>
+        </form>
+      )}
+
+      {/* MFA section */}
+      <MfaSettings />
+    </div>
+  )
+}

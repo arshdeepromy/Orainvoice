@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+  .prov { display: flex; align-items: center; gap: 16px; padding: 18px 20px; border-bottom: 1px solid var(--border); }
+  .prov:last-child { border-bottom: none; }
+  .prov .logo { width: 44px; height: 44px; border-radius: 11px; display: grid; place-items: center; font-weight: 700; font-size: 15px; color: #fff; flex-shrink: 0; }
+  .prov .meta { flex: 1; min-width: 0; }
+  .prov .nm { font-size: 14.5px; font-weight: 600; display: flex; align-items: center; gap: 9px; }
+  .prov .d { font-size: 12.5px; color: var(--muted); margin-top: 3px; }
+  .prov .vol { text-align: right; } .prov .vol .v { font-family: var(--mono); font-weight: 600; font-size: 15px; } .prov .vol .l { font-size: 11px; color: var(--muted-2); }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Admin · Email Providers">
+        <div class="page-head">
+          <div><div class="eyebrow">Platform admin</div><h1>Email providers</h1><p class="sub">Outbound email routing, failover &amp; sender domains</p></div>
+          <div class="head-actions"><button class="btn btn-ghost btn-sm">Send test email</button><button class="btn btn-primary btn-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>Add provider</button></div>
+        </div>
+        <div id="admin-nav" data-active="email"></div>
+
+        <div class="kpis">
+          <div class="kpi"><div class="top"><span class="label">Sent (30d)</span><span class="ico blue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg></span></div><div class="val">184<span class="c">k</span></div><div class="delta up"><span>↗ 8%</span><span class="since">vs prev</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">Delivery rate</span><span class="ico green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></span></div><div class="val">99.2<span class="c">%</span></div><div class="delta"><span class="since">healthy</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">Bounce rate</span><span class="ico amber"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></span></div><div class="val">0.6<span class="c">%</span></div><div class="delta"><span class="since">within limits</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">Failover events</span><span class="ico red"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4m0 4h.01M10.3 3.9l-8 14A2 2 0 004 21h16a2 2 0 001.7-3l-8-14a2 2 0 00-3.4 0z"/></svg></span></div><div class="val">2</div><div class="delta"><span class="since">last 30d</span></div></div>
+        </div>
+
+        <section class="card">
+          <div class="card-head"><h2>Configured providers</h2><span class="chip" style="background:transparent;border:none;color:var(--muted)">Routing: priority failover</span></div>
+          <div class="prov">
+            <div class="logo" style="background:#FFCB2D;color:#1a1a1a">Pm</div>
+            <div class="meta"><div class="nm">Postmark <span class="badge sent"><span class="b-dot"></span>Primary</span></div><div class="d">Transactional · sender: send.orainvoice.co.nz · DKIM verified</div></div>
+            <div class="vol"><div class="v">156k</div><div class="l">30d volume</div></div>
+            <span class="badge active"><span class="b-dot"></span>Healthy</span>
+            <button class="btn btn-ghost btn-sm">Configure</button>
+          </div>
+          <div class="prov">
+            <div class="logo" style="background:#1A82E2">SG</div>
+            <div class="meta"><div class="nm">SendGrid <span class="badge warn"><span class="b-dot"></span>Failover</span></div><div class="d">Backup route · sender: mail.orainvoice.co.nz · SPF verified</div></div>
+            <div class="vol"><div class="v">28k</div><div class="l">30d volume</div></div>
+            <span class="badge active"><span class="b-dot"></span>Healthy</span>
+            <button class="btn btn-ghost btn-sm">Configure</button>
+          </div>
+          <div class="prov">
+            <div class="logo" style="background:#FF9900;color:#1a1a1a">SES</div>
+            <div class="meta"><div class="nm">Amazon SES <span class="badge draft"><span class="b-dot"></span>Disabled</span></div><div class="d">Not in rotation · ap-southeast-2</div></div>
+            <div class="vol"><div class="v">0</div><div class="l">30d volume</div></div>
+            <span class="badge draft"><span class="b-dot"></span>Off</span>
+            <button class="btn btn-ghost btn-sm">Configure</button>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="admin" data-title="Admin · Email Providers"></script>
+<script src="admin-nav.js"></script>
+</body>
+</html>

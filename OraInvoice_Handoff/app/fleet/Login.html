@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="../ds.css" />
+<link rel="stylesheet" href="fleet.css" />
+<title>Sign in · Fleet Portal</title>
+</head>
+<body>
+<div class="fauth" data-screen-label="Fleet portal login">
+  <form class="fauth-card" id="loginForm" onsubmit="event.preventDefault();showMfa()">
+    <div class="fauth-brand"><div class="m"><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 11l1.5-4.5A2 2 0 018.4 5h7.2a2 2 0 011.9 1.5L19 11m-14 0h14m-14 0a2 2 0 00-2 2v3a1 1 0 001 1h1m14-6a2 2 0 012 2v3a1 1 0 01-1 1h-1"/></svg></div><div class="t">Fleet<span> Portal</span></div></div>
+    <h1>Sign in</h1>
+    <p class="sub">Sign in with your fleet portal credentials.</p>
+    <div class="field"><label>Email</label><input class="input" type="email" value="dean@northlandfreight.co.nz" autocomplete="email"></div>
+    <div class="field"><label>Password</label><input class="input" type="password" value="········" autocomplete="current-password"></div>
+    <button class="btn btn-primary btn-block" type="submit" style="margin-top:6px">Sign in</button>
+    <div class="fauth-foot"><a href="ForgotPassword.html" style="color:var(--accent)">Forgot password?</a></div>
+  </form>
+
+  <form class="fauth-card" id="mfaForm" style="display:none" onsubmit="event.preventDefault();location.href='Dashboard.html'">
+    <div class="fauth-brand"><div class="m"><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 11h14a2 2 0 012 2v7a2 2 0 01-2 2H5a2 2 0 01-2-2v-7a2 2 0 012-2zm2 0V7a5 5 0 0110 0v4"/></svg></div><div class="t">Two-factor</div></div>
+    <h1>Verify it's you</h1>
+    <p class="sub">Enter the 6-digit code from your authenticator app.</p>
+    <div class="otp" style="margin-bottom:20px"><input maxlength="1" value="4"><input maxlength="1" value="1"><input maxlength="1" value="9"><input maxlength="1"><input maxlength="1"><input maxlength="1"></div>
+    <button class="btn btn-primary btn-block" type="submit">Verify</button>
+    <div class="fauth-foot"><a href="#" onclick="event.preventDefault();document.getElementById('mfaForm').style.display='none';document.getElementById('loginForm').style.display='block'" style="color:var(--muted)">← Back to login</a></div>
+  </form>
+
+  <div class="fauth-foot" style="margin-top:18px">Powered by <b style="color:var(--muted)">OraInvoice</b></div>
+</div>
+<script>
+function showMfa(){document.getElementById('loginForm').style.display='none';document.getElementById('mfaForm').style.display='block';}
+document.querySelectorAll('.otp input').forEach((b,i,a)=>b.addEventListener('input',()=>{if(b.value&&a[i+1])a[i+1].focus();}));
+</script>
+</body>
+</html>

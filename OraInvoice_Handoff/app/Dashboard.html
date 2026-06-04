@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+.grid-2 { display: grid; grid-template-columns: 1.7fr 1fr; gap: var(--gap); align-items: start; }
+@media (max-width: 1080px) { .grid-2 { grid-template-columns: 1fr; } }
+.chart-meta { display: flex; align-items: baseline; gap: 12px; padding: 18px 20px 4px; }
+.chart-meta .big { font-family: var(--mono); font-size: 30px; font-weight: 600; letter-spacing: -0.02em; }
+.chart-meta .tag { font-family: var(--mono); font-size: 12px; font-weight: 500; color: var(--ok); background: var(--ok-soft); padding: 2px 8px; border-radius: 6px; }
+.chart-meta .cap { color: var(--muted); font-size: 13px; }
+.chart-wrap { padding: 8px 14px 16px; }
+.x-axis { display: flex; justify-content: space-between; padding: 8px 8px 0; }
+.x-axis span { font-family: var(--mono); font-size: 10.5px; color: var(--muted-2); }
+.task { display: flex; gap: 12px; padding: 13px 20px; border-bottom: 1px solid var(--border); }
+.task:last-child { border-bottom: none; }
+.task .tk-ico { width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; flex-shrink: 0; }
+.task .tk-ico svg { width: 16px; height: 16px; }
+.task .tk-main { min-width: 0; flex: 1; }
+.task .tk-title { font-size: 13.5px; font-weight: 600; }
+.task .tk-sub { font-size: 12.5px; color: var(--muted); margin-top: 1px; }
+.task .tk-time { font-family: var(--mono); font-size: 11px; color: var(--muted-2); white-space: nowrap; }
+.due-row { display: flex; align-items: center; gap: 12px; padding: 13px 20px; border-bottom: 1px solid var(--border); }
+.due-row:last-child { border-bottom: none; }
+.due-when { width: 46px; text-align: center; flex-shrink: 0; }
+.due-when .d { font-family: var(--mono); font-size: 18px; font-weight: 600; line-height: 1; }
+.due-when .m { font-family: var(--mono); font-size: 10px; color: var(--muted-2); text-transform: uppercase; }
+.due-main { flex: 1; min-width: 0; }
+.due-main .t { font-size: 13.5px; font-weight: 600; }
+.due-main .s { font-size: 12px; color: var(--muted); margin-top: 1px; }
+.due-amt { font-family: var(--mono); font-weight: 600; font-size: 13.5px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page" data-screen-label="Dashboard">
+        <div class="page-head">
+          <div>
+            <div class="eyebrow">Tuesday · 12 Nov 2025</div>
+            <h1>Good morning, Arsh</h1>
+            <p class="sub">Here's how Kerikeri Motors is tracking this month.</p>
+          </div>
+          <div class="seg" id="rangeSeg">
+            <button>7D</button><button class="on">30D</button><button>QTR</button><button>YR</button>
+          </div>
+        </div>
+
+        <div class="kpis">
+          <div class="kpi">
+            <div class="top"><span class="label">Revenue (MTD)</span><span class="ico green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 100 7h5a3.5 3.5 0 110 7H6"/></svg></span></div>
+            <div class="val"><span class="c">$</span>48,250</div>
+            <div class="delta up"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M7 17L17 7M17 7H9M17 7v8"/></svg>12.4% <span class="since">vs last month</span></div>
+          </div>
+          <div class="kpi">
+            <div class="top"><span class="label">Outstanding</span><span class="ico blue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h7l5 5v11a2 2 0 01-2 2z"/></svg></span></div>
+            <div class="val"><span class="c">$</span>12,840</div>
+            <div class="delta up"><span class="since">across 18 invoices</span></div>
+          </div>
+          <div class="kpi">
+            <div class="top"><span class="label">Overdue</span><span class="ico red"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4m0 4h.01M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z"/></svg></span></div>
+            <div class="val"><span class="c">$</span>3,210</div>
+            <div class="delta down"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M17 7L7 17M7 17h8M7 17V9"/></svg>4 invoices <span class="since">overdue</span></div>
+          </div>
+          <div class="kpi">
+            <div class="top"><span class="label">Jobs in progress</span><span class="ico amber"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.4-9.4a2 2 0 112.8 2.8L11.8 15H9v-2.8l8.6-8.6z"/></svg></span></div>
+            <div class="val">14</div>
+            <div class="delta up"><span class="since">6 due today</span></div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="stack">
+            <section class="card">
+              <div class="card-head"><h2>Revenue</h2><a class="link" href="Reports.html">View report →</a></div>
+              <div class="chart-meta"><span class="big">$48,250</span><span class="tag">▲ 12.4%</span><span class="cap">paid this month</span></div>
+              <div class="chart-wrap">
+                <svg id="chart" viewBox="0 0 720 220" preserveAspectRatio="none" style="width:100%;height:200px;display:block"></svg>
+                <div class="x-axis"><span>Wk 1</span><span>Wk 2</span><span>Wk 3</span><span>Wk 4</span><span>Now</span></div>
+              </div>
+            </section>
+            <section class="card">
+              <div class="card-head"><h2>Recent invoices</h2><a class="link" href="Invoices.html">All invoices →</a></div>
+              <div class="tbl-wrap"><table>
+                <thead><tr><th>Invoice</th><th>Customer</th><th>Status</th><th class="r">Amount</th></tr></thead>
+                <tbody id="invRows"></tbody>
+              </table></div>
+            </section>
+          </div>
+          <div class="stack">
+            <section class="card"><div class="card-head"><h2>Activity</h2><a class="link" href="#">All</a></div><div id="activity"></div></section>
+            <section class="card"><div class="card-head"><h2>Upcoming bookings</h2><a class="link" href="Schedule.html">Schedule →</a></div><div id="bookings"></div></section>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="dashboard" data-title="Dashboard" data-primary="New" data-primary-href="InvoiceCreate.html"></script>
+<script>
+function svg(d){return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="${d}"/></svg>`;}
+const ICO={bank:'M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z',quote:'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2',job:'M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.4-9.4a2 2 0 112.8 2.8L11.8 15H9v-2.8l8.6-8.6z',inv:'M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h7l5 5v11a2 2 0 01-2 2z'};
+const INVOICES=[{id:'INV-2041',cust:'Bay Plumbing Ltd',status:'overdue',amt:'2,480.00'},{id:'INV-2040',cust:'M. Taufa',status:'sent',amt:'640.00'},{id:'INV-2039',cust:'Northland Freight',status:'paid',amt:'4,120.50'},{id:'INV-2038',cust:'K. Williams',status:'paid',amt:'315.00'},{id:'INV-2037',cust:'Coastal Builders',status:'sent',amt:'8,900.00'},{id:'INV-2036',cust:'R. Singh',status:'draft',amt:'1,150.00'}];
+const SL={paid:'Paid',sent:'Sent',overdue:'Overdue',draft:'Draft'};
+document.getElementById('invRows').innerHTML=INVOICES.map(i=>`<tr class="clickable" onclick="location.href='InvoiceDetail.html'"><td><span class="id">${i.id}</span></td><td class="cust">${i.cust}</td><td><span class="badge ${i.status}"><span class="b-dot"></span>${SL[i.status]}</span></td><td class="r amt">$${i.amt}</td></tr>`).join('');
+const ACTS=[{c:'green',t:'Payment received',s:'Northland Freight · INV-2039',time:'12m',d:ICO.bank},{c:'blue',t:'Quote accepted',s:'Coastal Builders · QT-318',time:'1h',d:ICO.quote},{c:'amber',t:'Job card updated',s:'JC-1187 · brake service',time:'2h',d:ICO.job},{c:'red',t:'Invoice overdue',s:'Bay Plumbing · INV-2041',time:'5h',d:ICO.inv}];
+document.getElementById('activity').innerHTML=ACTS.map(a=>`<div class="task"><div class="tk-ico ${a.c}">${svg(a.d)}</div><div class="tk-main"><div class="tk-title">${a.t}</div><div class="tk-sub">${a.s}</div></div><div class="tk-time">${a.time}</div></div>`).join('');
+const BOOK=[{d:'13',m:'Nov',t:'WOF + Service',s:'M. Taufa · Hilux',amt:'$220'},{d:'13',m:'Nov',t:'Brake inspection',s:'K. Williams · Corolla',amt:'$140'},{d:'14',m:'Nov',t:'Fleet service ×3',s:'Northland Freight',amt:'$1,260'}];
+document.getElementById('bookings').innerHTML=BOOK.map(b=>`<div class="due-row"><div class="due-when"><div class="d">${b.d}</div><div class="m">${b.m}</div></div><div class="due-main"><div class="t">${b.t}</div><div class="s">${b.s}</div></div><div class="due-amt">${b.amt}</div></div>`).join('');
+function drawChart(){const data=[22,28,19,34,30,42,38,48,44,58,52,68],W=720,H=220,pad=8,max=74,min=12;const x=i=>pad+(i/(data.length-1))*(W-pad*2),y=v=>H-18-((v-min)/(max-min))*(H-40);const pts=data.map((v,i)=>[x(i),y(v)]);const line=pts.map((p,i)=>(i?'L':'M')+p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' ');const area=line+` L ${W-pad} ${H-18} L ${pad} ${H-18} Z`;const a=getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()||'#2F62F0';document.getElementById('chart').innerHTML=`<defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${a}" stop-opacity="0.20"/><stop offset="1" stop-color="${a}" stop-opacity="0"/></linearGradient></defs>${[0,1,2,3].map(i=>`<line x1="0" x2="${W}" y1="${18+i*52}" y2="${18+i*52}" stroke="#EEF0F4" stroke-width="1"/>`).join('')}<path d="${area}" fill="url(#g)"/><path d="${line}" fill="none" stroke="${a}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="${pts[pts.length-1][0]}" cy="${pts[pts.length-1][1]}" r="4.5" fill="${a}" stroke="#fff" stroke-width="2.5"/>`;}
+drawChart();
+document.getElementById('rangeSeg').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;document.querySelectorAll('#rangeSeg button').forEach(x=>x.classList.remove('on'));b.classList.add('on');});
+</script>
+</body>
+</html>

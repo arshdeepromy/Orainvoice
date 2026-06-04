@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Admin · Branch Overview">
+        <div class="page-head">
+          <div><div class="eyebrow">Platform admin</div><h1>Global branch overview</h1><p class="sub">Every branch across all multi-site tenants</p></div>
+          <div class="head-actions"><button class="btn btn-ghost btn-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14"/></svg>Export</button></div>
+        </div>
+        <div id="admin-nav" data-active="branches"></div>
+
+        <div class="kpis">
+          <div class="kpi"><div class="top"><span class="label">Total branches</span><span class="ico blue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21h18M5 21V7l8-4v18M19 21V11l-6-3"/></svg></span></div><div class="val">96</div><div class="delta"><span class="since">across 56 orgs</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">Active staff</span><span class="ico purple"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 20h5v-2a3 3 0 00-5.4-1.9M17 20H7m10 0v-2c0-.7-.1-1.3-.4-1.9M7 20H2v-2a3 3 0 015.4-1.9"/></svg></span></div><div class="val">724</div><div class="delta up"><span>↗ 18</span><span class="since">this month</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">Revenue (30d)</span><span class="ico green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg></span></div><div class="val"><span class="c">$</span>2.1<span class="c">M</span></div><div class="delta up"><span>↗ 9%</span><span class="since">all branches</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">Avg utilisation</span><span class="ico amber"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></span></div><div class="val">78<span class="c">%</span></div><div class="delta"><span class="since">bay capacity</span></div></div>
+        </div>
+
+        <div class="toolbar">
+          <label class="search-input" style="flex:1;max-width:300px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 21l-5-5m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg><input id="search" type="text" placeholder="Search branches…" oninput="render()" /></label>
+          <div class="seg" id="reg-seg"><button class="on" data-r="">All regions</button><button data-r="Northland">Northland</button><button data-r="Auckland">Auckland</button><button data-r="Waikato">Waikato</button></div>
+        </div>
+
+        <section class="card">
+          <div class="tbl-wrap"><table>
+            <thead><tr><th>Branch</th><th>Organisation</th><th>Region</th><th>Staff</th><th>Utilisation</th><th>Revenue (30d)</th><th>Status</th></tr></thead>
+            <tbody id="rows"></tbody>
+          </table></div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="admin" data-title="Admin · Branch Overview"></script>
+<script src="admin-nav.js"></script>
+<script>
+const B = [
+  { n:'Kerikeri', org:'Kerikeri Motors', region:'Northland', staff:12, util:84, rev:'$96k', st:'active' },
+  { n:'Whangarei', org:'North Panel & Paint', region:'Northland', staff:18, util:91, rev:'$142k', st:'active' },
+  { n:'Kaitaia', org:'North Panel & Paint', region:'Northland', staff:9, util:62, rev:'$58k', st:'active' },
+  { n:'Albany', org:'FixIt NZ Ltd', region:'Auckland', staff:14, util:88, rev:'$121k', st:'active' },
+  { n:'Penrose', org:'FixIt NZ Ltd', region:'Auckland', staff:11, util:74, rev:'$88k', st:'active' },
+  { n:'Hamilton', org:'Coastline Marine', region:'Waikato', staff:16, util:79, rev:'$110k', st:'active' },
+  { n:'Dargaville', org:'Westside Smash Repairs', region:'Northland', staff:7, util:45, rev:'$34k', st:'low' },
+  { n:'Manukau', org:'Coastline Marine', region:'Auckland', staff:13, util:82, rev:'$104k', st:'active' },
+];
+const ST = { active:['active','Active'], low:['warn','Low activity'] };
+let reg='';
+function render(){
+  const q=(document.getElementById('search').value||'').toLowerCase();
+  const list=B.filter(b=>(!reg||b.region===reg)&&(b.n.toLowerCase().includes(q)||b.org.toLowerCase().includes(q)));
+  document.getElementById('rows').innerHTML=list.map(b=>{
+    const [sc,sl]=ST[b.st];
+    const uc = b.util>=85?'var(--warn)':'var(--accent)';
+    return `<tr class="clickable" onclick="location.href='LocationDetail.html'">
+      <td><span class="cust">${b.n}</span></td>
+      <td><span style="color:var(--muted)">${b.org}</span></td>
+      <td>${b.region}</td>
+      <td class="mono">${b.staff}</td>
+      <td><div class="row-flex"><span class="progress" style="width:80px"><i style="width:${b.util}%;background:${uc}"></i></span><span class="mono" style="font-size:12px;color:var(--muted)">${b.util}%</span></div></td>
+      <td class="amt">${b.rev}</td>
+      <td><span class="badge ${sc}"><span class="b-dot"></span>${sl}</span></td>
+    </tr>`;
+  }).join('');
+}
+document.querySelectorAll('#reg-seg button').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('#reg-seg button').forEach(x=>x.classList.remove('on'));b.classList.add('on');reg=b.dataset.r;render();}));
+render();
+</script>
+</body>
+</html>

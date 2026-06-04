@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+.wiz { max-width:640px; margin:0 auto; }
+.steprail { display:flex; align-items:center; gap:0; margin-bottom:28px; }
+.steprail .st { display:flex; align-items:center; gap:9px; }
+.steprail .dot { width:28px; height:28px; border-radius:50%; display:grid; place-items:center; font-family:var(--mono); font-size:12px; font-weight:600; background:var(--card); border:1.5px solid var(--border-strong); color:var(--muted); flex-shrink:0; }
+.steprail .st.on .dot { background:var(--accent); border-color:var(--accent); color:#fff; }
+.steprail .st.done .dot { background:var(--ok); border-color:var(--ok); color:#fff; }
+.steprail .lb { font-size:12.5px; font-weight:500; color:var(--muted); white-space:nowrap; }
+.steprail .st.on .lb { color:var(--text); }
+.steprail .bar { flex:1; height:1.5px; background:var(--border); margin:0 10px; min-width:14px; }
+.steprail .st.done + .bar { background:var(--ok); }
+.wstep { display:none; } .wstep.on { display:block; }
+.mod { display:flex; align-items:center; gap:12px; padding:13px 15px; border:1px solid var(--border); border-radius:var(--r-ctl); margin-bottom:9px; }
+.mod .ic { width:34px; height:34px; border-radius:9px; display:grid; place-items:center; }
+.swatch-row { display:flex; gap:10px; }
+.swatch { width:38px; height:38px; border-radius:9px; cursor:pointer; border:2px solid transparent; }
+.swatch.on { border-color:var(--text); box-shadow:0 0 0 2px #fff inset; }
+@media(max-width:640px){ .steprail .lb{display:none;} }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page" data-screen-label="Setup wizard">
+        <div class="wiz">
+          <div style="text-align:center;margin-bottom:24px">
+            <div class="eyebrow" style="margin-bottom:8px">Get started</div>
+            <h1 style="font-size:25px">Set up your business</h1>
+            <p class="sub" style="margin-top:6px">Configure OraInvoice for your workshop. Skip any step to come back later.</p>
+          </div>
+
+          <div class="steprail" id="rail"></div>
+
+          <section class="card"><div class="card-body" style="padding:26px">
+            <!-- Step 0: Business -->
+            <div class="wstep on" data-step="0">
+              <div class="section-label">Business details</div>
+              <div class="form-grid">
+                <div class="field full"><label>Business name <span style="color:var(--danger)">*</span></label><input class="input" value="Kerikeri Motors Ltd"></div>
+                <div class="field"><label>Trading name</label><input class="input" value="Kerikeri Motors"></div>
+                <div class="field"><label>GST number</label><input class="input mono" value="102-845-771"></div>
+                <div class="field"><label>Phone</label><input class="input mono" value="09 407 8800"></div>
+                <div class="field"><label>Website</label><input class="input" placeholder="https://"></div>
+                <div class="field full"><label>Street address</label><input class="input" value="14 Hone Heke Rd"></div>
+                <div class="field"><label>City</label><input class="input" value="Kerikeri"></div>
+                <div class="field"><label>Postcode</label><input class="input mono" value="0230"></div>
+              </div>
+            </div>
+            <!-- Step 1: Branding -->
+            <div class="wstep" data-step="1">
+              <div class="section-label">Branding</div>
+              <div class="field" style="margin-bottom:18px"><label>Logo</label>
+                <div class="empty" style="padding:26px;border:2px dashed var(--border);border-radius:var(--r-ctl)"><div class="e-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 16l5-5 4 4 3-3 6 6M3 4h18v16H3z"/></svg></div><p style="margin:0">Drag a logo here or <span style="color:var(--accent);font-weight:600">browse</span></p></div>
+              </div>
+              <div class="field"><label>Primary colour</label>
+                <div class="swatch-row" id="primSw"><span class="swatch on" style="background:#2F62F0"></span><span class="swatch" style="background:#1F8A5B"></span><span class="swatch" style="background:#6D5AE6"></span><span class="swatch" style="background:#C8412F"></span><span class="swatch" style="background:#0B1220"></span></div>
+              </div>
+            </div>
+            <!-- Step 2: Modules -->
+            <div class="wstep" data-step="2">
+              <div class="section-label">Modules</div>
+              <p style="font-size:13px;color:var(--muted);margin:0 0 14px">Turn on the features your workshop needs. You can change these any time in Settings.</p>
+              <div class="mod"><span class="ic blue"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h7l5 5v11a2 2 0 01-2 2z"/></svg></span><div style="flex:1"><div style="font-size:13.5px;font-weight:600">Invoicing &amp; quotes</div><div style="font-size:12px;color:var(--muted)">Core billing</div></div><button class="toggle on" onclick="this.classList.toggle('on')"></button></div>
+              <div class="mod"><span class="ic amber"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M5 11l1.5-4.5A2 2 0 018.4 5h7.2a2 2 0 011.9 1.5L19 11"/></svg></span><div style="flex:1"><div style="font-size:13.5px;font-weight:600">Vehicles &amp; WOF</div><div style="font-size:12px;color:var(--muted)">Automotive workflows</div></div><button class="toggle on" onclick="this.classList.toggle('on')"></button></div>
+              <div class="mod"><span class="ic green"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7"/></svg></span><div style="flex:1"><div style="font-size:13.5px;font-weight:600">Inventory &amp; POs</div><div style="font-size:12px;color:var(--muted)">Stock control</div></div><button class="toggle" onclick="this.classList.toggle('on')"></button></div>
+              <div class="mod"><span class="ic purple"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg></span><div style="flex:1"><div style="font-size:13.5px;font-weight:600">Staff &amp; scheduling</div><div style="font-size:12px;color:var(--muted)">Rosters &amp; time tracking</div></div><button class="toggle" onclick="this.classList.toggle('on')"></button></div>
+            </div>
+            <!-- Step 3: Catalogue -->
+            <div class="wstep" data-step="3">
+              <div class="section-label">Starter catalogue</div>
+              <p style="font-size:13px;color:var(--muted);margin:0 0 14px">Add a few common items &amp; services to get going.</p>
+              <table style="width:100%"><thead><tr><th style="text-align:left;font-family:var(--mono);font-size:10.5px;text-transform:uppercase;color:var(--muted-2);padding-bottom:10px">Name</th><th class="r" style="font-family:var(--mono);font-size:10.5px;text-transform:uppercase;color:var(--muted-2);padding-bottom:10px">Price</th></tr></thead>
+                <tbody>
+                  <tr><td style="padding:8px 0;border-bottom:1px solid var(--border)"><input class="input" style="height:38px" value="Full service"></td><td style="padding:8px 0 8px 10px;border-bottom:1px solid var(--border);width:120px"><input class="input mono" style="height:38px;text-align:right" value="320.00"></td></tr>
+                  <tr><td style="padding:8px 0;border-bottom:1px solid var(--border)"><input class="input" style="height:38px" value="WOF inspection"></td><td style="padding:8px 0 8px 10px;border-bottom:1px solid var(--border)"><input class="input mono" style="height:38px;text-align:right" value="65.00"></td></tr>
+                  <tr><td style="padding:8px 0;border-bottom:1px solid var(--border)"><input class="input" style="height:38px" value="Labour (per hour)"></td><td style="padding:8px 0 8px 10px;border-bottom:1px solid var(--border)"><input class="input mono" style="height:38px;text-align:right" value="95.00"></td></tr>
+                </tbody></table>
+              <button class="btn btn-ghost btn-sm" style="margin-top:12px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>Add item</button>
+            </div>
+            <!-- Step 4: Ready -->
+            <div class="wstep" data-step="4">
+              <div style="text-align:center;padding:14px 0">
+                <div style="width:60px;height:60px;border-radius:50%;background:var(--ok-soft);display:grid;place-items:center;margin:0 auto 16px"><svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="var(--ok)" stroke-width="2.2"><path d="M20 6L9 17l-5-5"/></svg></div>
+                <h2 style="font-size:19px">You're all set</h2>
+                <p style="font-size:13.5px;color:var(--muted);margin:8px 0 0">Your workshop is configured and ready. You can fine-tune anything later in Settings.</p>
+                <div style="display:flex;flex-direction:column;gap:8px;margin-top:20px;text-align:left;max-width:340px;margin-inline:auto">
+                  <div class="meta-row"><span class="k">Business</span><span class="v">Kerikeri Motors Ltd</span></div>
+                  <div class="meta-row"><span class="k">Modules enabled</span><span class="v mono">2</span></div>
+                  <div class="meta-row"><span class="k">Catalogue items</span><span class="v mono">3</span></div>
+                </div>
+              </div>
+            </div>
+
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-top:26px">
+              <button class="btn btn-ghost btn-sm" id="backBtn" onclick="go(-1)" style="visibility:hidden">Back</button>
+              <div style="display:flex;gap:10px">
+                <button class="btn btn-quiet btn-sm" id="skipBtn" onclick="go(1)">Skip</button>
+                <button class="btn btn-primary btn-sm" id="nextBtn" onclick="go(1)">Next</button>
+              </div>
+            </div>
+          </div></section>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="" data-title="Setup"></script>
+<script>
+const LABELS=['Business','Branding','Modules','Catalogue','Ready'];
+let step=0;
+function renderRail(){
+  document.getElementById('rail').innerHTML=LABELS.map((l,i)=>`
+    <div class="st ${i===step?'on':''} ${i<step?'done':''}"><span class="dot">${i<step?'✓':i+1}</span><span class="lb">${l}</span></div>
+    ${i<LABELS.length-1?'<span class="bar"></span>':''}`).join('');
+}
+function show(){
+  document.querySelectorAll('.wstep').forEach(w=>w.classList.toggle('on',+w.dataset.step===step));
+  document.getElementById('backBtn').style.visibility=step>0?'visible':'hidden';
+  const last=step===LABELS.length-1;
+  document.getElementById('skipBtn').style.display=last?'none':'';
+  document.getElementById('nextBtn').textContent=last?'Complete setup':'Next';
+  renderRail();
+}
+function go(d){ step=Math.max(0,Math.min(LABELS.length-1,step+d)); if(step>LABELS.length-1)return; show(); window.scrollTo({top:0}); }
+document.querySelectorAll('.swatch').forEach(s=>s.addEventListener('click',()=>{document.querySelectorAll('#primSw .swatch').forEach(x=>x.classList.remove('on'));s.classList.add('on');}));
+show();
+</script>
+</body>
+</html>

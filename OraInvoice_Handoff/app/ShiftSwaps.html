@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+.swap-card{display:flex;align-items:center;gap:18px;padding:18px 20px;border-bottom:1px solid var(--border);flex-wrap:wrap}
+.swap-card:last-child{border-bottom:none}
+.swap-people{display:flex;align-items:center;gap:12px}
+.swap-arrow{color:var(--muted-2);flex-shrink:0}
+.shift-chip{border:1px solid var(--border);border-radius:var(--r-ctl);padding:9px 13px;background:var(--canvas);min-width:150px}
+.shift-chip .d{font-family:var(--mono);font-size:11px;color:var(--muted-2);text-transform:uppercase;letter-spacing:.06em}
+.shift-chip .t{font-size:13px;font-weight:600;margin-top:2px}
+.shift-chip .b{font-size:11.5px;color:var(--muted);margin-top:1px}
+.swap-actions{margin-left:auto;display:flex;gap:8px;align-items:center}
+.pers{display:flex;flex-direction:column;line-height:1.25}
+.pers .n{font-size:13.5px;font-weight:600}
+.pers .r{font-size:11.5px;color:var(--muted)}
+.tab-pane{display:none}.tab-pane.on{display:block}
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Shift swaps">
+        <div class="page-head">
+          <div><div class="eyebrow">Work · Scheduling</div><h1>Shift swaps &amp; cover</h1><p class="sub">5 awaiting your approval · week of 1 Jun 2026</p></div>
+          <div class="head-actions"><a class="btn btn-ghost btn-sm" href="StaffSchedule.html">Open roster</a></div>
+        </div>
+
+        <div class="kpis">
+          <div class="kpi"><div class="top"><span class="label">Pending approval</span><span class="ico amber"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></span></div><div class="val">5</div><div class="delta"><span class="since">3 swaps · 2 cover</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">Approved this week</span><span class="ico green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M20 6L9 17l-5-5"/></svg></span></div><div class="val">12</div></div>
+          <div class="kpi"><div class="top"><span class="label">Open cover requests</span><span class="ico blue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M17 20h5v-2a3 3 0 00-5.4-1.9M9 11a4 4 0 100-8 4 4 0 000 8zm6 9v-2a4 4 0 00-3-3.9M3 20v-2a4 4 0 014-4h4a4 4 0 014 4v2"/></svg></span></div><div class="val">2</div><div class="delta down"><span class="since">unclaimed shifts</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">Declined</span><span class="ico red"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M18 6L6 18M6 6l12 12"/></svg></span></div><div class="val">1</div></div>
+        </div>
+
+        <div class="tabs">
+          <div class="tab on" data-pane="swaps">Swap requests<span class="n">3</span></div>
+          <div class="tab" data-pane="cover">Cover requests<span class="n">2</span></div>
+          <div class="tab" data-pane="history">History</div>
+        </div>
+
+        <div class="tab-pane on" id="pane-swaps">
+          <section class="card">
+            <div class="swap-card">
+              <div class="swap-people">
+                <span class="row-av" style="background:var(--accent-soft);color:var(--accent)">SF</span>
+                <div class="pers"><span class="n">Sina Faleolo</span><span class="r">wants to swap</span></div>
+              </div>
+              <div class="shift-chip"><div class="d">Wed 4 Jun</div><div class="t mono">08:00 – 16:30</div><div class="b">Kerikeri · Workshop</div></div>
+              <svg class="swap-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="22" height="22"><path d="M7 16l-4-4 4-4M3 12h12M17 8l4 4-4 4M21 12H9"/></svg>
+              <div class="shift-chip"><div class="d">Fri 6 Jun</div><div class="t mono">09:00 – 17:30</div><div class="b">Kerikeri · Workshop</div></div>
+              <div class="swap-people"><span class="row-av">TC</span><div class="pers"><span class="n">Tom Cole</span><span class="r">accepted ✓</span></div></div>
+              <div class="swap-actions"><button class="btn btn-ghost btn-sm">Decline</button><button class="btn btn-primary btn-sm">Approve swap</button></div>
+            </div>
+            <div class="swap-card">
+              <div class="swap-people">
+                <span class="row-av" style="background:var(--ok-soft);color:var(--ok)">AM</span>
+                <div class="pers"><span class="n">Aroha Morgan</span><span class="r">wants to swap</span></div>
+              </div>
+              <div class="shift-chip"><div class="d">Thu 5 Jun</div><div class="t mono">07:30 – 15:00</div><div class="b">Front desk</div></div>
+              <svg class="swap-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="22" height="22"><path d="M7 16l-4-4 4-4M3 12h12M17 8l4 4-4 4M21 12H9"/></svg>
+              <div class="shift-chip"><div class="d">Sat 7 Jun</div><div class="t mono">08:00 – 13:00</div><div class="b">Front desk</div></div>
+              <div class="swap-people"><span class="row-av" style="background:var(--warn-soft);color:var(--warn)">MT</span><div class="pers"><span class="n">Mere Tipene</span><span class="r" style="color:var(--warn)">awaiting reply</span></div></div>
+              <div class="swap-actions"><span class="badge pending"><span class="b-dot"></span>Awaiting peer</span></div>
+            </div>
+            <div class="swap-card">
+              <div class="swap-people">
+                <span class="row-av" style="background:var(--purple-soft);color:var(--purple)">RP</span>
+                <div class="pers"><span class="n">Rangi Pita</span><span class="r">wants to swap</span></div>
+              </div>
+              <div class="shift-chip"><div class="d">Mon 9 Jun</div><div class="t mono">08:00 – 16:30</div><div class="b">Paint bay</div></div>
+              <svg class="swap-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="22" height="22"><path d="M7 16l-4-4 4-4M3 12h12M17 8l4 4-4 4M21 12H9"/></svg>
+              <div class="shift-chip"><div class="d">Tue 10 Jun</div><div class="t mono">08:00 – 16:30</div><div class="b">Paint bay</div></div>
+              <div class="swap-people"><span class="row-av" style="background:var(--accent-soft);color:var(--accent)">DM</span><div class="pers"><span class="n">Dave Mceachern</span><span class="r">accepted ✓</span></div></div>
+              <div class="swap-actions"><button class="btn btn-ghost btn-sm">Decline</button><button class="btn btn-primary btn-sm">Approve swap</button></div>
+            </div>
+          </section>
+        </div>
+
+        <div class="tab-pane" id="pane-cover">
+          <section class="card">
+            <div class="swap-card">
+              <div class="swap-people">
+                <span class="row-av" style="background:var(--danger-soft);color:var(--danger)">TC</span>
+                <div class="pers"><span class="n">Tom Cole</span><span class="r" style="color:var(--danger)">can't make it · sick</span></div>
+              </div>
+              <div class="shift-chip"><div class="d">Tue 3 Jun</div><div class="t mono">08:00 – 16:30</div><div class="b">Kerikeri · Workshop</div></div>
+              <div class="pers" style="margin-left:4px"><span class="r">Offered to</span><span class="n" style="font-weight:500;font-size:12.5px">All technicians (4)</span></div>
+              <div class="swap-actions"><span class="badge warn"><span class="b-dot"></span>0 claimed</span><button class="btn btn-ghost btn-sm">Assign manually</button><button class="btn btn-primary btn-sm">Broadcast</button></div>
+            </div>
+            <div class="swap-card">
+              <div class="swap-people">
+                <span class="row-av">MT</span>
+                <div class="pers"><span class="n">Mere Tipene</span><span class="r">requested cover</span></div>
+              </div>
+              <div class="shift-chip"><div class="d">Sun 8 Jun</div><div class="t mono">09:00 – 14:00</div><div class="b">Front desk</div></div>
+              <div class="swap-people" style="margin-left:4px"><span class="row-av" style="background:var(--ok-soft);color:var(--ok)">AM</span><div class="pers"><span class="n">Aroha Morgan</span><span class="r" style="color:var(--ok)">claimed it</span></div></div>
+              <div class="swap-actions"><button class="btn btn-ghost btn-sm">Decline</button><button class="btn btn-primary btn-sm">Approve cover</button></div>
+            </div>
+          </section>
+        </div>
+
+        <div class="tab-pane" id="pane-history">
+          <section class="card">
+            <div class="tbl-wrap"><table>
+              <thead><tr><th>Type</th><th>Requested by</th><th>Shift</th><th>With / covered by</th><th>Decided</th><th>Status</th></tr></thead>
+              <tbody>
+                <tr><td><span class="badge info"><span class="b-dot"></span>Swap</span></td><td class="cust">Sina Faleolo</td><td><span class="mono" style="color:var(--muted)">28 May · 08:00–16:30</span></td><td>Tom Cole</td><td><span class="mono" style="color:var(--muted)">27 May</span></td><td><span class="badge active"><span class="b-dot"></span>Approved</span></td></tr>
+                <tr><td><span class="badge neutral"><span class="b-dot"></span>Cover</span></td><td class="cust">Aroha Morgan</td><td><span class="mono" style="color:var(--muted)">26 May · 07:30–15:00</span></td><td>Mere Tipene</td><td><span class="mono" style="color:var(--muted)">25 May</span></td><td><span class="badge active"><span class="b-dot"></span>Approved</span></td></tr>
+                <tr><td><span class="badge info"><span class="b-dot"></span>Swap</span></td><td class="cust">Rangi Pita</td><td><span class="mono" style="color:var(--muted)">24 May · 08:00–16:30</span></td><td>—</td><td><span class="mono" style="color:var(--muted)">23 May</span></td><td><span class="badge overdue"><span class="b-dot"></span>Declined</span></td></tr>
+              </tbody>
+            </table></div>
+          </section>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="staffschedule" data-title="Shift swaps"></script>
+<script>
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{
+  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));t.classList.add('on');
+  document.querySelectorAll('.tab-pane').forEach(p=>p.classList.remove('on'));
+  document.getElementById('pane-'+t.dataset.pane).classList.add('on');
+}));
+</script>
+</body>
+</html>

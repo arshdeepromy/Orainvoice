@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+.cust-hero { display: flex; align-items: center; gap: 16px; }
+.cust-hero .big-av { width: 58px; height: 58px; border-radius: 15px; display: grid; place-items: center; color: #fff; font-weight: 700; font-size: 22px; flex-shrink: 0; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Customer detail">
+        <div class="crumbs"><a href="Customers.html">Customers</a><span class="sep">/</span><span style="color:var(--text)">Northland Freight Ltd</span></div>
+        <div class="page-head">
+          <div class="cust-hero">
+            <div class="big-av" style="background:#2F62F0">NF</div>
+            <div>
+              <div style="display:flex;align-items:center;gap:10px"><h1>Northland Freight Ltd</h1><span class="badge active"><span class="b-dot"></span>Active</span></div>
+              <p class="sub">Customer since Mar 2021 · GST 118-220-904</p>
+            </div>
+          </div>
+          <div class="head-actions">
+            <button class="btn btn-ghost btn-sm">Edit</button>
+            <a class="btn btn-primary btn-sm" href="InvoiceCreate.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>New invoice</a>
+          </div>
+        </div>
+
+        <div class="kpis">
+          <div class="kpi"><div class="top"><span class="label">Open balance</span></div><div class="val"><span class="c">$</span>0.00</div></div>
+          <div class="kpi"><div class="top"><span class="label">Lifetime value</span></div><div class="val"><span class="c">$</span>48,210</div></div>
+          <div class="kpi"><div class="top"><span class="label">Invoices</span></div><div class="val">37</div></div>
+          <div class="kpi"><div class="top"><span class="label">Avg pay time</span></div><div class="val">11<span class="c"> days</span></div></div>
+        </div>
+
+        <div class="detail-grid">
+          <div class="stack">
+            <div class="tabs">
+              <div class="tab on">Invoices <span class="n">37</span></div>
+              <div class="tab">Quotes <span class="n">12</span></div>
+              <div class="tab">Jobs <span class="n">24</span></div>
+              <div class="tab">Notes</div>
+            </div>
+            <section class="card">
+              <div class="tbl-wrap"><table>
+                <thead><tr><th>Invoice</th><th>Issued</th><th>Status</th><th class="r">Amount</th></tr></thead>
+                <tbody id="rows"></tbody>
+              </table></div>
+            </section>
+          </div>
+          <div class="stack">
+            <section class="card"><div class="card-body">
+              <div class="section-label">Contact</div>
+              <div class="meta-row"><span class="k">Email</span><span class="v">accounts@nlfreight.co.nz</span></div>
+              <div class="meta-row"><span class="k">Phone</span><span class="v mono">09 438 1100</span></div>
+              <div class="meta-row"><span class="k">Address</span><span class="v">88 Port Rd, Whangarei</span></div>
+              <div class="meta-row"><span class="k">Terms</span><span class="v">14 days</span></div>
+            </div></section>
+            <section class="card"><div class="card-body">
+              <div class="section-label">Payment behaviour</div>
+              <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:8px"><span style="color:var(--muted)">On-time rate</span><span class="mono" style="font-weight:600">94%</span></div>
+              <div class="progress"><i style="width:94%"></i></div>
+            </div></section>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="customers" data-title="Northland Freight"></script>
+<script>
+const SL={paid:'Paid',sent:'Sent',overdue:'Overdue',draft:'Draft'};
+const R=[{id:'INV-2039',i:'06 Nov',s:'paid',a:'4,011.50'},{id:'INV-1998',i:'12 Oct',s:'paid',a:'2,330.00'},{id:'INV-1955',i:'28 Sep',s:'paid',a:'5,120.00'},{id:'INV-1902',i:'14 Sep',s:'paid',a:'1,870.00'},{id:'INV-1844',i:'30 Aug',s:'paid',a:'3,640.00'}];
+document.getElementById('rows').innerHTML=R.map(r=>`<tr class="clickable" onclick="location.href='InvoiceDetail.html'"><td><span class="id">${r.id}</span></td><td class="mono" style="color:var(--muted)">${r.i}</td><td><span class="badge ${r.s}"><span class="b-dot"></span>${SL[r.s]}</span></td><td class="r amt">$${r.a}</td></tr>`).join('');
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));t.classList.add('on');}));
+</script>
+</body>
+</html>

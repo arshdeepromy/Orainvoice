@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+.info-3 { display:grid; grid-template-columns:repeat(3,1fr); gap:var(--gap); margin-bottom:var(--gap); }
+.info-3 .card { padding:18px 20px; }
+.info-3 .lbl { font-family:var(--mono); font-size:10.5px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted-2); }
+.info-3 .v { font-size:14px; font-weight:600; margin-top:6px; }
+.info-3 .v.big { font-size:20px; font-family:var(--mono); }
+tfoot td { padding:14px 20px; font-size:13.5px; border-top:1.5px solid var(--border-strong); }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Purchase order detail">
+        <div class="crumbs"><a href="PurchaseOrders.html">Purchase orders</a><span class="sep">/</span><span style="color:var(--text)">PO-2048</span></div>
+        <div class="page-head">
+          <div>
+            <div class="row-flex" style="gap:12px"><h1>PO-2048</h1><span class="badge sent"><span class="b-dot"></span>Sent</span></div>
+            <p class="sub" style="margin-top:7px">Repco Trade — Whangarei</p>
+          </div>
+          <div class="head-actions">
+            <button class="btn btn-ghost btn-sm" onclick="toast('PO PDF downloaded.')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3"/></svg>PDF</button>
+            <button class="btn btn-primary btn-sm" onclick="openModal('m-receive')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10"/></svg>Receive goods</button>
+            <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="toast('Purchase order cancelled.')">Cancel PO</button>
+          </div>
+        </div>
+
+        <div class="info-3">
+          <div class="card"><div class="lbl">Supplier</div><div class="v">Repco Trade</div><div style="font-size:12.5px;color:var(--muted);margin-top:3px">trade@repco.co.nz · 09 438 1100</div></div>
+          <div class="card"><div class="lbl">Expected delivery</div><div class="v">08 Nov 2025</div><div style="font-size:12.5px;color:var(--muted);margin-top:3px">Standard courier</div></div>
+          <div class="card"><div class="lbl">Total amount</div><div class="v big">$3,842.50</div></div>
+        </div>
+
+        <section class="card" style="margin-bottom:var(--gap)"><div class="card-body">
+          <div class="section-label">Notes</div>
+          <p style="font-size:13.5px;color:var(--text);margin:0;line-height:1.6">Deliver to rear workshop entrance. Call Dave on arrival. Backorder any out-of-stock brake discs rather than substituting.</p>
+        </div></section>
+
+        <section class="card">
+          <div class="card-head"><h2>Line items</h2><span style="font-size:12.5px;color:var(--muted)">5 lines</span></div>
+          <div class="tbl-wrap"><table>
+            <thead><tr><th>Description</th><th class="r">Ordered</th><th class="r">Received</th><th class="r">Outstanding</th><th class="r">Unit cost</th><th class="r">Line total</th></tr></thead>
+            <tbody id="lines"></tbody>
+            <tfoot><tr><td colspan="5" class="r" style="font-weight:600;color:var(--muted)">Total</td><td class="r mono" style="font-weight:700">$3,842.50</td></tr></tfoot>
+          </table></div>
+        </section>
+
+        <p class="mono" style="font-size:11.5px;color:var(--muted-2);margin-top:16px">Created 02 Nov 2025, 2:14pm · Updated 04 Nov 2025, 9:30am</p>
+      </div>
+    </main>
+  </div>
+</div>
+
+<div class="modal-scrim" id="m-receive">
+  <div class="modal">
+    <div class="modal-head"><h3>Receive goods</h3><button class="x" onclick="closeModal('m-receive')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button></div>
+    <div class="modal-body">
+      <p style="font-size:13.5px;color:var(--muted);margin:0 0 16px">Enter the quantity received for each outstanding line.</p>
+      <div id="receive-lines"></div>
+    </div>
+    <div class="modal-foot"><button class="btn btn-quiet" onclick="closeModal('m-receive')">Cancel</button><button class="btn btn-primary" onclick="closeModal('m-receive');toast('Goods received and stock updated.')">Confirm receipt</button></div>
+  </div>
+</div>
+<div class="toast ok" id="toast"></div>
+<script src="shell.js" data-active="po" data-title="PO-2048"></script>
+<script>
+const LINES=[
+  {d:'Brake disc — front (NPR)',o:6,r:0,u:118.00},
+  {d:'Brake pads — front set',o:6,r:0,u:64.50},
+  {d:'Brake disc — rear (NPR)',o:6,r:6,u:96.00},
+  {d:'Brake fluid DOT4 — 1L',o:12,r:0,u:14.20},
+  {d:'Caliper grease — tub',o:2,r:0,u:22.50},
+];
+function money(n){return '$'+n.toLocaleString('en-NZ',{minimumFractionDigits:2,maximumFractionDigits:2});}
+document.getElementById('lines').innerHTML=LINES.map(l=>{const out=l.o-l.r;return `<tr>
+  <td><span class="cust" style="font-weight:500">${l.d}</span></td>
+  <td class="r mono">${l.o}</td><td class="r mono">${l.r}</td>
+  <td class="r mono" style="font-weight:600;color:${out>0?'var(--warn)':'var(--ok)'}">${out}</td>
+  <td class="r mono">${money(l.u)}</td><td class="r mono" style="font-weight:600">${money(l.o*l.u)}</td>
+</tr>`;}).join('');
+document.getElementById('receive-lines').innerHTML=LINES.filter(l=>l.o-l.r>0).map(l=>`<div style="display:flex;align-items:center;gap:12px;padding:11px 0;border-bottom:1px solid var(--border)">
+  <div style="flex:1"><div style="font-size:13.5px;font-weight:500">${l.d}</div><div style="font-size:12px;color:var(--muted)">Outstanding: ${l.o-l.r}</div></div>
+  <input class="input mono" style="width:80px;text-align:right" value="${l.o-l.r}">
+</div>`).join('');
+function openModal(id){document.getElementById(id).classList.add('open');}
+function closeModal(id){document.getElementById(id).classList.remove('open');}
+document.querySelectorAll('.modal-scrim').forEach(s=>s.addEventListener('click',e=>{if(e.target===s)s.classList.remove('open');}));
+let tt;function toast(m){const t=document.getElementById('toast');t.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><span>'+m+'</span>';t.classList.add('show');clearTimeout(tt);tt=setTimeout(()=>t.classList.remove('show'),2600);}
+</script>
+</body>
+</html>

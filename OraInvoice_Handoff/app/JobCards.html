@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+.board { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; align-items: start; }
+.col { background: var(--canvas); border: 1px solid var(--border); border-radius: var(--r-card); padding: 12px; }
+.col-head { display: flex; align-items: center; gap: 8px; padding: 4px 6px 12px; }
+.col-head .dot { width: 8px; height: 8px; border-radius: 50%; }
+.col-head .t { font-size: 13px; font-weight: 600; }
+.col-head .n { font-family: var(--mono); font-size: 11px; color: var(--muted); background: var(--card); border: 1px solid var(--border); padding: 1px 7px; border-radius: 20px; margin-left: auto; }
+.jcard { background: var(--card); border: 1px solid var(--border); border-radius: var(--r-ctl); padding: 13px; margin-bottom: 10px; box-shadow: var(--shadow-card); cursor: pointer; transition: border-color .14s, transform .04s; }
+.jcard:hover { border-color: var(--border-strong); }
+.jcard:active { transform: scale(.99); }
+.jcard .jid { font-family: var(--mono); font-size: 11px; color: var(--muted-2); }
+.jcard .jt { font-size: 13.5px; font-weight: 600; margin: 4px 0 6px; }
+.jcard .jsub { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+.jcard .jfoot { display: flex; align-items: center; justify-content: space-between; margin-top: 11px; padding-top: 11px; border-top: 1px solid var(--border); }
+.jcard .pri { font-family: var(--mono); font-size: 11px; font-weight: 500; padding: 1px 7px; border-radius: 6px; }
+.pri.high { background: var(--danger-soft); color: var(--danger); }
+.pri.med { background: var(--warn-soft); color: var(--warn); }
+.pri.low { background: #EEF0F4; color: var(--muted); }
+@media (max-width: 1080px) { .board { grid-template-columns: repeat(2,1fr); } }
+@media (max-width: 640px) { .board { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Job cards">
+        <div class="page-head">
+          <div><div class="eyebrow">Work</div><h1>Job Cards</h1><p class="sub">14 active · 6 due today · 2 awaiting parts</p></div>
+          <div class="head-actions">
+            <div class="seg"><button>List</button><button class="on">Board</button></div>
+            <a class="btn btn-primary btn-sm" href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>New job</a>
+          </div>
+        </div>
+        <div class="board" id="board"></div>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="jobs" data-title="Job Cards" data-primary="New job" data-primary-href="JobCardCreate.html"></script>
+<script>
+const COLS=[
+  {t:'Booked',dot:'var(--muted-2)',cards:[
+    {id:'JC-1189',t:'WOF + Service',c:'M. Taufa · Hilux',pri:'med',av:'MT',due:'Tomorrow'},
+    {id:'JC-1190',t:'Clutch replacement',c:'J. Patel · Civic',pri:'high',av:'JP',due:'14 Nov'},
+  ]},
+  {t:'In progress',dot:'var(--accent)',cards:[
+    {id:'JC-1187',t:'Brake service',c:'K. Williams · Corolla',pri:'med',av:'KW',due:'Today'},
+    {id:'JC-1186',t:'Cambelt + water pump',c:'Coastal Builders · Ranger',pri:'high',av:'CB',due:'Today'},
+    {id:'JC-1185',t:'Diagnostic — warning light',c:'L. Brown · Mazda',pri:'low',av:'LB',due:'15 Nov'},
+  ]},
+  {t:'Awaiting parts',dot:'var(--warn)',cards:[
+    {id:'JC-1182',t:'Turbo replacement',c:'Northland Freight · NPR',pri:'high',av:'NF',due:'Held'},
+    {id:'JC-1180',t:'A/C regas + compressor',c:'Whangarei Auto',pri:'med',av:'WA',due:'Held'},
+  ]},
+  {t:'Ready to invoice',dot:'var(--ok)',cards:[
+    {id:'JC-1184',t:'Fleet service ×3',c:'Northland Freight',pri:'med',av:'NF',due:'Done'},
+    {id:'JC-1179',t:'Tyre fitment ×4',c:'R. Singh · Outback',pri:'low',av:'RS',due:'Done'},
+  ]},
+];
+function init(c){const p=['#2F62F0','#1F8A5B','#E0683B','#6D5AE6','#B5740F'];let h=0;for(const ch of c)h=ch.charCodeAt(0)+((h<<5)-h);return p[Math.abs(h)%p.length];}
+const PL={high:'High',med:'Med',low:'Low'};
+document.getElementById('board').innerHTML=COLS.map(col=>`
+  <div class="col">
+    <div class="col-head"><span class="dot" style="background:${col.dot}"></span><span class="t">${col.t}</span><span class="n">${col.cards.length}</span></div>
+    ${col.cards.map(c=>`
+      <div class="jcard" onclick="location.href='JobCardDetail.html'">
+        <div class="jid">${c.id}</div>
+        <div class="jt">${c.t}</div>
+        <div class="jsub">${c.c}</div>
+        <div class="jfoot">
+          <span class="avatar-sm" style="background:${init(c.av)};width:24px;height:24px;font-size:10px">${c.av}</span>
+          <div style="display:flex;align-items:center;gap:7px"><span class="pri ${c.pri}">${PL[c.pri]}</span><span class="mono" style="font-size:11px;color:var(--muted)">${c.due}</span></div>
+        </div>
+      </div>`).join('')}
+  </div>`).join('');
+</script>
+</body>
+</html>

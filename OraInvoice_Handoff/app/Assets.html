@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Assets">
+        <div class="page-head"><div><div class="eyebrow">Operations</div><h1>Assets</h1><p class="sub">Workshop equipment & tools register</p></div><div class="head-actions"><button class="btn btn-primary btn-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>Add asset</button></div></div>
+        <div class="kpis"><div class="kpi"><div class="top"><span class="label">Total assets</span></div><div class="val" >64</div></div><div class="kpi"><div class="top"><span class="label">Book value</span></div><div class="val" ><span class="c">$</span>182k</div></div><div class="kpi"><div class="top"><span class="label">Service due</span></div><div class="val" style="color:var(--warn)">5</div></div><div class="kpi"><div class="top"><span class="label">Out of service</span></div><div class="val" style="color:var(--danger)">1</div></div></div>
+        <div class="toolbar"><div class="search-input" style="flex:1;max-width:320px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 21l-5-5m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg><input placeholder="Search…"></div><button class="filter-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 4h18M6 12h12M10 20h4"/></svg>Filters</button></div>
+<section class="card"><div class="tbl-wrap"><table><thead><tr><th class="">Asset</th><th class="">Tag</th><th class="">Category</th><th class="">Next service</th><th class="">Status</th><th class="r">Value</th></tr></thead><tbody><tr class="clickable" onclick="location.href='AssetDetail.html'"><td class=""><span class="cust">2-post hoist — Bay 1</span></td><td class=""><span class="id">AST-012</span></td><td class=""><span class="mono" style="color:var(--muted)">Lifting</span></td><td class=""><span class="mono" style="color:var(--muted)">Jan 2026</span></td><td class=""><span class="badge active"><span class="b-dot"></span>In service</span></td><td class="r"><span class="amt">$8,400</span></td></tr><tr class="clickable" onclick="location.href='AssetDetail.html'"><td class=""><span class="cust">Wheel aligner</span></td><td class=""><span class="id">AST-008</span></td><td class=""><span class="mono" style="color:var(--muted)">Diagnostic</span></td><td class=""><span class="mono" style="color:var(--muted)">22 Nov</span></td><td class=""><span class="badge warn"><span class="b-dot"></span>Service due</span></td><td class="r"><span class="amt">$22,000</span></td></tr><tr class="clickable" onclick="location.href='AssetDetail.html'"><td class=""><span class="cust">Tyre changer</span></td><td class=""><span class="id">AST-019</span></td><td class=""><span class="mono" style="color:var(--muted)">Tyre</span></td><td class=""><span class="mono" style="color:var(--muted)">Mar 2026</span></td><td class=""><span class="badge active"><span class="b-dot"></span>In service</span></td><td class="r"><span class="amt">$6,200</span></td></tr><tr class="clickable" onclick="location.href='AssetDetail.html'"><td class=""><span class="cust">A/C recharge unit</span></td><td class=""><span class="id">AST-024</span></td><td class=""><span class="mono" style="color:var(--muted)">—</span></td><td class=""><span class="mono" style="color:var(--muted)">—</span></td><td class=""><span class="badge failed"><span class="b-dot"></span>Out of service</span></td><td class="r"><span class="amt">$3,900</span></td></tr></tbody></table></div></section>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="" data-title="Assets" data-primary="Add asset"></script>
+<script>
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));t.classList.add('on');}));
+</script>
+</body>
+</html>

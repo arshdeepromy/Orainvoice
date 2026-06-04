@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+.ppsr-hero{display:grid;grid-template-columns:1fr 300px;gap:var(--gap);align-items:stretch;margin-bottom:var(--gap)}
+@media(max-width:860px){.ppsr-hero{grid-template-columns:1fr}}
+.search-box{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap}
+.search-box .field{flex:1;min-width:160px}
+.result-banner{display:flex;align-items:center;gap:14px;padding:16px 20px;border-radius:var(--r-card);margin-bottom:var(--gap)}
+.result-banner.clear{background:var(--ok-soft);border:1px solid rgba(31,138,91,.2)}
+.result-banner.found{background:var(--warn-soft);border:1px solid rgba(181,116,15,.25)}
+.result-banner .ic{width:42px;height:42px;border-radius:11px;display:grid;place-items:center;flex-shrink:0}
+.result-banner.clear .ic{background:var(--ok);color:#fff}
+.result-banner.found .ic{background:var(--warn);color:#fff}
+.result-banner .t{font-size:15px;font-weight:600}
+.result-banner .s{font-size:13px;color:var(--muted);margin-top:2px}
+.fs-card{border:1px solid var(--border);border-radius:var(--r-ctl);padding:16px;margin-bottom:12px}
+.fs-card .h{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.fs-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px 26px}
+@media(max-width:600px){.fs-grid{grid-template-columns:1fr}}
+.fs-grid .k{font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted-2);margin-bottom:3px}
+.fs-grid .v{font-size:13.5px;font-weight:500}
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page" data-screen-label="PPSR search">
+        <div class="page-head">
+          <div><div class="eyebrow">Vehicles · Compliance</div><h1>PPSR search</h1><p class="sub">Personal Property Securities Register · 42 searches this month · $1.20 each</p></div>
+          <div class="head-actions"><button class="btn btn-ghost btn-sm">Usage &amp; billing</button></div>
+        </div>
+
+        <div class="ppsr-hero">
+          <section class="card">
+            <div class="card-head"><h2>New search</h2></div>
+            <div class="card-body">
+              <div class="search-box">
+                <div class="field"><label>Search by</label><select class="select"><option>Vehicle registration</option><option>VIN / chassis</option><option>Debtor name</option></select></div>
+                <div class="field"><label>Registration plate</label><input class="input mono" value="KMR-218" /></div>
+                <button class="btn btn-primary" style="height:42px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 21l-5-5m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>Search register</button>
+              </div>
+              <p class="hint" style="margin-top:12px">A certified PPSR search result is generated and stored against the vehicle record. Each search is billed at the standard government fee.</p>
+            </div>
+          </section>
+          <div class="kpi" style="display:flex;flex-direction:column;justify-content:center">
+            <div class="top"><span class="label">Searches this month</span><span class="ico blue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M21 21l-5-5m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg></span></div>
+            <div class="val">42</div>
+            <div class="delta"><span class="since">$50.40 billed · 6 secured</span></div>
+          </div>
+        </div>
+
+        <div class="result-banner found">
+          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" width="22" height="22"><path d="M12 9v4m0 4h.01M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L14.7 3.9a2 2 0 00-3.4 0z"/></svg></div>
+          <div style="flex:1"><div class="t">1 active financing statement found</div><div class="s">This vehicle has a registered security interest. Review before purchase or trade-in.</div></div>
+          <span class="mono" style="font-size:11px;color:var(--muted)">Searched 2 Jun 2026 · 09:14</span>
+        </div>
+
+        <div class="detail-grid">
+          <div class="stack">
+            <section class="card">
+              <div class="card-head"><h2>Financing statements</h2><span class="badge warn"><span class="b-dot"></span>1 secured</span></div>
+              <div class="card-body">
+                <div class="fs-card">
+                  <div class="h"><div class="row-flex"><span class="badge warn"><span class="b-dot"></span>Active</span><span class="cust">UDC Finance Limited</span></div><span class="id">FS 7C8K-2291-AA</span></div>
+                  <div class="fs-grid">
+                    <div><div class="k">Secured party</div><div class="v">UDC Finance Limited</div></div>
+                    <div><div class="k">Debtor</div><div class="v">Northland Freight Ltd</div></div>
+                    <div><div class="k">Registered</div><div class="v mono">14 Mar 2024</div></div>
+                    <div><div class="k">Expires</div><div class="v mono">14 Mar 2029</div></div>
+                    <div><div class="k">Collateral type</div><div class="v">Motor vehicle</div></div>
+                    <div><div class="k">Collateral</div><div class="v">All present &amp; after-acquired</div></div>
+                  </div>
+                </div>
+                <p class="hint">Source: NZ Companies Office PPSR. Results are point-in-time and stored against the vehicle record for audit.</p>
+              </div>
+            </section>
+
+            <section class="card">
+              <div class="card-head"><h2>Recent searches</h2><a class="link" href="#">Export log</a></div>
+              <div class="tbl-wrap"><table>
+                <thead><tr><th>Reference</th><th>Search term</th><th>Type</th><th>Result</th><th>Searched by</th><th class="r">Date</th></tr></thead>
+                <tbody>
+                  <tr class="clickable"><td><span class="id">SR-10428</span></td><td><span class="mono">KMR-218</span></td><td>Rego</td><td><span class="badge warn"><span class="b-dot"></span>1 secured</span></td><td>A. Roberts</td><td class="r"><span class="mono" style="color:var(--muted)">2 Jun 09:14</span></td></tr>
+                  <tr class="clickable"><td><span class="id">SR-10427</span></td><td><span class="mono">NPR-447</span></td><td>Rego</td><td><span class="badge ok"><span class="b-dot"></span>Clear</span></td><td>A. Roberts</td><td class="r"><span class="mono" style="color:var(--muted)">2 Jun 08:51</span></td></tr>
+                  <tr class="clickable"><td><span class="id">SR-10421</span></td><td><span class="mono">1HGBH41···</span></td><td>VIN</td><td><span class="badge ok"><span class="b-dot"></span>Clear</span></td><td>S. Faleolo</td><td class="r"><span class="mono" style="color:var(--muted)">1 Jun 16:30</span></td></tr>
+                  <tr class="clickable"><td><span class="id">SR-10418</span></td><td><span class="mono">BTR-905</span></td><td>Rego</td><td><span class="badge warn"><span class="b-dot"></span>2 secured</span></td><td>A. Roberts</td><td class="r"><span class="mono" style="color:var(--muted)">1 Jun 11:02</span></td></tr>
+                </tbody>
+              </table></div>
+            </section>
+          </div>
+
+          <aside class="stack">
+            <section class="card">
+              <div class="card-head"><h2>Vehicle</h2><a class="link" href="VehicleDetail.html">Open record</a></div>
+              <div class="card-body">
+                <div class="meta-row"><span class="k">Plate</span><span class="v mono">KMR-218</span></div>
+                <div class="meta-row"><span class="k">Make / model</span><span class="v">Toyota Corolla</span></div>
+                <div class="meta-row"><span class="k">Year</span><span class="v mono">2019</span></div>
+                <div class="meta-row"><span class="k">VIN</span><span class="v mono">JTDBR32E···</span></div>
+                <div class="meta-row"><span class="k">Owner</span><span class="v">Northland Freight</span></div>
+              </div>
+            </section>
+            <section class="card">
+              <div class="card-head"><h2>Actions</h2></div>
+              <div class="card-body stack" style="gap:10px">
+                <button class="btn btn-ghost" style="justify-content:flex-start"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>Download certificate</button>
+                <button class="btn btn-ghost" style="justify-content:flex-start"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16v16H4z M22 6l-10 7L2 6"/></svg>Email to customer</button>
+                <button class="btn btn-ghost" style="justify-content:flex-start"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 12h6m-3-3v6M5 8h14l-1 12H6L5 8z M9 8V5a3 3 0 016 0v3"/></svg>Attach to job card</button>
+              </div>
+            </section>
+          </aside>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="vehicles" data-title="PPSR search"></script>
+</body>
+</html>

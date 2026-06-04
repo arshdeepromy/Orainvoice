@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Locations">
+        <div class="page-head"><div><div class="eyebrow">Multi-site</div><h1>Locations</h1><p class="sub">3 branches in the group</p></div><div class="head-actions"><button class="btn btn-primary btn-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>Add location</button></div></div>
+<section class="card"><div class="tbl-wrap"><table><thead><tr><th class="">Location</th><th class="">Address</th><th class="">Manager</th><th class="r">Staff</th><th class="">Status</th></tr></thead><tbody><tr class="clickable" onclick="location.href='LocationDetail.html'"><td class=""><span class="cust">Kerikeri</span></td><td class=""><span class="mono" style="color:var(--muted)">14 Hone Heke Rd</span></td><td class="">Arsh R.</td><td class="r"><span class="amt">12</span></td><td class=""><span class="badge active"><span class="b-dot"></span>Open</span></td></tr><tr class="clickable" onclick="location.href='LocationDetail.html'"><td class=""><span class="cust">Whangarei</span></td><td class=""><span class="mono" style="color:var(--muted)">88 Port Rd</span></td><td class="">Mere W.</td><td class="r"><span class="amt">16</span></td><td class=""><span class="badge active"><span class="b-dot"></span>Open</span></td></tr><tr class="clickable" onclick="location.href='LocationDetail.html'"><td class=""><span class="cust">Kaitaia</span></td><td class=""><span class="mono" style="color:var(--muted)">5 Commerce St</span></td><td class="">Sam P.</td><td class="r"><span class="amt">8</span></td><td class=""><span class="badge active"><span class="b-dot"></span>Open</span></td></tr></tbody></table></div></section>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="" data-title="Locations" data-primary="Add location"></script>
+<script>
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));t.classList.add('on');}));
+</script>
+</body>
+</html>

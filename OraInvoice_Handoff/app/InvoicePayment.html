@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Pay invoice INV-2041 · Kerikeri Motors</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+  body { background: var(--canvas); }
+  .pub-top { background: var(--card); border-bottom: 1px solid var(--border); }
+  .pub-top .in { max-width: 1080px; margin: 0 auto; padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; }
+  .pub-brand { display: flex; align-items: center; gap: 11px; }
+  .pub-brand .m { width: 34px; height: 34px; border-radius: 9px; background: var(--accent); display: grid; place-items: center; color: #fff; }
+  .pub-brand .m svg { width: 19px; height: 19px; }
+  .pub-brand .n { font-size: 16px; font-weight: 700; }
+  .pub-brand .s { font-size: 12px; color: var(--muted); }
+  .secure { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--muted); font-weight: 500; }
+  .secure svg { width: 15px; height: 15px; color: var(--ok); }
+
+  .pub-wrap { max-width: 1080px; margin: 0 auto; padding: 32px 24px 64px; display: grid; grid-template-columns: 1fr 380px; gap: 28px; align-items: start; }
+  .doc { background: var(--card); border: 1px solid var(--border); border-radius: var(--r-card); box-shadow: var(--shadow-card); padding: 40px; }
+  .doc-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 32px; }
+  .doc-title .lbl { font-family: var(--mono); font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted-2); text-align: right; }
+  .doc-title .num { font-family: var(--mono); font-size: 22px; font-weight: 600; margin-top: 4px; text-align: right; }
+  .doc-parties { display: grid; grid-template-columns: 1fr 1fr; gap: 30px; margin-bottom: 28px; }
+  .party .lbl { font-family: var(--mono); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted-2); margin-bottom: 8px; }
+  .party .name { font-size: 15px; font-weight: 600; }
+  .party .det { font-size: 13px; color: var(--muted); line-height: 1.6; margin-top: 3px; }
+  .party.r { text-align: right; }
+  .li-tbl { width: 100%; border-collapse: collapse; margin-bottom: 24px; }
+  .li-tbl th { text-align: left; font-family: var(--mono); font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted-2); padding: 0 0 10px; border-bottom: 1.5px solid var(--border-strong); }
+  .li-tbl th.r, .li-tbl td.r { text-align: right; }
+  .li-tbl td { padding: 13px 0; border-bottom: 1px solid var(--border); font-size: 13.5px; }
+  .li-tbl .desc { font-weight: 500; }
+  .li-tbl .sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .doc-tot { display: flex; justify-content: flex-end; }
+  .tot-box { width: 280px; }
+  .tot-row { display: flex; justify-content: space-between; padding: 8px 0; font-size: 13.5px; }
+  .tot-row .k { color: var(--muted); } .tot-row .v { font-family: var(--mono); font-weight: 500; }
+  .tot-row.grand { border-top: 1.5px solid var(--border-strong); margin-top: 6px; padding-top: 12px; font-size: 17px; font-weight: 700; } .tot-row.grand .v { font-size: 17px; font-weight: 700; }
+
+  .pay-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--r-card); box-shadow: var(--shadow-card); position: sticky; top: 24px; overflow: hidden; }
+  .pay-card .due { padding: 22px 24px; border-bottom: 1px solid var(--border); }
+  .pay-card .due .k { font-size: 12.5px; color: var(--muted); }
+  .pay-card .due .v { font-family: var(--mono); font-size: 32px; font-weight: 600; letter-spacing: -.02em; margin-top: 4px; }
+  .pay-card .due .badge { margin-top: 10px; }
+  .pay-body { padding: 22px 24px; }
+  .seg-pay { display: flex; gap: 8px; margin-bottom: 18px; }
+  .seg-pay button { flex: 1; height: 60px; border: 1.5px solid var(--border); border-radius: var(--r-ctl); background: var(--card); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; font-family: inherit; font-size: 12px; font-weight: 600; color: var(--muted); }
+  .seg-pay button svg { width: 19px; height: 19px; }
+  .seg-pay button.on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+  .card-input { border: 1px solid var(--border); border-radius: var(--r-ctl); overflow: hidden; }
+  .card-input .top { display: flex; align-items: center; gap: 9px; height: 44px; padding: 0 13px; border-bottom: 1px solid var(--border); }
+  .card-input .top input { border: none; outline: none; font-family: var(--mono); font-size: 14px; width: 100%; background: none; }
+  .card-input .row { display: flex; }
+  .card-input .row input { border: none; outline: none; height: 44px; padding: 0 13px; font-family: var(--mono); font-size: 14px; width: 100%; background: none; }
+  .card-input .row input:first-child { border-right: 1px solid var(--border); }
+  .pay-meta { font-size: 11.5px; color: var(--muted-2); text-align: center; margin-top: 16px; line-height: 1.6; }
+  .pay-meta svg { width: 13px; height: 13px; vertical-align: -2px; }
+  .bank-row { display: flex; justify-content: space-between; padding: 9px 0; font-size: 13px; border-bottom: 1px solid var(--border); }
+  .bank-row:last-child { border: none; } .bank-row .k { color: var(--muted); } .bank-row .v { font-family: var(--mono); font-weight: 500; }
+  @media (max-width: 880px) { .pub-wrap { grid-template-columns: 1fr; } .pay-card { position: static; } .doc { padding: 26px; } }
+</style>
+</head>
+<body>
+<div class="pub-top"><div class="in">
+  <div class="pub-brand">
+    <div class="m"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h7l5 5v11a2 2 0 01-2 2z"/></svg></div>
+    <div><div class="n">Kerikeri Motors</div><div class="s">Invoice INV-2041</div></div>
+  </div>
+  <span class="secure"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 15a2 2 0 100-4 2 2 0 000 4zm6-5V7a6 6 0 00-12 0v3M5 10h14a1 1 0 011 1v9a1 1 0 01-1 1H5a1 1 0 01-1-1v-9a1 1 0 011-1z"/></svg>Secure payment</span>
+</div></div>
+
+<div class="pub-wrap">
+  <!-- Invoice document -->
+  <div class="doc">
+    <div class="doc-top">
+      <div class="party"><div class="lbl">From</div><div class="name">Kerikeri Motors</div><div class="det">14 Hone Heke Rd, Kerikeri 0230<br/>GST 102-845-771</div></div>
+      <div class="doc-title"><div class="lbl">Tax Invoice</div><div class="num">INV-2041</div></div>
+    </div>
+    <div class="doc-parties">
+      <div class="party"><div class="lbl">Billed to</div><div class="name">Sarah Whitmore</div><div class="det">22 Cobham Rd, Kerikeri 0230<br/>sarah.w@gmail.com</div></div>
+      <div class="party r"><div class="lbl">Details</div><div class="det">Issued&nbsp;&nbsp;<b style="color:var(--text)">18 Nov 2025</b><br/>Due&nbsp;&nbsp;<b style="color:var(--text)">02 Dec 2025</b><br/>Vehicle&nbsp;&nbsp;<b style="color:var(--text)">ABC123 · Toyota Hilux</b></div></div>
+    </div>
+    <table class="li-tbl">
+      <thead><tr><th>Description</th><th class="r">Qty</th><th class="r">Unit</th><th class="r">Amount</th></tr></thead>
+      <tbody>
+        <tr><td><div class="desc">WoF inspection</div><div class="sub">Warrant of Fitness</div></td><td class="r mono">1</td><td class="r mono">$70.00</td><td class="r mono">$70.00</td></tr>
+        <tr><td><div class="desc">Full service</div><div class="sub">Oil, filter, 30-point check</div></td><td class="r mono">1</td><td class="r mono">$245.00</td><td class="r mono">$245.00</td></tr>
+        <tr><td><div class="desc">Front brake pads</div><div class="sub">OEM · fitted</div></td><td class="r mono">1</td><td class="r mono">$180.00</td><td class="r mono">$180.00</td></tr>
+        <tr><td><div class="desc">Wiper blades (pair)</div><div class="sub"></div></td><td class="r mono">1</td><td class="r mono">$38.00</td><td class="r mono">$38.00</td></tr>
+      </tbody>
+    </table>
+    <div class="doc-tot"><div class="tot-box">
+      <div class="tot-row"><span class="k">Subtotal</span><span class="v">$463.48</span></div>
+      <div class="tot-row"><span class="k">GST 15%</span><span class="v">$69.52</span></div>
+      <div class="tot-row grand"><span class="k">Total NZD</span><span class="v">$533.00</span></div>
+    </div></div>
+  </div>
+
+  <!-- Pay panel -->
+  <div class="pay-card">
+    <div class="due">
+      <div class="k">Amount due</div>
+      <div class="v">$533.00</div>
+      <span class="badge warn"><span class="b-dot"></span>Due in 14 days</span>
+    </div>
+    <div class="pay-body">
+      <div class="seg-pay" id="seg-pay">
+        <button class="on" data-m="card" onclick="payMethod('card')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 10h18M3 7h18v10a1 1 0 01-1 1H4a1 1 0 01-1-1z"/></svg>Card</button>
+        <button data-m="bank" onclick="payMethod('bank')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21h18M5 21V10m14 11V10M3 10l9-7 9 7M9 21v-6h6v6"/></svg>Bank transfer</button>
+      </div>
+
+      <!-- Card -->
+      <div id="pay-card-form">
+        <div class="field" style="margin-bottom:12px"><label>Cardholder name</label><input class="input" placeholder="Name on card" /></div>
+        <label style="font-size:12.5px;font-weight:500;display:block;margin-bottom:7px">Card details</label>
+        <div class="card-input">
+          <div class="top"><svg viewBox="0 0 24 24" width="18" fill="none" stroke="var(--muted-2)" stroke-width="2"><path d="M3 10h18M3 7h18v10a1 1 0 01-1 1H4a1 1 0 01-1-1z"/></svg><input placeholder="1234 1234 1234 1234" /></div>
+          <div class="row"><input placeholder="MM / YY" /><input placeholder="CVC" /></div>
+        </div>
+        <button class="btn btn-primary btn-lg btn-block" style="margin-top:16px;width:100%" onclick="paid()">Pay $533.00</button>
+        <div class="pay-meta"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 15a2 2 0 100-4 2 2 0 000 4zm6-5V7a6 6 0 00-12 0v3M5 10h14a1 1 0 011 1v9a1 1 0 01-1 1H5a1 1 0 01-1-1v-9a1 1 0 011-1z"/></svg> Payments are encrypted &amp; processed securely by Stripe. A 1.9% surcharge applies to card payments.</div>
+      </div>
+
+      <!-- Bank -->
+      <div id="pay-bank-form" style="display:none">
+        <p style="font-size:13px;color:var(--muted);margin:0 0 14px">Transfer to the account below using <b style="color:var(--text)">INV-2041</b> as the reference.</p>
+        <div class="bank-row"><span class="k">Account name</span><span class="v">Kerikeri Motors Ltd</span></div>
+        <div class="bank-row"><span class="k">Account no.</span><span class="v">12-3456-0078901-00</span></div>
+        <div class="bank-row"><span class="k">Reference</span><span class="v">INV-2041</span></div>
+        <div class="bank-row"><span class="k">Amount</span><span class="v">$533.00</span></div>
+        <div class="pay-meta" style="margin-top:14px">No surcharge on bank transfers. Allow 1–2 business days to clear.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Success overlay -->
+<div class="modal-scrim" id="ok-modal">
+  <div class="modal" style="text-align:center">
+    <div class="modal-body" style="padding:36px 28px">
+      <div style="width:62px;height:62px;border-radius:50%;background:var(--ok-soft);display:grid;place-items:center;margin:0 auto 18px"><svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="var(--ok)" stroke-width="2.2"><path d="M20 6L9 17l-5-5"/></svg></div>
+      <h3 style="font-size:20px;font-weight:700">Payment received</h3>
+      <p style="font-size:13.5px;color:var(--muted);margin:8px 0 0">Thanks, Sarah. We've emailed a receipt for <b style="color:var(--text)">$533.00</b> to sarah.w@gmail.com.</p>
+      <button class="btn btn-ghost btn-block" style="margin-top:22px;width:100%" onclick="document.getElementById('ok-modal').classList.remove('open')">Done</button>
+    </div>
+  </div>
+</div>
+
+<script>
+function payMethod(m) {
+  document.querySelectorAll('#seg-pay button').forEach(b => b.classList.toggle('on', b.dataset.m === m));
+  document.getElementById('pay-card-form').style.display = m === 'card' ? 'block' : 'none';
+  document.getElementById('pay-bank-form').style.display = m === 'bank' ? 'block' : 'none';
+}
+function paid() { document.getElementById('ok-modal').classList.add('open'); }
+document.getElementById('ok-modal').addEventListener('click', e => { if (e.target.id === 'ok-modal') e.target.classList.remove('open'); });
+</script>
+</body>
+</html>

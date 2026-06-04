@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Stock transfers">
+        <div class="page-head"><div><div class="eyebrow">Multi-site</div><h1>Stock transfers</h1><p class="sub">Inter-branch stock movements</p></div><div class="head-actions"><button class="btn btn-primary btn-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>New transfer</button></div></div>
+<section class="card"><div class="tbl-wrap"><table><thead><tr><th class="">Transfer</th><th class="">From</th><th class="">To</th><th class="r">Items</th><th class="">Status</th></tr></thead><tbody><tr class="clickable" onclick="location.href='TransferDetail.html'"><td class=""><span class="id">TR-44</span></td><td class="">Whangarei</td><td class="">Kerikeri</td><td class="r"><span class="amt">12</span></td><td class=""><span class="badge inprogress"><span class="b-dot"></span>In transit</span></td></tr><tr class="clickable" onclick="location.href='TransferDetail.html'"><td class=""><span class="id">TR-43</span></td><td class="">Kerikeri</td><td class="">Kaitaia</td><td class="r"><span class="amt">5</span></td><td class=""><span class="badge success"><span class="b-dot"></span>Received</span></td></tr></tbody></table></div></section>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="" data-title="Stock transfers" data-primary="New transfer"></script>
+<script>
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));t.classList.add('on');}));
+</script>
+</body>
+</html>

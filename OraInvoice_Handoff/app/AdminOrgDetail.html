@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+  .org-hero { display: flex; align-items: center; gap: 16px; }
+  .org-hero .big-av { width: 56px; height: 56px; border-radius: 15px; display: grid; place-items: center; color: #fff; font-weight: 700; font-size: 20px; flex-shrink: 0; }
+  .sub-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: var(--gap); }
+  .sub-tabs .t { padding: 10px 14px; font-size: 13.5px; font-weight: 500; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; cursor: pointer; }
+  .sub-tabs .t.on { color: var(--accent); border-bottom-color: var(--accent); }
+  .danger-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 14px 0; border-bottom: 1px solid var(--border); }
+  .danger-row:last-child { border-bottom: none; }
+  .danger-row .t { font-size: 13.5px; font-weight: 600; } .danger-row .d { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+  .usage-bar { height: 8px; border-radius: 20px; background: var(--border); overflow: hidden; margin-top: 8px; }
+  .usage-bar > i { display: block; height: 100%; border-radius: 20px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Admin · Org detail">
+        <div class="crumbs"><a href="AdminOrganisations.html">Organisations</a><span class="sep">/</span><span style="color:var(--text)">Kerikeri Motors</span></div>
+        <div class="page-head">
+          <div class="org-hero">
+            <div class="big-av" style="background:#2F62F0">KM</div>
+            <div>
+              <div style="display:flex;align-items:center;gap:10px"><h1>Kerikeri Motors</h1><span class="badge active"><span class="b-dot"></span>Active</span><span class="badge sent"><span class="b-dot"></span>Pro</span></div>
+              <p class="sub mono">org_8f2a · created 14 Mar 2021 · 14 Hone Heke Rd, Kerikeri</p>
+            </div>
+          </div>
+          <div class="head-actions">
+            <button class="btn btn-ghost btn-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h6v6M10 14L21 3M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/></svg>Impersonate</button>
+            <button class="btn btn-ghost btn-sm">Change plan</button>
+            <button class="btn btn-primary btn-sm">Manage</button>
+          </div>
+        </div>
+
+        <div class="sub-tabs">
+          <div class="t on">Overview</div><div class="t">Users</div><div class="t">Subscription</div><div class="t">Usage</div><div class="t">Audit</div>
+        </div>
+
+        <div class="kpis">
+          <div class="kpi"><div class="top"><span class="label">MRR</span><span class="ico green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg></span></div><div class="val"><span class="c">$</span>79</div><div class="delta"><span class="since">Pro · monthly</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">Seats used</span><span class="ico blue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 20h5v-2a3 3 0 00-5.4-1.9M17 20H7m10 0v-2c0-.7-.1-1.3-.4-1.9M7 20H2v-2a3 3 0 015.4-1.9"/></svg></span></div><div class="val">12<span class="c"> / 12</span></div><div class="delta down"><span>Full</span><span class="since">upgrade suggested</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">Invoices (30d)</span><span class="ico purple"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h7l5 5v11a2 2 0 01-2 2z"/></svg></span></div><div class="val">184</div><div class="delta up"><span>↗ 12%</span><span class="since">$96.4k billed</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">Last active</span><span class="ico amber"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></span></div><div class="val" style="font-size:20px">2h ago</div><div class="delta"><span class="since">healthy engagement</span></div></div>
+        </div>
+
+        <div class="detail-grid">
+          <div class="stack">
+            <section class="card">
+              <div class="card-head"><h2>Users</h2><a class="link" href="#">Manage all 12</a></div>
+              <div class="tbl-wrap"><table>
+                <thead><tr><th>Name</th><th>Role</th><th>Last sign-in</th><th>Status</th></tr></thead>
+                <tbody>
+                  <tr><td><div class="row-flex"><span class="avatar-sm" style="background:#2F62F0">AR</span><div class="cell-2"><span class="cust">Arsh Randhawa</span><span class="s">arsh@kerikerimotors.co.nz</span></div></div></td><td>Org Admin</td><td class="mono" style="color:var(--muted)">2h ago</td><td><span class="badge active"><span class="b-dot"></span>Active</span></td></tr>
+                  <tr><td><div class="row-flex"><span class="avatar-sm" style="background:#6D5AE6">DM</span><div class="cell-2"><span class="cust">Dave Mceachern</span><span class="s">dave@kerikerimotors.co.nz</span></div></div></td><td>Salesperson</td><td class="mono" style="color:var(--muted)">5h ago</td><td><span class="badge active"><span class="b-dot"></span>Active</span></td></tr>
+                  <tr><td><div class="row-flex"><span class="avatar-sm" style="background:#1F8A5B">AS</span><div class="cell-2"><span class="cust">Anika Sharma</span><span class="s">anika@kerikerimotors.co.nz</span></div></div></td><td>Bookkeeper</td><td class="mono" style="color:var(--muted)">1d ago</td><td><span class="badge active"><span class="b-dot"></span>Active</span></td></tr>
+                  <tr><td><div class="row-flex"><span class="avatar-sm" style="background:#B5740F">MW</span><div class="cell-2"><span class="cust">Mere Wiki</span><span class="s">mere@kerikerimotors.co.nz</span></div></div></td><td>Location Manager</td><td class="mono" style="color:var(--muted)">3d ago</td><td><span class="badge pending"><span class="b-dot"></span>Invited</span></td></tr>
+                </tbody>
+              </table></div>
+            </section>
+
+            <section class="card">
+              <div class="card-head"><h2>Recent activity</h2></div>
+              <div class="card-body">
+                <div class="timeline">
+                  <div class="tl-item accent"><div class="t">Plan renewed — Pro monthly</div><div class="s">$79.00 · Visa •••• 4242</div><div class="time">01 Nov, 2:00am</div></div>
+                  <div class="tl-item"><div class="t">Seat limit reached (12/12)</div><div class="s">Upgrade prompt shown to admin</div><div class="time">28 Oct, 11:20am</div></div>
+                  <div class="tl-item"><div class="t">New user invited — Mere Wiki</div><div class="s">by Arsh Randhawa</div><div class="time">28 Oct, 9:05am</div></div>
+                  <div class="tl-item"><div class="t">Xero connection refreshed</div><div class="s">OAuth token renewed automatically</div><div class="time">24 Oct, 3:40am</div></div>
+                </div>
+              </div>
+            </section>
+          </div>
+
+          <div class="stack">
+            <section class="card"><div class="card-body">
+              <div class="section-label">Subscription</div>
+              <div class="meta-row"><span class="k">Plan</span><span class="v"><span class="badge sent"><span class="b-dot"></span>Pro · Monthly</span></span></div>
+              <div class="meta-row"><span class="k">Status</span><span class="v"><span class="badge active"><span class="b-dot"></span>Active</span></span></div>
+              <div class="meta-row"><span class="k">Renews</span><span class="v">01 Dec 2025</span></div>
+              <div class="meta-row"><span class="k">Payment</span><span class="v mono" style="font-weight:400">Visa •••• 4242</span></div>
+              <div class="meta-row"><span class="k">Lifetime value</span><span class="v mono">$4,108</span></div>
+            </div></section>
+
+            <section class="card"><div class="card-body">
+              <div class="section-label">Usage this month</div>
+              <div style="font-size:12.5px;color:var(--muted);display:flex;justify-content:space-between"><span>Storage</span><span class="mono">3.2 / 10 GB</span></div>
+              <div class="usage-bar"><i style="width:32%;background:var(--accent)"></i></div>
+              <div style="font-size:12.5px;color:var(--muted);display:flex;justify-content:space-between;margin-top:14px"><span>Emails sent</span><span class="mono">820 / 2,000</span></div>
+              <div class="usage-bar"><i style="width:41%;background:var(--ok)"></i></div>
+              <div style="font-size:12.5px;color:var(--muted);display:flex;justify-content:space-between;margin-top:14px"><span>API calls</span><span class="mono">47k / 50k</span></div>
+              <div class="usage-bar"><i style="width:94%;background:var(--warn)"></i></div>
+            </div></section>
+
+            <section class="card" style="border-color:var(--danger-soft)"><div class="card-body">
+              <div class="section-label" style="color:var(--danger)">Danger zone</div>
+              <div class="danger-row"><div><div class="t">Suspend organisation</div><div class="d">Blocks all sign-ins immediately</div></div><button class="btn btn-ghost btn-sm" style="color:var(--danger)">Suspend</button></div>
+              <div class="danger-row"><div><div class="t">Delete organisation</div><div class="d">Permanent · removes all data</div></div><button class="btn btn-danger btn-sm">Delete</button></div>
+            </div></section>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script src="shell.js" data-active="admin" data-title="Admin · Kerikeri Motors"></script>
+<script>
+document.querySelectorAll('.sub-tabs .t').forEach(t => t.addEventListener('click', () => {
+  document.querySelectorAll('.sub-tabs .t').forEach(x => x.classList.remove('on')); t.classList.add('on');
+}));
+</script>
+</body>
+</html>

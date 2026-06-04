@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+.content { overflow:hidden; }
+.ed { display:flex; flex-direction:column; height:100%; }
+.ed-bar { display:flex; align-items:center; gap:12px; padding:11px 18px; border-bottom:1px solid var(--border); background:var(--card); flex-shrink:0; }
+.ed-bar .ttl { font-size:14px; font-weight:600; }
+.ed-bar .slug { font-family:var(--mono); font-size:12px; color:var(--muted); }
+.ed-body { flex:1; display:flex; min-height:0; }
+.palette { width:212px; flex-shrink:0; border-right:1px solid var(--border); background:var(--card); overflow-y:auto; padding:14px 12px; }
+.palette .grp { font-family:var(--mono); font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--muted-2); margin:14px 4px 8px; }
+.palette .grp:first-child { margin-top:0; }
+.blk { display:flex; align-items:center; gap:10px; padding:9px 10px; border:1px solid var(--border); border-radius:var(--r-ctl); margin-bottom:7px; font-size:12.5px; font-weight:500; cursor:grab; background:var(--card); }
+.blk:hover { border-color:var(--accent); background:var(--accent-soft); color:var(--accent); }
+.blk svg { width:15px; height:15px; color:var(--muted); }
+.blk:hover svg { color:var(--accent); }
+.canvas-wrap { flex:1; overflow-y:auto; background:var(--canvas); display:flex; justify-content:center; padding:24px; min-width:0; }
+.canvas { width:100%; max-width:860px; background:#fff; border:1px solid var(--border); border-radius:10px; box-shadow:var(--shadow-card); overflow:hidden; height:max-content; }
+.canvas.mobile { max-width:380px; }
+.cblk { position:relative; padding:6px; border:2px solid transparent; cursor:pointer; }
+.cblk:hover { border-color:var(--accent-soft); }
+.cblk.sel { border-color:var(--accent); }
+.cblk .tag { position:absolute; top:-1px; left:-1px; background:var(--accent); color:#fff; font-size:10px; font-family:var(--mono); padding:1px 7px; border-radius:0 0 6px 0; opacity:0; }
+.cblk.sel .tag, .cblk:hover .tag { opacity:1; }
+.props { width:288px; flex-shrink:0; border-left:1px solid var(--border); background:var(--card); overflow-y:auto; padding:16px; }
+.dev-seg { display:inline-flex; background:var(--canvas); border:1px solid var(--border); border-radius:var(--r-ctl); padding:3px; }
+.dev-seg button { border:none; background:transparent; color:var(--muted); padding:5px 10px; border-radius:7px; }
+.dev-seg button.on { background:var(--card); color:var(--accent); box-shadow:var(--shadow-card); }
+/* canvas block visuals */
+.hero { background:linear-gradient(135deg,#0B1220,#1b2740); color:#fff; padding:54px 40px; text-align:center; }
+.hero h2 { font-size:30px; } .hero p { opacity:.8; margin:12px 0 0; font-size:15px; }
+.hero .b { display:inline-block; margin-top:20px; background:var(--accent); color:#fff; padding:11px 22px; border-radius:9px; font-weight:600; font-size:14px; }
+.fgrid { display:grid; grid-template-columns:repeat(3,1fr); gap:18px; padding:38px 40px; }
+.fgrid .f .ic { width:38px; height:38px; border-radius:10px; background:var(--accent-soft); margin-bottom:10px; }
+.fgrid .f h4 { font-size:14px; } .fgrid .f p { font-size:12.5px; color:var(--muted); margin:5px 0 0; }
+.cta { background:var(--accent-soft); padding:36px 40px; text-align:center; }
+.cta h3 { font-size:21px; } .cta .b { display:inline-block;margin-top:14px;background:var(--accent);color:#fff;padding:10px 20px;border-radius:9px;font-weight:600;font-size:13.5px; }
+.canvas.mobile .fgrid { grid-template-columns:1fr; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="ed">
+        <div class="ed-bar" data-screen-label="Page editor (visual)">
+          <a class="icon-btn btn-sm" href="PageEditorList.html" style="width:34px;height:34px" title="Back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg></a>
+          <div><div class="ttl">Workshops <span class="badge pending" style="margin-left:6px"><span class="b-dot"></span>Draft ahead</span></div><div class="slug">/workshop · editing draft v7</div></div>
+          <div style="flex:1"></div>
+          <div class="dev-seg" id="dev"><button class="on" data-d="desktop" title="Desktop"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg></button><button data-d="mobile" title="Mobile"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/></svg></button></div>
+          <button class="btn btn-ghost btn-sm" onclick="toast('Opening preview…')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>Preview</button>
+          <button class="btn btn-ghost btn-sm" onclick="toast('Draft saved.')">Save draft</button>
+          <button class="btn btn-primary btn-sm" onclick="toast('Page published — now live at /workshop.')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>Publish</button>
+        </div>
+
+        <div class="ed-body">
+          <!-- Palette -->
+          <div class="palette">
+            <div class="grp">Layout</div>
+            <div class="blk" draggable="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>Section</div>
+            <div class="blk" draggable="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="4" width="7" height="16"/><rect x="14" y="4" width="7" height="16"/></svg>Columns</div>
+            <div class="blk" draggable="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M3 12h18"/></svg>Divider</div>
+            <div class="blk" draggable="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M4 9h16M4 15h16"/></svg>Spacer</div>
+            <div class="grp">Content</div>
+            <div class="blk" draggable="true" onclick="addBlock('hero')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18"/></svg>Hero</div>
+            <div class="blk" draggable="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M4 7h16M4 12h10M4 17h7"/></svg>Heading</div>
+            <div class="blk" draggable="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M4 6h16M4 10h16M4 14h16M4 18h10"/></svg>Rich text</div>
+            <div class="blk" draggable="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="M21 15l-5-5L5 21"/></svg>Image</div>
+            <div class="blk" draggable="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M10 8l6 4-6 4z"/><rect x="3" y="4" width="18" height="16" rx="2"/></svg>Video embed</div>
+            <div class="grp">Marketing</div>
+            <div class="blk" draggable="true" onclick="addBlock('fgrid')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>Feature grid</div>
+            <div class="blk" draggable="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 8h6M9 12h6"/></svg>Pricing card</div>
+            <div class="blk" draggable="true" onclick="addBlock('cta')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="7" width="18" height="10" rx="2"/><path d="M8 12h8"/></svg>CTA banner</div>
+            <div class="blk" draggable="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M4 6h16M4 12h16M4 18h16"/></svg>FAQ accordion</div>
+            <div class="blk" draggable="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M21 11.5a8.4 8.4 0 01-9 8.4L3 21l1.1-9A8.5 8.5 0 1121 11.5z"/></svg>Testimonial</div>
+            <div class="blk" draggable="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M9 12l2 2 4-4M12 3l8 4v5a8 8 0 01-16 0V7z"/></svg>NZ trust signals</div>
+          </div>
+
+          <!-- Canvas -->
+          <div class="canvas-wrap">
+            <div class="canvas" id="canvas">
+              <div class="cblk sel" onclick="sel(this,'Hero','hero')"><span class="tag">Hero</span>
+                <div class="hero"><h2>Every bay, every job, every invoice</h2><p>Run a tidier workshop with OraInvoice.</p><span class="b">Start free trial</span></div>
+              </div>
+              <div class="cblk" onclick="sel(this,'Feature grid','fgrid')"><span class="tag">Feature grid</span>
+                <div class="fgrid"><div class="f"><div class="ic"></div><h4>Booking calendar</h4><p>Drag-and-drop scheduling across bays.</p></div><div class="f"><div class="ic"></div><h4>WOF &amp; compliance</h4><p>Certificates attached to every job.</p></div><div class="f"><div class="ic"></div><h4>Get paid faster</h4><p>Online payments &amp; QR at the counter.</p></div></div>
+              </div>
+              <div class="cblk" onclick="sel(this,'CTA banner','cta')"><span class="tag">CTA banner</span>
+                <div class="cta"><h3>Ready to run a tidier workshop?</h3><span class="b">Start your free 14-day trial</span></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Properties -->
+          <div class="props" id="props"></div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+<div class="toast ok" id="toast"></div>
+<script src="shell.js" data-active="admin" data-title="Edit page"></script>
+<script>
+const PROPS={
+  hero:`<div class="section-label">Hero — properties</div>
+    <div class="field" style="margin-bottom:14px"><label>Heading</label><input class="input" value="Every bay, every job, every invoice"></div>
+    <div class="field" style="margin-bottom:14px"><label>Subheading</label><textarea class="textarea">Run a tidier workshop with OraInvoice.</textarea></div>
+    <div class="field" style="margin-bottom:14px"><label>Button label</label><input class="input" value="Start free trial"></div>
+    <div class="field" style="margin-bottom:14px"><label>Button link</label><input class="input mono" value="/signup"></div>
+    <div class="field"><label>Background</label><div class="swatch-row" style="display:flex;gap:8px"><span style="width:30px;height:30px;border-radius:7px;background:#0B1220;border:2px solid var(--text)"></span><span style="width:30px;height:30px;border-radius:7px;background:#2F62F0"></span><span style="width:30px;height:30px;border-radius:7px;background:#1F8A5B"></span></div></div>`,
+  fgrid:`<div class="section-label">Feature grid — properties</div>
+    <div class="field" style="margin-bottom:14px"><label>Columns</label><select class="select"><option>2</option><option selected>3</option><option>4</option></select></div>
+    <div class="field" style="margin-bottom:14px"><label>Features</label></div>
+    <div class="meta-row"><span class="k">Booking calendar</span><span class="v" style="color:var(--muted-2)">⋮⋮</span></div>
+    <div class="meta-row"><span class="k">WOF &amp; compliance</span><span class="v" style="color:var(--muted-2)">⋮⋮</span></div>
+    <div class="meta-row"><span class="k">Get paid faster</span><span class="v" style="color:var(--muted-2)">⋮⋮</span></div>
+    <button class="btn btn-ghost btn-sm" style="margin-top:12px">+ Add feature</button>`,
+  cta:`<div class="section-label">CTA banner — properties</div>
+    <div class="field" style="margin-bottom:14px"><label>Heading</label><input class="input" value="Ready to run a tidier workshop?"></div>
+    <div class="field" style="margin-bottom:14px"><label>Button label</label><input class="input" value="Start your free 14-day trial"></div>
+    <div class="field"><label>Button link</label><input class="input mono" value="/signup"></div>`,
+  page:`<div class="section-label">Page settings</div>
+    <div class="field" style="margin-bottom:14px"><label>Title</label><input class="input" value="Workshops"></div>
+    <div class="field" style="margin-bottom:14px"><label>Slug</label><input class="input mono" value="/workshop"></div>
+    <div class="field" style="margin-bottom:14px"><label>Meta description</label><textarea class="textarea">Workshop management software for NZ mechanics.</textarea></div>
+    <div style="display:flex;align-items:center;justify-content:space-between;padding-top:6px"><span style="font-size:13px;font-weight:500">Noindex</span><button class="toggle" onclick="this.classList.toggle('on')"></button></div>`
+};
+function sel(el,name,key){document.querySelectorAll('.cblk').forEach(b=>b.classList.remove('sel'));el.classList.add('sel');document.getElementById('props').innerHTML=PROPS[key];}
+function showPage(){document.querySelectorAll('.cblk').forEach(b=>b.classList.remove('sel'));document.getElementById('props').innerHTML=PROPS.page;}
+function addBlock(key){toast('Block added to canvas.');}
+document.getElementById('props').innerHTML=PROPS.hero;
+document.querySelectorAll('#dev button').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('#dev button').forEach(x=>x.classList.remove('on'));b.classList.add('on');document.getElementById('canvas').classList.toggle('mobile',b.dataset.d==='mobile');}));
+let tt;function toast(m){const t=document.getElementById('toast');t.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><span>'+m+'</span>';t.classList.add('show');clearTimeout(tt);tt=setTimeout(()=>t.classList.remove('show'),2600);}
+</script>
+</body>
+</html>

@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="../ds.css" />
+<link rel="stylesheet" href="fleet.css" />
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Fleet portal reminders">
+        <div class="page-head"><div><h1>Reminders</h1><p class="sub">WOF, COF, RUC &amp; service expiries across your fleet</p></div></div>
+        <section class="card" style="margin-bottom:var(--gap)">
+          <div class="card-head"><h2>Upcoming expiries</h2><span style="font-size:12.5px;color:var(--muted)">Next 90 days</span></div>
+          <div class="tbl-wrap"><table>
+            <thead><tr><th>Vehicle</th><th>Type</th><th>Due</th><th class="r">Days left</th><th>Status</th></tr></thead>
+            <tbody>
+              <tr><td class="mono" style="font-weight:600">NPR-447</td><td>Service</td><td class="mono" style="color:var(--muted)">Overdue</td><td class="r mono" style="color:var(--danger)">−6</td><td><span class="exp red"><span class="d"></span>Overdue</span></td></tr>
+              <tr><td class="mono" style="font-weight:600">NPR-447</td><td>COF</td><td class="mono" style="color:var(--muted)">28 Nov 2025</td><td class="r mono" style="color:var(--warn)">24</td><td><span class="exp amber"><span class="d"></span>Soon</span></td></tr>
+              <tr><td class="mono" style="font-weight:600">TAJ-009</td><td>WOF</td><td class="mono" style="color:var(--muted)">19 Nov 2025</td><td class="r mono" style="color:var(--warn)">15</td><td><span class="exp amber"><span class="d"></span>Soon</span></td></tr>
+              <tr><td class="mono" style="font-weight:600">NPR-220</td><td>RUC</td><td class="mono" style="color:var(--muted)">02 Dec 2025</td><td class="r mono" style="color:var(--warn)">28</td><td><span class="exp amber"><span class="d"></span>Soon</span></td></tr>
+              <tr><td class="mono" style="font-weight:600">HBR-440</td><td>WOF</td><td class="mono" style="color:var(--muted)">14 Jan 2026</td><td class="r mono">71</td><td><span class="exp green"><span class="d"></span>OK</span></td></tr>
+            </tbody>
+          </table></div>
+        </section>
+        <section class="card"><div class="card-body">
+          <div class="section-label">Reminder settings</div>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-bottom:1px solid var(--border)"><div><div style="font-size:13.5px;font-weight:500">Email me before expiry</div><div style="font-size:12px;color:var(--muted)">Sent to dean@northlandfreight.co.nz</div></div><button class="toggle on" onclick="this.classList.toggle('on')"></button></div>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-bottom:1px solid var(--border)"><div style="font-size:13.5px;font-weight:500">Lead time</div><select class="select" style="width:auto"><option>7 days</option><option selected>28 days</option><option>60 days</option></select></div>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 0"><div style="font-size:13.5px;font-weight:500">Also notify drivers</div><button class="toggle" onclick="this.classList.toggle('on')"></button></div>
+        </div></section>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="fleet-shell.js" data-active="reminders" data-title="Reminders"></script>
+</body>
+</html>

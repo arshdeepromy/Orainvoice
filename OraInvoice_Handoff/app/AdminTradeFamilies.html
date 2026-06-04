@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+  .tf-grid { display: grid; grid-template-columns: repeat(2,1fr); gap: var(--gap); }
+  @media (max-width:900px){ .tf-grid { grid-template-columns: 1fr; } }
+  .tf { background: var(--card); border: 1px solid var(--border); border-radius: var(--r-card); box-shadow: var(--shadow-card); padding: 20px; display: flex; gap: 15px; align-items: flex-start; }
+  .tf .ic { width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center; flex-shrink: 0; }
+  .tf .ic svg { width: 22px; height: 22px; }
+  .tf .b { flex: 1; min-width: 0; }
+  .tf .nm { font-size: 15px; font-weight: 700; }
+  .tf .slug { font-family: var(--mono); font-size: 11.5px; color: var(--muted-2); margin-top: 2px; }
+  .tf .d { font-size: 12.5px; color: var(--muted); margin: 8px 0 0; line-height: 1.5; }
+  .tf .stat { display: flex; gap: 16px; margin-top: 12px; }
+  .tf .stat .s { font-size: 12px; color: var(--muted); } .tf .stat .s b { font-family: var(--mono); color: var(--text); }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Admin · Trade Families">
+        <div class="page-head">
+          <div><div class="eyebrow">Platform admin</div><h1>Trade families</h1><p class="sub">Industry presets that tailor onboarding, templates &amp; catalogue defaults</p></div>
+          <div class="head-actions"><button class="btn btn-primary btn-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>New trade family</button></div>
+        </div>
+        <div id="admin-nav" data-active="trades"></div>
+
+        <div class="tf-grid" id="tf"></div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script src="shell.js" data-active="admin" data-title="Admin · Trade Families"></script>
+<script src="admin-nav.js"></script>
+<script>
+const TF = [
+  { nm:'Automotive & mechanical', slug:'automotive', orgs:142, tmpl:18, c:['var(--accent-soft)','var(--accent)'], d:'WoF, servicing, diagnostics. Vehicle-centric job cards & odometer tracking.', dd:'M5 11l1.5-4.5A2 2 0 018.4 5h7.2a2 2 0 011.9 1.5L19 11m-14 0h14m-14 0a2 2 0 00-2 2v3a1 1 0 001 1h1' },
+  { nm:'Panel & paint', slug:'panel-paint', orgs:38, tmpl:11, c:['var(--purple-soft)','var(--purple)'], d:'Collision repair, insurance claims & progress photos.', dd:'M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.4-9.4a2 2 0 112.8 2.8L11.8 15H9v-2.8z' },
+  { nm:'Electrical', slug:'electrical', orgs:64, tmpl:14, c:['var(--warn-soft)','var(--warn)'], d:'COC certificates, callouts & compliance scheduling.', dd:'M13 2L3 14h9l-1 8 10-12h-9z' },
+  { nm:'Plumbing & gas', slug:'plumbing', orgs:51, tmpl:13, c:['var(--ok-soft)','var(--ok)'], d:'Gas certs, maintenance contracts & emergency callouts.', dd:'M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z' },
+  { nm:'Building & construction', slug:'construction', orgs:29, tmpl:22, c:['var(--accent-soft)','var(--accent)'], d:'Progress claims, retentions, variations & subcontractors.', dd:'M3 21h18M5 21V7l8-4v18M19 21V11l-6-3' },
+  { nm:'Other trades', slug:'other', orgs:14, tmpl:6, c:['#EEF0F4','var(--muted)'], d:'Generic preset for landscaping, joinery & misc trades.', dd:'M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z' },
+];
+document.getElementById('tf').innerHTML = TF.map(t=>`
+  <div class="tf">
+    <div class="ic" style="background:${t.c[0]};color:${t.c[1]}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="${t.dd}"/></svg></div>
+    <div class="b">
+      <div class="nm">${t.nm}</div><div class="slug">${t.slug}</div>
+      <div class="d">${t.d}</div>
+      <div class="stat"><span class="s"><b>${t.orgs}</b> orgs</span><span class="s"><b>${t.tmpl}</b> templates</span></div>
+    </div>
+    <button class="btn btn-ghost btn-sm">Edit</button>
+  </div>`).join('');
+</script>
+</body>
+</html>

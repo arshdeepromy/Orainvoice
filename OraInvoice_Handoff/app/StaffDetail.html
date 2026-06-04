@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+  .staff-hero { display: flex; align-items: center; gap: 16px; }
+  .staff-hero .big-av { width: 58px; height: 58px; border-radius: 15px; display: grid; place-items: center; color: #fff; font-weight: 700; font-size: 22px; flex-shrink: 0; }
+  .sec-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--border); }
+  .sec-head h2 { font-family: var(--mono); font-size: 11px; font-weight: 500; letter-spacing: .1em; text-transform: uppercase; color: var(--muted-2); }
+  .ro { height: 42px; padding: 0 13px; display: flex; align-items: center; border: 1px solid var(--border); border-radius: var(--r-ctl); background: var(--canvas); font-size: 13.5px; color: var(--text); }
+  .ro.mono { font-family: var(--mono); }
+  .ws { display: flex; flex-direction: column; gap: 8px; }
+  .ws-row { display: grid; grid-template-columns: 116px 1fr 1fr; align-items: center; gap: 10px; }
+  .ws-day { display: flex; align-items: center; gap: 10px; }
+  .ws-day .dn { font-size: 13px; font-weight: 500; }
+  .ws-row.off .input, .ws-row.off .ro { opacity: .45; pointer-events: none; }
+  .ws-row.off .ws-day .dn { color: var(--muted-2); }
+  .ws-time input { height: 38px; }
+  .skill-tag { display: inline-flex; align-items: center; font-size: 12px; font-weight: 500; padding: 4px 11px; border-radius: var(--r-chip); background: var(--accent-soft); color: var(--accent); }
+  .stat-mini { display: flex; align-items: baseline; justify-content: space-between; padding: 11px 0; border-bottom: 1px solid var(--border); }
+  .stat-mini:last-child { border-bottom: none; }
+  .stat-mini .k { font-size: 13px; color: var(--muted); }
+  .stat-mini .v { font-family: var(--mono); font-weight: 600; font-size: 14px; }
+  [data-edit] { display: none; }
+  .editing [data-view] { display: none; }
+  .editing [data-edit] { display: block; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" id="page" data-screen-label="Staff detail">
+        <div class="crumbs"><a href="Staff.html">Staff</a><span class="sep">/</span><span style="color:var(--text)">Dave Mceachern</span></div>
+        <div class="page-head">
+          <div class="staff-hero">
+            <div class="big-av" style="background:#6D5AE6">DM</div>
+            <div>
+              <div style="display:flex;align-items:center;gap:10px"><h1>Dave Mceachern</h1><span class="badge active"><span class="b-dot"></span>Active</span></div>
+              <p class="sub">Senior Technician · EMP-002 · Kerikeri</p>
+            </div>
+          </div>
+          <div class="head-actions">
+            <div data-view>
+              <span class="badge sent" style="margin-right:8px"><span class="b-dot"></span>Has login</span>
+              <button class="btn btn-ghost btn-sm" onclick="startEdit()">Edit</button>
+              <button class="btn btn-ghost btn-sm danger" onclick="toast('Staff member deactivated')" style="color:var(--danger)">Deactivate</button>
+            </div>
+            <div data-edit class="head-actions">
+              <button class="btn btn-ghost btn-sm" onclick="cancelEdit()">Cancel</button>
+              <button class="btn btn-primary btn-sm" onclick="saveEdit()">Save changes</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="detail-grid">
+          <div class="stack">
+            <!-- Personal info -->
+            <section class="card">
+              <div class="sec-head"><h2>Personal information</h2></div>
+              <div class="card-body">
+                <div class="form-grid">
+                  <div class="field"><label>First name <span data-edit>*</span></label>
+                    <div class="ro" data-view>Dave</div><input class="input" data-edit value="Dave" /></div>
+                  <div class="field"><label>Last name</label>
+                    <div class="ro" data-view>Mceachern</div><input class="input" data-edit value="Mceachern" /></div>
+                  <div class="field"><label>Email</label>
+                    <div class="ro" data-view>dave@kerikerimotors.co.nz</div><input class="input" data-edit type="email" value="dave@kerikerimotors.co.nz" /></div>
+                  <div class="field"><label>Phone</label>
+                    <div class="ro mono" data-view>027 441 8820</div><input class="input mono" data-edit type="tel" value="027 441 8820" /></div>
+                </div>
+              </div>
+            </section>
+
+            <!-- Employment -->
+            <section class="card">
+              <div class="sec-head"><h2>Employment details</h2></div>
+              <div class="card-body">
+                <div class="form-grid">
+                  <div class="field"><label>Employee ID</label>
+                    <div class="ro mono" data-view>EMP-002</div><input class="input mono" data-edit value="EMP-002" /></div>
+                  <div class="field"><label>Position</label>
+                    <div class="ro" data-view>Senior Technician</div><input class="input" data-edit value="Senior Technician" /></div>
+                  <div class="field"><label>Role type</label>
+                    <div class="ro" data-view>Employee</div>
+                    <select class="select" data-edit><option>Employee</option><option>Contractor</option></select></div>
+                  <div class="field"><label>Reports to</label>
+                    <div class="ro" data-view>Arsh Randhawa (Owner / Admin)</div>
+                    <select class="select" data-edit><option>— None —</option><option selected>Arsh Randhawa (Owner / Admin)</option><option>Mere Wiki (Service Advisor)</option></select></div>
+                  <div class="field"><label>Hourly rate</label>
+                    <div class="ro mono" data-view>$46.00</div>
+                    <div class="input-group" data-edit><span class="pre">$</span><input type="number" step="0.01" value="46.00" /></div></div>
+                  <div class="field"><label>Overtime rate</label>
+                    <div class="ro mono" data-view>$69.00</div>
+                    <div class="input-group" data-edit><span class="pre">$</span><input type="number" step="0.01" value="69.00" /></div></div>
+                  <div class="field full"><label>Skills</label>
+                    <div data-view style="display:flex;gap:6px;flex-wrap:wrap;padding-top:2px"><span class="skill-tag">Engine</span><span class="skill-tag">Diagnostics</span><span class="skill-tag">WoF</span></div>
+                    <input class="input" data-edit value="Engine, Diagnostics, WoF" /></div>
+                </div>
+              </div>
+            </section>
+
+            <!-- Work schedule -->
+            <section class="card">
+              <div class="sec-head"><h2>Work schedule</h2><span class="mono" style="font-size:11px;color:var(--muted-2)">37.5h / week</span></div>
+              <div class="card-body"><div class="ws" id="ws-editor"></div></div>
+            </section>
+          </div>
+
+          <!-- Sidebar -->
+          <div class="stack">
+            <section class="card"><div class="card-body">
+              <div class="section-label">This month</div>
+              <div class="stat-mini"><span class="k">Hours logged</span><span class="v">142.5h</span></div>
+              <div class="stat-mini"><span class="k">Jobs completed</span><span class="v">38</span></div>
+              <div class="stat-mini"><span class="k">Billable ratio</span><span class="v" style="color:var(--ok)">86%</span></div>
+              <div class="stat-mini"><span class="k">On-time rate</span><span class="v">92%</span></div>
+            </div></section>
+
+            <section class="card"><div class="card-body">
+              <div class="section-label">Account</div>
+              <div class="meta-row"><span class="k">Login access</span><span class="v"><span class="badge sent"><span class="b-dot"></span>Active</span></span></div>
+              <div class="meta-row"><span class="k">User role</span><span class="v">Salesperson</span></div>
+              <div class="meta-row"><span class="k">Last sign-in</span><span class="v mono" style="font-weight:400;color:var(--muted)">2h ago</span></div>
+              <p style="font-size:12px;color:var(--muted);margin:12px 0 0">This staff member has a linked login. Manage their role and access from <a href="Settings.html" style="color:var(--accent)">Settings → Users</a>.</p>
+            </div></section>
+
+            <section class="card"><div class="card-body">
+              <div class="section-label">No account?</div>
+              <p style="font-size:13px;color:var(--muted);margin:0 0 12px">Staff without a login can't be scheduled or sign in. Create an account to invite them.</p>
+              <button class="btn btn-ghost btn-sm" style="width:100%" onclick="document.getElementById('account-modal').classList.add('open')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/><path d="M19 8v6M22 11h-6" /></svg>Create user account</button>
+            </div></section>
+          </div>
+        </div>
+
+        <div style="margin-top:16px;font-size:12px;color:var(--muted-2)" class="mono">Created 14 Mar 2021 · Last updated 28 Oct 2025</div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- Create account modal -->
+<div class="modal-scrim" id="account-modal">
+  <div class="modal">
+    <div class="modal-head">
+      <h3>Create user account</h3>
+      <button class="x" onclick="document.getElementById('account-modal').classList.remove('open')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 18L18 6M6 6l12 12"/></svg></button>
+    </div>
+    <div class="modal-body">
+      <p style="font-size:13.5px;color:var(--muted);margin:0 0 16px">This will create an organisation login for <b style="color:var(--text)">dave@kerikerimotors.co.nz</b> with org_admin access.</p>
+      <div class="field"><label>Password *</label><input class="input" type="password" placeholder="Minimum 8 characters" /></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" onclick="document.getElementById('account-modal').classList.remove('open')">Cancel</button>
+      <button class="btn btn-primary" onclick="document.getElementById('account-modal').classList.remove('open');toast('User account created')">Create account</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M20 6L9 17l-5-5"/></svg><span id="toast-msg">Saved</span></div>
+
+<script src="shell.js" data-active="staff" data-title="Dave Mceachern"></script>
+<script>
+const DAYS = [['monday','Mon'],['tuesday','Tue'],['wednesday','Wed'],['thursday','Thu'],['friday','Fri'],['saturday','Sat'],['sunday','Sun']];
+const SCHED = { monday:{start:'08:00',end:'17:00'}, tuesday:{start:'08:00',end:'17:00'}, wednesday:{start:'08:00',end:'17:00'}, thursday:{start:'08:00',end:'17:00'}, friday:{start:'08:00',end:'16:30'} };
+
+function buildWS() {
+  document.getElementById('ws-editor').innerHTML = DAYS.map(([k,l]) => {
+    const on = SCHED[k];
+    return `<div class="ws-row ${on?'':'off'}" data-day="${k}">
+      <label class="ws-day">
+        <button type="button" class="toggle ${on?'on':''}" data-edit onclick="toggleDay(this)"></button>
+        <span class="toggle ${on?'on':''}" data-view style="pointer-events:none"></span>
+        <span class="dn">${l}</span>
+      </label>
+      <div class="ws-time"><div class="ro mono" data-view>${on?on.start:'—'}</div><input class="input mono" data-edit type="time" value="${on?on.start:'09:00'}" /></div>
+      <div class="ws-time"><div class="ro mono" data-view>${on?on.end:'—'}</div><input class="input mono" data-edit type="time" value="${on?on.end:'17:00'}" /></div>
+    </div>`;
+  }).join('');
+}
+function toggleDay(btn) {
+  const row = btn.closest('.ws-row');
+  const on = !btn.classList.contains('on');
+  btn.classList.toggle('on', on);
+  row.classList.toggle('off', !on);
+}
+
+function startEdit() { document.getElementById('page').classList.add('editing'); }
+function cancelEdit() { document.getElementById('page').classList.remove('editing'); }
+function saveEdit() { document.getElementById('page').classList.remove('editing'); toast('Changes saved'); }
+
+let toastTimer;
+function toast(msg) {
+  const t = document.getElementById('toast');
+  document.getElementById('toast-msg').textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
+}
+document.getElementById('account-modal').addEventListener('click', e => { if (e.target.id === 'account-modal') e.target.classList.remove('open'); });
+buildWS();
+</script>
+</body>
+</html>

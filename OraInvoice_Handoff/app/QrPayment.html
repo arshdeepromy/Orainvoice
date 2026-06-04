@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+.pop-body { text-align:center; padding:30px 26px; }
+.pop-ico { width:64px; height:64px; border-radius:50%; display:grid; place-items:center; margin:0 auto 16px; }
+.qrbox { width:188px; height:188px; margin:4px auto 16px; border:1px solid var(--border); border-radius:14px; display:grid; place-items:center; }
+.spin { width:48px; height:48px; border:4px solid var(--accent-soft); border-top-color:var(--accent); border-radius:50%; animation:sp 0.8s linear infinite; margin:0 auto; }
+@keyframes sp { to { transform:rotate(360deg); } }
+.demo-bar { display:flex; gap:8px; flex-wrap:wrap; justify-content:center; margin-top:18px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page" data-screen-label="QR payment collection">
+        <div class="crumbs"><a href="InvoiceDetail.html">INV-2039</a><span class="sep">/</span><span style="color:var(--text)">Collect via QR</span></div>
+        <div class="page-head"><div><div class="eyebrow">Counter payment</div><h1>Collect via QR</h1><p class="sub">Customer scans to pay on their own phone — popup tracks the session live</p></div></div>
+
+        <section class="card" style="max-width:520px"><div class="card-body">
+          <div class="meta-row"><span class="k">Invoice</span><span class="v mono">INV-2039</span></div>
+          <div class="meta-row"><span class="k">Balance due</span><span class="v mono">$248.00</span></div>
+          <button class="btn btn-primary" style="width:100%;margin-top:16px" onclick="openModal('m-amount')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3h6v6H3zM15 3h6v6h-6zM3 15h6v6H3zM15 15h2v2h-2zM19 15h2v2h-2zM15 19h2v2h-2zM19 19h2v2h-2z"/></svg>Generate QR code</button>
+          <div class="demo-bar"><span class="mono" style="font-size:11px;color:var(--muted-2);width:100%;text-align:center">Demo — preview each popup state:</span>
+            <button class="btn btn-ghost btn-sm" onclick="openModal('m-amount')">Amount</button>
+            <button class="btn btn-ghost btn-sm" onclick="openModal('m-qr')">QR / waiting</button>
+            <button class="btn btn-ghost btn-sm" onclick="openModal('m-paid')">Paid</button>
+            <button class="btn btn-ghost btn-sm" onclick="openModal('m-super')">Superseded</button>
+          </div>
+        </div></section>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- Amount modal -->
+<div class="modal-scrim" id="m-amount">
+  <div class="modal">
+    <div class="modal-head"><h3>QR payment amount</h3><button class="x" onclick="closeModal('m-amount')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button></div>
+    <div class="modal-body">
+      <p style="font-size:13.5px;color:var(--muted);margin:0 0 16px">How much should the customer pay? Balance due is <b style="color:var(--text)">$248.00</b>.</p>
+      <div class="radio-row" style="margin-bottom:16px"><div class="radio-card on"><div class="t">Full balance</div><div class="d">$248.00</div></div><div class="radio-card"><div class="t">Custom amount</div><div class="d">Partial payment</div></div></div>
+      <div class="field"><label>Amount</label><div class="input-group"><span class="pre">$</span><input class="mono" value="248.00"></div></div>
+    </div>
+    <div class="modal-foot"><button class="btn btn-quiet" onclick="closeModal('m-amount')">Cancel</button><button class="btn btn-primary" onclick="closeModal('m-amount');openModal('m-qr')">Show QR code</button></div>
+  </div>
+</div>
+
+<!-- QR / waiting popup -->
+<div class="modal-scrim" id="m-qr">
+  <div class="modal" style="max-width:360px">
+    <div class="modal-head"><h3>Scan to pay</h3><button class="x" onclick="closeModal('m-qr')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button></div>
+    <div class="pop-body">
+      <div class="qrbox" id="qrbox"></div>
+      <div class="spin" style="margin-bottom:14px"></div>
+      <h2 style="font-size:17px;font-weight:600">Waiting for payment…</h2>
+      <p class="mono" style="font-size:22px;font-weight:700;margin:8px 0 2px">$248.00</p>
+      <p style="font-size:12.5px;color:var(--muted);margin:0">INV-2039</p>
+    </div>
+    <div class="modal-foot" style="justify-content:center"><button class="btn btn-ghost" onclick="closeModal('m-qr')">Close</button></div>
+  </div>
+</div>
+
+<!-- Paid popup -->
+<div class="modal-scrim" id="m-paid">
+  <div class="modal" style="max-width:360px"><div class="pop-body">
+    <div class="pop-ico" style="background:var(--ok-soft)"><svg viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="var(--ok)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></div>
+    <h2 style="font-size:19px;font-weight:600">Payment received — $248.00</h2>
+    <p style="font-size:13px;color:var(--muted);margin:6px 0 0">INV-2039 · paid in full</p>
+  </div><div class="modal-foot" style="justify-content:center"><button class="btn btn-primary" onclick="closeModal('m-paid')">Done</button></div></div>
+</div>
+
+<!-- Superseded popup -->
+<div class="modal-scrim" id="m-super">
+  <div class="modal" style="max-width:360px"><div class="pop-body">
+    <div class="pop-ico" style="background:var(--warn-soft)"><svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="var(--warn)" stroke-width="2"><path d="M12 9v3.75m0 3.75h.01M12 3a9 9 0 100 18 9 9 0 000-18z"/></svg></div>
+    <h2 style="font-size:18px;font-weight:600">QR session superseded</h2>
+    <p style="font-size:13px;color:var(--muted);margin:6px 0 0">A newer payment attempt replaced this QR session.</p>
+  </div><div class="modal-foot" style="justify-content:center"><button class="btn btn-ghost" onclick="closeModal('m-super')">Close</button></div></div>
+</div>
+
+<script src="shell.js" data-active="invoices" data-title="Collect via QR"></script>
+<script>
+function openModal(id){document.getElementById(id).classList.add('open');if(id==='m-qr')document.getElementById('qrbox').innerHTML=qr();}
+function closeModal(id){document.getElementById(id).classList.remove('open');}
+document.querySelectorAll('.modal-scrim').forEach(s=>s.addEventListener('click',e=>{if(e.target===s)s.classList.remove('open');}));
+function qr(){let r='';for(let y=0;y<13;y++)for(let x=0;x<13;x++){if((x*y+x+y)%3===0||(x<4&&y<4)||(x>8&&y<4)||(x<4&&y>8))r+=`<rect x="${x*13+6}" y="${y*13+6}" width="11" height="11" rx="2" fill="#0B1220"/>`;}return `<svg width="188" height="188" viewBox="0 0 188 188">${r}</svg>`;}
+</script>
+</body>
+</html>

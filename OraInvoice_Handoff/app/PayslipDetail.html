@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+.ps-line{display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-bottom:1px solid var(--border);font-size:13.5px}
+.ps-line:last-child{border-bottom:none}
+.ps-line .lbl{display:flex;flex-direction:column;gap:2px}
+.ps-line .lbl .s{font-size:12px;color:var(--muted)}
+.ps-line .qty{font-family:var(--mono);color:var(--muted);font-size:12.5px;width:130px;text-align:right}
+.ps-line .amt{font-family:var(--mono);font-weight:600;width:96px;text-align:right}
+.ps-tot{display:flex;align-items:center;justify-content:space-between;padding:14px 0 2px;font-size:14px;font-weight:600}
+.ps-tot .amt{font-family:var(--mono);font-size:15px}
+.net-card{background:var(--ink);border-radius:var(--r-card);padding:22px;color:#fff}
+.net-card .k{font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:rgba(255,255,255,.5)}
+.net-card .v{font-family:var(--mono);font-size:34px;font-weight:600;letter-spacing:-0.02em;margin-top:6px}
+.net-card .v .c{color:rgba(255,255,255,.45);font-size:22px}
+.net-card .meta{display:flex;justify-content:space-between;margin-top:16px;padding-top:16px;border-top:1px solid rgba(255,255,255,.12);font-size:12.5px;color:rgba(255,255,255,.7)}
+.net-card .meta .mono{color:#fff}
+.ytd-row{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border);font-size:13px}
+.ytd-row:last-child{border-bottom:none}
+.ytd-row .v{font-family:var(--mono);font-weight:600}
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page" data-screen-label="Payslip detail">
+        <div class="crumbs"><a href="Payroll.html">Payroll</a><span class="sep">/</span><a href="Payroll.html">19–25 May 2026</a><span class="sep">/</span>Dave Mceachern</div>
+        <div class="page-head">
+          <div class="row-flex" style="gap:14px">
+            <span class="row-av" style="width:46px;height:46px;border-radius:12px;font-size:16px;background:var(--accent-soft);color:var(--accent)">DM</span>
+            <div><h1 style="font-size:23px">Dave Mceachern</h1><p class="sub" style="margin-top:3px">EMP-002 · Senior Technician · Kerikeri · BR-01</p></div>
+          </div>
+          <div class="head-actions">
+            <button class="btn btn-ghost btn-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2M6 14h12v8H6z"/></svg>Print</button>
+            <button class="btn btn-ghost btn-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16v16H4z M22 6l-10 7L2 6"/></svg>Email payslip</button>
+            <button class="btn btn-primary btn-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg>Approve</button>
+          </div>
+        </div>
+
+        <div class="detail-grid">
+          <div class="stack">
+            <section class="card">
+              <div class="card-head"><h2>Earnings</h2><span class="badge active"><span class="b-dot"></span>Ready</span></div>
+              <div class="card-body" style="padding-top:6px;padding-bottom:8px">
+                <div class="ps-line"><div class="lbl"><span>Ordinary hours</span><span class="s">Base rate $42.00/hr</span></div><span class="qty">40.0 h × $42.00</span><span class="amt">1,680.00</span></div>
+                <div class="ps-line"><div class="lbl"><span>Overtime (1.5×)</span><span class="s">$63.00/hr</span></div><span class="qty">6.5 h × $63.00</span><span class="amt">409.50</span></div>
+                <div class="ps-line"><div class="lbl"><span>Tool allowance</span><span class="s">Weekly fixed</span></div><span class="qty">—</span><span class="amt">45.00</span></div>
+                <div class="ps-line"><div class="lbl"><span>Holiday pay (8%)</span><span class="s">Accrued — paid as you go</span></div><span class="qty">—</span><span class="amt">171.16</span></div>
+                <div class="ps-line"><div class="lbl"><span>Public holiday — King's Birthday</span><span class="s">Time + ½ · alt day accrued</span></div><span class="qty">7.5 h × $63.00</span><span class="amt">1,106.34</span></div>
+                <div class="ps-tot"><span>Gross earnings</span><span class="amt">$3,412.00</span></div>
+              </div>
+            </section>
+
+            <section class="card">
+              <div class="card-head"><h2>Deductions</h2></div>
+              <div class="card-body" style="padding-top:6px;padding-bottom:8px">
+                <div class="ps-line"><div class="lbl"><span>PAYE</span><span class="s">Tax code M · 21.2% effective</span></div><span class="qty"></span><span class="amt" style="color:var(--danger)">−724.00</span></div>
+                <div class="ps-line"><div class="lbl"><span>KiwiSaver (employee)</span><span class="s">3% of gross</span></div><span class="qty"></span><span class="amt" style="color:var(--danger)">−102.36</span></div>
+                <div class="ps-line"><div class="lbl"><span>Student loan</span><span class="s">12% over threshold</span></div><span class="qty"></span><span class="amt" style="color:var(--danger)">−99.50</span></div>
+                <div class="ps-tot"><span>Total deductions</span><span class="amt" style="color:var(--danger)">−$925.86</span></div>
+              </div>
+            </section>
+
+            <section class="card">
+              <div class="card-head"><h2>Employer contributions</h2><span class="card-head"><span class="id">not deducted from pay</span></span></div>
+              <div class="card-body" style="padding-top:6px;padding-bottom:8px">
+                <div class="ps-line"><div class="lbl"><span>KiwiSaver (employer)</span><span class="s">3% + ESCT</span></div><span class="qty"></span><span class="amt">102.36</span></div>
+                <div class="ps-line"><div class="lbl"><span>ACC earner levy</span><span class="s">1.60% (in PAYE)</span></div><span class="qty"></span><span class="amt">54.59</span></div>
+              </div>
+            </section>
+          </div>
+
+          <aside class="stack">
+            <div class="net-card">
+              <div class="k">Net pay</div>
+              <div class="v"><span class="c">$</span>2,486.14</div>
+              <div class="meta"><span>Pay day</span><span class="mono">Thu 28 May</span></div>
+              <div class="meta" style="margin-top:0;border-top:none;padding-top:6px"><span>To account</span><span class="mono">12-3456-···-00</span></div>
+            </div>
+
+            <section class="card">
+              <div class="card-head"><h2>This pay period</h2></div>
+              <div class="card-body">
+                <div class="meta-row"><span class="k">Period</span><span class="v mono">19–25 May 2026</span></div>
+                <div class="meta-row"><span class="k">Pay frequency</span><span class="v">Weekly</span></div>
+                <div class="meta-row"><span class="k">Days worked</span><span class="v mono">5</span></div>
+                <div class="meta-row"><span class="k">Leave taken</span><span class="v mono">0.0 d</span></div>
+                <div class="meta-row"><span class="k">Alt days accrued</span><span class="v mono">+1.0</span></div>
+              </div>
+            </section>
+
+            <section class="card">
+              <div class="card-head"><h2>Year to date</h2><span class="id">2025/26</span></div>
+              <div class="card-body">
+                <div class="ytd-row"><span>Gross earnings</span><span class="v">$118,640</span></div>
+                <div class="ytd-row"><span>PAYE paid</span><span class="v">$25,118</span></div>
+                <div class="ytd-row"><span>KiwiSaver</span><span class="v">$3,559</span></div>
+                <div class="ytd-row"><span>Net paid</span><span class="v">$86,402</span></div>
+              </div>
+            </section>
+
+            <section class="card">
+              <div class="card-head"><h2>Leave balances</h2></div>
+              <div class="card-body">
+                <div class="ytd-row"><span>Annual leave</span><span class="v">14.5 d</span></div>
+                <div class="ytd-row"><span>Sick leave</span><span class="v">8.0 d</span></div>
+                <div class="ytd-row"><span>Alternative days</span><span class="v">3.0 d</span></div>
+              </div>
+            </section>
+          </aside>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="payroll" data-title="Payslip"></script>
+</body>
+</html>

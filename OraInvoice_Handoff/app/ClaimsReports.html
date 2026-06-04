@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Claims reports">
+        <div class="page-head"><div><div class="eyebrow">Service</div><h1>Claims reports</h1><p class="sub">Warranty & rework analysis · last 90 days</p></div></div>
+        <div class="kpis"><div class="kpi"><div class="top"><span class="label">Total claims</span></div><div class="val" >34</div></div><div class="kpi"><div class="top"><span class="label">Resolved</span></div><div class="val" style="color:var(--ok)">27</div></div><div class="kpi"><div class="top"><span class="label">Cost of rework</span></div><div class="val" ><span class="c">$</span>9,840</div></div><div class="kpi"><div class="top"><span class="label">Avg resolution</span></div><div class="val" >4.2<span class="c">d</span></div></div></div>
+  <section class="card"><div class="card-head"><h2>Claims by type</h2></div><div class="card-body"><div style="margin-bottom:13px"><div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:6px"><span>Workmanship</span><span class="mono" style="font-weight:600">48%</span></div><div class="progress"><i style="width:48%;background:var(--accent)"></i></div></div><div style="margin-bottom:13px"><div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:6px"><span>Parts defect</span><span class="mono" style="font-weight:600">31%</span></div><div class="progress"><i style="width:31%;background:var(--warn)"></i></div></div><div style="margin-bottom:13px"><div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:6px"><span>Diagnostic</span><span class="mono" style="font-weight:600">13%</span></div><div class="progress"><i style="width:13%;background:var(--purple)"></i></div></div><div style="margin-bottom:13px"><div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:6px"><span>Other</span><span class="mono" style="font-weight:600">8%</span></div><div class="progress"><i style="width:8%;background:var(--muted-2)"></i></div></div></div></section>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="" data-title="Claims reports"></script>
+</body>
+</html>

@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Tax / GST">
+        <div class="page-head">
+          <div><div class="eyebrow">Money</div><h1>Tax / GST</h1><p class="sub">GST return · period Sep–Oct 2025 (2-monthly)</p></div>
+          <div class="head-actions"><button class="btn btn-ghost btn-sm">Download</button><button class="btn btn-primary btn-sm">File with IRD</button></div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 340px;gap:var(--gap);align-items:start">
+          <section class="card"><div class="card-head"><h2>GST 101 summary</h2><span class="badge pending"><span class="b-dot"></span>Due 28 Nov</span></div><div class="card-body">
+            <div class="meta-row"><span class="k">Total sales & income (Box 5)</span><span class="v mono">$94,180.00</span></div>
+            <div class="meta-row"><span class="k">GST on sales (Box 8)</span><span class="v mono">$12,284.35</span></div>
+            <div class="meta-row"><span class="k">Total purchases (Box 11)</span><span class="v mono">$61,420.00</span></div>
+            <div class="meta-row"><span class="k">GST on purchases (Box 12)</span><span class="v mono">$8,011.30</span></div>
+            <div class="meta-row" style="border-top:1.5px solid var(--border-strong);margin-top:6px;padding-top:14px"><span class="k" style="font-weight:600;color:var(--text)">GST to pay (Box 13)</span><span class="v mono" style="font-size:18px;font-weight:700">$4,273.05</span></div>
+          </div></section>
+          <div class="stack">
+            <section class="card"><div class="card-body"><div class="section-label">Filing</div>
+              <div class="meta-row"><span class="k">Period</span><span class="v">Sep–Oct 2025</span></div>
+              <div class="meta-row"><span class="k">Basis</span><span class="v">Payments</span></div>
+              <div class="meta-row"><span class="k">Frequency</span><span class="v">2-monthly</span></div>
+              <div class="meta-row"><span class="k">Due date</span><span class="v" style="color:var(--warn)">28 Nov 2025</span></div>
+            </div></section>
+            <section class="card"><div class="card-body"><div class="section-label">Previous returns</div>
+              <div class="meta-row"><span class="k">Jul–Aug</span><span class="v"><span class="badge paid"><span class="b-dot"></span>Filed</span></span></div>
+              <div class="meta-row"><span class="k">May–Jun</span><span class="v"><span class="badge paid"><span class="b-dot"></span>Filed</span></span></div>
+            </div></section>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="tax" data-title="Tax / GST"></script>
+</body>
+</html>

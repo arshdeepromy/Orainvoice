@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+.bal-card{display:flex;align-items:center;gap:14px;padding:16px 18px;border:1px solid var(--border);border-radius:var(--r-card);background:var(--card);box-shadow:var(--shadow-card)}
+.bal-card .ic{width:38px;height:38px;border-radius:10px;display:grid;place-items:center;flex-shrink:0}
+.bal-card .v{font-family:var(--mono);font-size:22px;font-weight:600;line-height:1}
+.bal-card .l{font-size:12.5px;color:var(--muted);margin-top:3px}
+.bal-row{display:grid;grid-template-columns:repeat(3,1fr);gap:var(--gap);margin-bottom:var(--gap)}
+@media(max-width:760px){.bal-row{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page" data-screen-label="My payslips">
+        <div class="page-head">
+          <div><div class="eyebrow">My account</div><h1>My payslips</h1><p class="sub">Dave Mceachern · EMP-002 · Senior Technician</p></div>
+          <div class="head-actions"><a class="btn btn-ghost btn-sm" href="ClockScreen.html">Clock in / out</a></div>
+        </div>
+
+        <div class="bal-row">
+          <div class="bal-card"><span class="ic ico blue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M8 7V3m8 4V3M3 11h18M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg></span><div><div class="v">14.5<span style="font-size:13px;color:var(--muted-2)"> d</span></div><div class="l">Annual leave</div></div></div>
+          <div class="bal-card"><span class="ic ico amber"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0012 5 5.5 5.5 0 002 8.5c0 2.3 1.5 4 3 5.5l7 7 7-7z"/></svg></span><div><div class="v">8.0<span style="font-size:13px;color:var(--muted-2)"> d</span></div><div class="l">Sick leave</div></div></div>
+          <div class="bal-card"><span class="ic ico green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></span><div><div class="v">3.0<span style="font-size:13px;color:var(--muted-2)"> d</span></div><div class="l">Alternative days</div></div></div>
+        </div>
+
+        <div class="detail-grid">
+          <section class="card">
+            <div class="card-head"><h2>Payslip history</h2><span class="id">2025/26 tax year</span></div>
+            <div class="tbl-wrap"><table>
+              <thead><tr><th>Pay period</th><th>Pay day</th><th class="r">Gross</th><th class="r">PAYE</th><th class="r">Net</th><th></th></tr></thead>
+              <tbody>
+                <tr class="clickable" onclick="location.href='PayslipDetail.html'"><td><span style="font-weight:500">19–25 May 2026</span></td><td><span class="mono" style="color:var(--muted)">28 May</span></td><td class="r"><span class="amt">3,412</span></td><td class="r"><span class="mono" style="color:var(--muted)">724</span></td><td class="r"><span class="amt">2,486</span></td><td class="r"><span class="badge pending"><span class="b-dot"></span>Pending</span></td></tr>
+                <tr class="clickable" onclick="location.href='PayslipDetail.html'"><td><span style="font-weight:500">12–18 May 2026</span></td><td><span class="mono" style="color:var(--muted)">21 May</span></td><td class="r"><span class="amt">3,206</span></td><td class="r"><span class="mono" style="color:var(--muted)">681</span></td><td class="r"><span class="amt">2,338</span></td><td class="r"><span class="badge active"><span class="b-dot"></span>Paid</span></td></tr>
+                <tr class="clickable" onclick="location.href='PayslipDetail.html'"><td><span style="font-weight:500">5–11 May 2026</span></td><td><span class="mono" style="color:var(--muted)">14 May</span></td><td class="r"><span class="amt">3,360</span></td><td class="r"><span class="mono" style="color:var(--muted)">713</span></td><td class="r"><span class="amt">2,448</span></td><td class="r"><span class="badge active"><span class="b-dot"></span>Paid</span></td></tr>
+                <tr class="clickable" onclick="location.href='PayslipDetail.html'"><td><span style="font-weight:500">28 Apr–4 May 2026</span></td><td><span class="mono" style="color:var(--muted)">7 May</span></td><td class="r"><span class="amt">2,940</span></td><td class="r"><span class="mono" style="color:var(--muted)">588</span></td><td class="r"><span class="amt">2,158</span></td><td class="r"><span class="badge active"><span class="b-dot"></span>Paid</span></td></tr>
+                <tr class="clickable" onclick="location.href='PayslipDetail.html'"><td><span style="font-weight:500">21–27 Apr 2026</span></td><td><span class="mono" style="color:var(--muted)">30 Apr</span></td><td class="r"><span class="amt">3,108</span></td><td class="r"><span class="mono" style="color:var(--muted)">657</span></td><td class="r"><span class="amt">2,276</span></td><td class="r"><span class="badge active"><span class="b-dot"></span>Paid</span></td></tr>
+              </tbody>
+            </table></div>
+            <div class="pagination"><div class="info">Showing <span class="mono">1–5</span> of <span class="mono">21</span></div><div class="pg-btns"><button disabled>‹</button><button class="on">1</button><button>2</button><button>3</button><button>›</button></div></div>
+          </section>
+
+          <aside class="stack">
+            <section class="card">
+              <div class="card-head"><h2>Year to date</h2></div>
+              <div class="card-body">
+                <div class="meta-row"><span class="k">Gross earnings</span><span class="v mono">$118,640</span></div>
+                <div class="meta-row"><span class="k">PAYE paid</span><span class="v mono">$25,118</span></div>
+                <div class="meta-row"><span class="k">KiwiSaver</span><span class="v mono">$3,559</span></div>
+                <div class="meta-row"><span class="k">Net paid</span><span class="v mono">$86,402</span></div>
+              </div>
+            </section>
+            <section class="card">
+              <div class="card-head"><h2>Pay details</h2></div>
+              <div class="card-body">
+                <div class="meta-row"><span class="k">Base rate</span><span class="v mono">$42.00/hr</span></div>
+                <div class="meta-row"><span class="k">Tax code</span><span class="v mono">M</span></div>
+                <div class="meta-row"><span class="k">KiwiSaver</span><span class="v">3%</span></div>
+                <div class="meta-row"><span class="k">Bank account</span><span class="v mono">12-3456-···-00</span></div>
+              </div>
+            </section>
+          </aside>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="payroll" data-title="My payslips"></script>
+</body>
+</html>

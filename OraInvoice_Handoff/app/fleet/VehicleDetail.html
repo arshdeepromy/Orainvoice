@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="../ds.css" />
+<link rel="stylesheet" href="fleet.css" />
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Fleet portal vehicle detail">
+        <div class="crumbs"><a href="Vehicles.html">Vehicles</a><span class="sep">/</span><span style="color:var(--text)">NPR-447</span></div>
+        <div class="page-head">
+          <div class="row-flex" style="gap:14px"><span class="avatar-sm" style="width:46px;height:46px;border-radius:11px;background:var(--ink)"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="#fff" stroke-width="1.8"><path d="M5 11l1.5-4.5A2 2 0 018.4 5h7.2a2 2 0 011.9 1.5L19 11m-14 0h14"/></svg></span><div><h1 style="font-size:23px">NPR-447</h1><p class="sub" style="margin-top:2px">2019 Isuzu NPR 400 · White</p></div></div>
+          <div class="head-actions"><button class="btn btn-ghost btn-sm">Update odometer</button><a class="btn btn-primary btn-sm" href="Bookings.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>Request service</a></div>
+        </div>
+
+        <div class="kpis" style="grid-template-columns:repeat(3,1fr)">
+          <div class="kpi"><div class="top"><span class="label">WOF expiry</span></div><div class="val" style="font-size:18px">12 Mar 2026</div><div style="margin-top:8px"><span class="exp green"><span class="d"></span>Valid · 128 days</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">COF expiry</span></div><div class="val" style="font-size:18px">28 Nov 2025</div><div style="margin-top:8px"><span class="exp amber"><span class="d"></span>Soon · 24 days</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">Next service</span></div><div class="val" style="font-size:18px">Overdue</div><div style="margin-top:8px"><span class="exp red"><span class="d"></span>1,200 km over</span></div></div>
+        </div>
+
+        <div class="detail-grid">
+          <section class="card">
+            <div class="card-head"><h2>Recent checklists</h2><a class="link" href="Checklists.html">View all →</a></div>
+            <div class="tbl-wrap"><table>
+              <thead><tr><th>Date</th><th>Driver</th><th class="r">Pass</th><th class="r">Fail</th><th>Result</th></tr></thead>
+              <tbody>
+                <tr class="clickable" onclick="location.href='ChecklistSubmit.html'"><td class="mono" style="color:var(--muted)">Today 6:42am</td><td>T. Edwards</td><td class="r mono">18</td><td class="r mono" style="color:var(--danger)">3</td><td><span class="badge overdue"><span class="b-dot"></span>Failed</span></td></tr>
+                <tr class="clickable" onclick="location.href='ChecklistSubmit.html'"><td class="mono" style="color:var(--muted)">Yesterday</td><td>A. Wills</td><td class="r mono">21</td><td class="r mono">0</td><td><span class="badge paid"><span class="b-dot"></span>Passed</span></td></tr>
+                <tr class="clickable" onclick="location.href='ChecklistSubmit.html'"><td class="mono" style="color:var(--muted)">2 days ago</td><td>T. Edwards</td><td class="r mono">20</td><td class="r mono">1</td><td><span class="badge overdue"><span class="b-dot"></span>Failed</span></td></tr>
+              </tbody>
+            </table></div>
+          </section>
+          <div class="stack">
+            <section class="card"><div class="card-body">
+              <div class="section-label">Details</div>
+              <div class="meta-row"><span class="k">Odometer</span><span class="v mono">184,210 km</span></div>
+              <div class="meta-row"><span class="k">Fuel</span><span class="v">Diesel</span></div>
+              <div class="meta-row"><span class="k">RUC paid to</span><span class="v mono">190,000 km</span></div>
+              <div class="meta-row"><span class="k">Assigned driver</span><span class="v">T. Edwards</span></div>
+            </div></section>
+            <section class="card"><div class="card-body">
+              <div class="section-label">Service history</div>
+              <div class="timeline" style="margin-top:4px">
+                <div class="tl-item accent"><div class="t">Full service</div><div class="s">Kerikeri Motors · INV-2039</div><div class="time">12 Aug 2025</div></div>
+                <div class="tl-item"><div class="t">WOF renewal</div><div class="s">Passed first time</div><div class="time">12 Mar 2025</div></div>
+                <div class="tl-item"><div class="t">Brake overhaul</div><div class="s">Front + rear pads</div><div class="time">04 Jan 2025</div></div>
+              </div>
+            </div></section>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="fleet-shell.js" data-active="vehicles" data-title="NPR-447"></script>
+</body>
+</html>

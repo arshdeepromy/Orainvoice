@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+  .setting { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 15px 0; border-bottom: 1px solid var(--border); }
+  .setting:last-child { border-bottom: none; }
+  .setting .t { font-size: 13.5px; font-weight: 600; } .setting .d { font-size: 12.5px; color: var(--muted); margin-top: 3px; max-width: 52ch; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page" data-screen-label="Admin · Security">
+        <div class="page-head">
+          <div><div class="eyebrow">Platform admin</div><h1>Security</h1><p class="sub">Authentication policy, sessions &amp; access controls</p></div>
+          <div class="head-actions"><button class="btn btn-primary btn-sm">Save policy</button></div>
+        </div>
+        <div id="admin-nav" data-active="security"></div>
+
+        <div class="kpis">
+          <div class="kpi"><div class="top"><span class="label">2FA adoption</span><span class="ico green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 15a2 2 0 100-4 2 2 0 000 4zm6-5V7a6 6 0 00-12 0v3M5 10h14a1 1 0 011 1v9a1 1 0 01-1 1H5a1 1 0 01-1-1v-9a1 1 0 011-1z"/></svg></span></div><div class="val">88<span class="c">%</span></div><div class="delta up"><span>↗ 6pt</span><span class="since">of all users</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">Failed logins (24h)</span><span class="ico amber"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8h1a4 4 0 010 8h-1M2 8h12v9a4 4 0 01-4 4H6a4 4 0 01-4-4z"/></svg></span></div><div class="val">142</div><div class="delta"><span class="since">11 IPs blocked</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">Active sessions</span><span class="ico blue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 17H5a2 2 0 01-2-2V5a2 2 0 012-2h14a2 2 0 012 2v10a2 2 0 01-2 2h-4m-6 4h6m-3-4v4"/></svg></span></div><div class="val">1,284</div><div class="delta"><span class="since">across tenants</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">Suspicious events</span><span class="ico red"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4m0 4h.01M10.3 3.9l-8 14A2 2 0 004 21h16a2 2 0 001.7-3l-8-14a2 2 0 00-3.4 0z"/></svg></span></div><div class="val">3</div><div class="delta"><span class="since">flagged for review</span></div></div>
+        </div>
+
+        <div class="detail-grid">
+          <div class="stack">
+            <section class="card">
+              <div class="card-head"><h2>Authentication policy</h2></div>
+              <div class="card-body" style="padding-top:6px">
+                <div class="setting"><div><div class="t">Require 2FA for all admins</div><div class="d">Platform admin users must have an authenticator or passkey enrolled.</div></div><button class="toggle on" onclick="this.classList.toggle('on')"></button></div>
+                <div class="setting"><div><div class="t">Require 2FA for tenant owners</div><div class="d">Org admins on Pro &amp; Multi-site plans must enable 2FA.</div></div><button class="toggle on" onclick="this.classList.toggle('on')"></button></div>
+                <div class="setting"><div><div class="t">Allow passkeys</div><div class="d">WebAuthn passkeys for passwordless sign-in.</div></div><button class="toggle on" onclick="this.classList.toggle('on')"></button></div>
+                <div class="setting"><div><div class="t">Allow Google sign-in</div><div class="d">OAuth sign-in via Google Workspace / Gmail.</div></div><button class="toggle on" onclick="this.classList.toggle('on')"></button></div>
+                <div class="setting"><div><div class="t">Block disposable email domains</div><div class="d">Reject signups from known throwaway providers.</div></div><button class="toggle on" onclick="this.classList.toggle('on')"></button></div>
+              </div>
+            </section>
+            <section class="card">
+              <div class="card-head"><h2>Recent security events</h2><a class="link" href="AdminAuditLog.html">Full audit log</a></div>
+              <div class="card-body"><div class="timeline">
+                <div class="tl-item accent"><div class="t">Brute-force blocked — 45.88.21.190</div><div class="s">5 failed attempts on Kerikeri Motors</div><div class="time">3h ago</div></div>
+                <div class="tl-item"><div class="t">New device sign-in</div><div class="s">Arsh Randhawa · Auckland, NZ</div><div class="time">5h ago</div></div>
+                <div class="tl-item"><div class="t">Password policy updated</div><div class="s">min length 8 → 10</div><div class="time">2d ago</div></div>
+              </div></div>
+            </section>
+          </div>
+          <div class="stack">
+            <section class="card"><div class="card-body">
+              <div class="section-label">Session & password</div>
+              <div class="field" style="margin-bottom:14px"><label>Session timeout</label><select class="select"><option>8 hours</option><option selected>24 hours</option><option>7 days</option><option>30 days</option></select></div>
+              <div class="field" style="margin-bottom:14px"><label>Minimum password length</label><select class="select"><option>8</option><option selected>10</option><option>12</option></select></div>
+              <div class="field"><label>Lockout after failed attempts</label><select class="select"><option>3</option><option selected>5</option><option>10</option></select></div>
+            </div></section>
+            <section class="card"><div class="card-body">
+              <div class="section-label">IP allowlist</div>
+              <p style="font-size:12.5px;color:var(--muted);margin:0 0 12px">Restrict admin console access to these ranges.</p>
+              <div style="display:flex;flex-direction:column;gap:8px">
+                <div class="chip" style="justify-content:space-between"><span class="mono">203.97.12.0/24</span><span class="x">✕</span></div>
+                <div class="chip" style="justify-content:space-between"><span class="mono">118.92.40.10/32</span><span class="x">✕</span></div>
+              </div>
+              <button class="btn btn-ghost btn-sm" style="width:100%;margin-top:12px">Add range</button>
+            </div></section>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="admin" data-title="Admin · Security"></script>
+<script src="admin-nav.js"></script>
+</body>
+</html>

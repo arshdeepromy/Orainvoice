@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+  .setting { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 15px 0; border-bottom: 1px solid var(--border); }
+  .setting:last-child { border-bottom: none; }
+  .setting .t { font-size: 13.5px; font-weight: 600; } .setting .d { font-size: 12.5px; color: var(--muted); margin-top: 3px; max-width: 50ch; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page" data-screen-label="Admin · Settings">
+        <div class="page-head">
+          <div><div class="eyebrow">Platform admin</div><h1>Platform settings</h1><p class="sub">Global configuration &amp; defaults</p></div>
+          <div class="head-actions"><button class="btn btn-primary btn-sm">Save settings</button></div>
+        </div>
+        <div id="admin-nav" data-active="settings"></div>
+
+        <div class="detail-grid">
+          <div class="stack">
+            <section class="card">
+              <div class="card-head"><h2>General</h2></div>
+              <div class="card-body">
+                <div class="form-grid">
+                  <div class="field"><label>Platform region</label><select class="select"><option selected>New Zealand (ap-southeast-2)</option><option>Australia</option></select></div>
+                  <div class="field"><label>Default currency</label><select class="select"><option selected>NZD ($)</option><option>AUD ($)</option></select></div>
+                  <div class="field"><label>Default GST rate</label><div class="input-group"><input value="15" /><span class="pre" style="border-left:1px solid var(--border);border-right:none">%</span></div></div>
+                  <div class="field"><label>Fiscal year start</label><select class="select"><option selected>1 April</option><option>1 January</option><option>1 July</option></select></div>
+                </div>
+              </div>
+            </section>
+            <section class="card">
+              <div class="card-head"><h2>Tenant defaults</h2></div>
+              <div class="card-body" style="padding-top:6px">
+                <div class="setting"><div><div class="t">Auto-start free trial</div><div class="d">New signups begin a 14-day trial without a card.</div></div><button class="toggle on" onclick="this.classList.toggle('on')"></button></div>
+                <div class="setting"><div><div class="t">Allow self-serve plan changes</div><div class="d">Tenant admins can upgrade/downgrade themselves.</div></div><button class="toggle on" onclick="this.classList.toggle('on')"></button></div>
+                <div class="setting"><div><div class="t">Pass card surcharge to customer</div><div class="d">1.9% surcharge added on public invoice payment pages.</div></div><button class="toggle on" onclick="this.classList.toggle('on')"></button></div>
+                <div class="setting"><div><div class="t">Maintenance mode</div><div class="d">Show a banner &amp; block writes during deploys.</div></div><button class="toggle" onclick="this.classList.toggle('on')"></button></div>
+              </div>
+            </section>
+          </div>
+          <div class="stack">
+            <section class="card"><div class="card-body">
+              <div class="section-label">Build</div>
+              <div class="meta-row"><span class="k">Version</span><span class="v mono">v1.13.0</span></div>
+              <div class="meta-row"><span class="k">Environment</span><span class="v"><span class="badge danger"><span class="b-dot"></span>Production</span></span></div>
+              <div class="meta-row"><span class="k">Region</span><span class="v mono">ap-southeast-2</span></div>
+              <div class="meta-row"><span class="k">Deployed</span><span class="v">01 Nov 2025</span></div>
+            </div></section>
+            <section class="card"><div class="card-body">
+              <div class="section-label">Data retention</div>
+              <div class="field" style="margin-bottom:14px"><label>Audit log retention</label><select class="select"><option>1 year</option><option selected>3 years</option><option>7 years</option></select></div>
+              <div class="field"><label>Deleted tenant grace period</label><select class="select"><option>14 days</option><option selected>30 days</option><option>90 days</option></select></div>
+            </div></section>
+            <section class="card" style="border-color:var(--danger-soft)"><div class="card-body">
+              <div class="section-label" style="color:var(--danger)">Danger zone</div>
+              <button class="btn btn-ghost btn-sm" style="width:100%;margin-bottom:8px;color:var(--danger)">Purge audit logs ></button>
+              <button class="btn btn-ghost btn-sm" style="width:100%;color:var(--danger)">Rotate all API keys ></button>
+            </div></section>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="admin" data-title="Admin · Settings"></script>
+<script src="admin-nav.js"></script>
+</body>
+</html>

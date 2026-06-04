@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+.kds{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:16px;margin-top:8px}
+.ticket{background:var(--card);border:1px solid var(--border);border-radius:var(--r-card);overflow:hidden}
+.ticket.urgent{border-color:var(--danger)}.ticket .th{display:flex;justify-content:space-between;align-items:center;padding:11px 14px;border-bottom:1px solid var(--border)}
+.ticket.urgent .th{background:var(--danger-soft)}.ticket .tn{font-family:var(--mono);font-weight:600}.ticket .tt{font-family:var(--mono);font-size:12px;color:var(--muted)}
+.ticket .ti{padding:11px 14px}.ticket .it{font-size:13.5px;padding:4px 0}.ticket .it .q{font-family:var(--mono);font-weight:600;color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Kitchen display">
+        <div class="page-head"><div><div class="eyebrow">Hospitality</div><h1>Kitchen display</h1><p class="sub">6 active tickets · avg 8 min</p></div></div>
+  <div class="kds">
+    <div class="ticket urgent"><div class="th"><span class="tn">#1042 · T3</span><span class="tt" style="color:var(--danger);font-weight:600">12:40 · 14m</span></div><div class="ti"><div class="it"><span class="q">2×</span> Flat white</div><div class="it"><span class="q">1×</span> Big breakfast</div><div class="it"><span class="q">1×</span> Eggs benedict</div></div></div>
+    <div class="ticket"><div class="th"><span class="tn">#1043 · T7</span><span class="tt">12:48 · 6m</span></div><div class="ti"><div class="it"><span class="q">1×</span> Burger + fries</div><div class="it"><span class="q">1×</span> Lemonade</div></div></div>
+    <div class="ticket"><div class="th"><span class="tn">#1044 · Takeaway</span><span class="tt">12:51 · 3m</span></div><div class="ti"><div class="it"><span class="q">3×</span> Long black</div><div class="it"><span class="q">2×</span> Muffin</div></div></div>
+  </div>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="" data-title="Kitchen display"></script>
+</body>
+</html>

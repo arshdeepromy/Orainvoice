@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+.lv-type{display:inline-flex;align-items:center;gap:7px;font-size:13px;font-weight:500}
+.lv-type .sw{width:9px;height:9px;border-radius:3px;flex-shrink:0}
+.bal-bar{height:6px;border-radius:20px;background:var(--border);overflow:hidden;width:90px;margin-top:5px}
+.bal-bar > i{display:block;height:100%;border-radius:20px}
+.req-actions{display:flex;gap:6px;justify-content:flex-end}
+.btn-mini{height:30px;padding:0 11px;font-size:12.5px;border-radius:8px}
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Leave approvals">
+        <div class="page-head">
+          <div><div class="eyebrow">People · Leave</div><h1>Leave approvals</h1><p class="sub">4 requests awaiting decision · 2 staff on leave today</p></div>
+          <div class="head-actions"><button class="btn btn-ghost btn-sm">Leave calendar</button><button class="btn btn-primary btn-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>Record leave</button></div>
+        </div>
+
+        <div class="kpis">
+          <div class="kpi"><div class="top"><span class="label">Awaiting approval</span><span class="ico amber"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></span></div><div class="val">4</div><div class="delta"><span class="since">2 within 7 days</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">On leave today</span><span class="ico blue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M8 7V3m8 4V3M3 11h18M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg></span></div><div class="val">2</div></div>
+          <div class="kpi"><div class="top"><span class="label">Approved this month</span><span class="ico green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M20 6L9 17l-5-5"/></svg></span></div><div class="val">18</div></div>
+          <div class="kpi"><div class="top"><span class="label">Upcoming (30d)</span><span class="ico purple"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M8 7V3m8 4V3M3 11h18M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg></span></div><div class="val">9</div><div class="delta"><span class="since">23.5 days total</span></div></div>
+        </div>
+
+        <div class="toolbar">
+          <div class="seg"><button class="on">Pending</button><button>Approved</button><button>Declined</button><button>All</button></div>
+          <div class="spacer"></div>
+          <div class="search-input"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 21l-5-5m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg><input placeholder="Search staff…" /></div>
+          <button class="filter-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 3H2l8 9.5V19l4 2v-8.5L22 3z"/></svg>Leave type</button>
+        </div>
+
+        <section class="card">
+          <div class="tbl-wrap"><table>
+            <thead><tr><th>Employee</th><th>Type</th><th>Dates</th><th class="r">Days</th><th>Reason</th><th>Balance after</th><th></th></tr></thead>
+            <tbody>
+              <tr>
+                <td><div class="row-flex"><span class="row-av" style="background:var(--accent-soft);color:var(--accent)">SF</span><div class="cell-2"><span class="cust">Sina Faleolo</span><span class="s">Technician</span></div></div></td>
+                <td><span class="lv-type"><span class="sw" style="background:var(--accent)"></span>Annual</span></td>
+                <td><div class="cell-2"><span style="font-weight:500">16–20 Jun 2026</span><span class="s mono">requested 28 May</span></div></td>
+                <td class="r"><span class="amt">5.0</span></td>
+                <td><span style="font-size:13px;color:var(--muted)">Family holiday</span></td>
+                <td><div><span class="mono" style="font-size:13px;font-weight:600">9.5 d</span><div class="bal-bar"><i style="width:48%;background:var(--accent)"></i></div></div></td>
+                <td><div class="req-actions"><button class="btn btn-ghost btn-mini">Decline</button><button class="btn btn-primary btn-mini">Approve</button></div></td>
+              </tr>
+              <tr>
+                <td><div class="row-flex"><span class="row-av" style="background:var(--warn-soft);color:var(--warn)">TC</span><div class="cell-2"><span class="cust">Tom Cole</span><span class="s">Apprentice</span></div></div></td>
+                <td><span class="lv-type"><span class="sw" style="background:var(--danger)"></span>Sick</span></td>
+                <td><div class="cell-2"><span style="font-weight:500">3 Jun 2026</span><span class="s mono">requested today</span></div></td>
+                <td class="r"><span class="amt">1.0</span></td>
+                <td><span style="font-size:13px;color:var(--muted)">Unwell — flu</span></td>
+                <td><div><span class="mono" style="font-size:13px;font-weight:600">7.0 d</span><div class="bal-bar"><i style="width:70%;background:var(--danger)"></i></div></div></td>
+                <td><div class="req-actions"><button class="btn btn-ghost btn-mini">Decline</button><button class="btn btn-primary btn-mini">Approve</button></div></td>
+              </tr>
+              <tr>
+                <td><div class="row-flex"><span class="row-av" style="background:var(--ok-soft);color:var(--ok)">AM</span><div class="cell-2"><span class="cust">Aroha Morgan</span><span class="s">Service Advisor</span></div></div></td>
+                <td><span class="lv-type"><span class="sw" style="background:var(--accent)"></span>Annual</span></td>
+                <td><div class="cell-2"><span style="font-weight:500">7–11 Jul 2026</span><span class="s mono">requested 26 May</span></div></td>
+                <td class="r"><span class="amt">5.0</span></td>
+                <td><span style="font-size:13px;color:var(--muted)">—</span></td>
+                <td><div><span class="mono" style="font-size:13px;font-weight:600">12.0 d</span><div class="bal-bar"><i style="width:60%;background:var(--accent)"></i></div></div></td>
+                <td><div class="req-actions"><button class="btn btn-ghost btn-mini">Decline</button><button class="btn btn-primary btn-mini">Approve</button></div></td>
+              </tr>
+              <tr>
+                <td><div class="row-flex"><span class="row-av" style="background:var(--purple-soft);color:var(--purple)">RP</span><div class="cell-2"><span class="cust">Rangi Pita</span><span class="s">Panel Beater</span></div></div></td>
+                <td><span class="lv-type"><span class="sw" style="background:var(--purple)"></span>Bereavement</span></td>
+                <td><div class="cell-2"><span style="font-weight:500">4–6 Jun 2026</span><span class="s mono">requested today</span></div></td>
+                <td class="r"><span class="amt">3.0</span></td>
+                <td><span style="font-size:13px;color:var(--muted)">Tangi</span></td>
+                <td><div><span class="mono" style="font-size:13px;font-weight:600">—</span><div class="s" style="font-size:11px;color:var(--muted-2);margin-top:3px">statutory</div></div></td>
+                <td><div class="req-actions"><button class="btn btn-ghost btn-mini">Decline</button><button class="btn btn-primary btn-mini">Approve</button></div></td>
+              </tr>
+            </tbody>
+          </table></div>
+          <div class="pagination"><div class="info">Showing <span class="mono">4</span> pending requests</div><div class="pg-btns"><button disabled>‹</button><button class="on">1</button><button disabled>›</button></div></div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="staff" data-title="Leave approvals"></script>
+<script>
+document.querySelectorAll('.seg button').forEach(b=>b.addEventListener('click',()=>{b.parentElement.querySelectorAll('button').forEach(x=>x.classList.remove('on'));b.classList.add('on');}));
+</script>
+</body>
+</html>

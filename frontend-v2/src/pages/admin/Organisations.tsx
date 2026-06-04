@@ -1,0 +1,747 @@
+import { useState, useEffect, useMemo } from 'react'
+import { Link } from 'react-router-dom'
+import {
+  Button,
+  Badge,
+  Spinner,
+  AlertBanner,
+  DataTable,
+  type Column,
+  Modal,
+  Input,
+  Select,
+  ToastContainer,
+  useToast,
+} from '@/components/ui'
+import apiClient from '@/api/client'
+import { SuspendModal } from '@/components/admin/SuspendModal'
+import { DeleteModal } from '@/components/admin/DeleteModal'
+import { MovePlanModal } from '@/components/admin/MovePlanModal'
+import { ApplyCouponModal } from '@/components/admin/ApplyCouponModal'
+
+/* ── Types ── */
+
+export type OrgStatus = 'active' | 'trial' | 'suspended' | 'deleted' | 'payment_pending'
+export type BillingStatus = 'current' | 'overdue' | 'unpaid' | 'trial'
+
+export interface Organisation {
+  id: string
+  name: string
+  plan_name: string
+  plan_id: string
+  status: OrgStatus
+  billing_status: BillingStatus
+  signup_date: string
+  storage_used_gb: number
+  storage_quota_gb: number
+  last_login: string | null
+  next_billing_date: string | null
+  billing_interval: string
+  [key: string]: unknown
+}
+
+export interface Plan {
+  id: string
+  name: string
+  [key: string]: unknown
+}
+
+const STATUS_BADGE_MAP: Record<OrgStatus, { variant: 'success' | 'info' | 'warn' | 'danger' | 'neutral'; label: string }> = {
+  active: { variant: 'success', label: 'Active' },
+  trial: { variant: 'info', label: 'Trial' },
+  payment_pending: { variant: 'warn', label: 'Payment Pending' },
+  suspended: { variant: 'warn', label: 'Suspended' },
+  deleted: { variant: 'danger', label: 'Deleted' },
+}
+
+const BILLING_BADGE_MAP: Record<BillingStatus, { variant: 'success' | 'info' | 'warn' | 'danger' | 'neutral'; label: string }> = {
+  current: { variant: 'success', label: 'Current' },
+  trial: { variant: 'info', label: 'Trial' },
+  overdue: { variant: 'warn', label: 'Overdue' },
+  unpaid: { variant: 'danger', label: 'Unpaid' },
+}
+
+/* ── Helpers ── */
+
+function formatDate(iso: string | null): string {
+  if (!iso) return '—'
+  return new Date(iso).toLocaleDateString('en-NZ', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  })
+}
+
+function formatStorage(usedGb: number, quotaGb: number): string {
+  return `${usedGb.toFixed(1)} / ${quotaGb} GB`
+}
+
+/* ── Provision New Org Modal ── */
+
+function ProvisionModal({
+  open,
+  onClose,
+  onSave,
+  saving,
+  plans,
+}: {
+  open: boolean
+  onClose: () => void
+  onSave: (data: { name: string; plan_id: string; admin_email: string }) => void
+  saving: boolean
+  plans: Plan[]
+}) {
+  const [name, setName] = useState('')
+  const [planId, setPlanId] = useState('')
+  const [adminEmail, setAdminEmail] = useState('')
+  const [errors, setErrors] = useState<Record<string, string>>({})
+
+  useEffect(() => {
+    if (open) {
+      setName('')
+      setPlanId(plans[0]?.id ?? '')
+      setAdminEmail('')
+      setErrors({})
+    }
+  }, [open, plans])
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    const newErrors: Record<string, string> = {}
+    if (!name.trim()) newErrors.name = 'Organisation name is required'
+    if (!planId) newErrors.plan_id = 'Please select a plan'
+    if (!adminEmail.trim()) newErrors.admin_email = 'Admin email is required'
+    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adminEmail)) newErrors.admin_email = 'Please enter a valid email'
+    if (Object.keys(newErrors).length > 0) {
+      setErrors(newErrors)
+      return
+    }
+    onSave({ name: name.trim(), plan_id: planId, admin_email: adminEmail.trim() })
+  }
+
+  return (
+    <Modal open={open} onClose={onClose} title="Provision new organisation">
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <Input
+          label="Organisation name"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          error={errors.name}
+        />
+        <Select
+          label="Subscription plan"
+          options={plans.map((p) => ({ value: p.id, label: p.name }))}
+          value={planId}
+          onChange={(e) => setPlanId(e.target.value)}
+          error={errors.plan_id}
+        />
+        <Input
+          label="Org Admin email"
+          type="email"
+          value={adminEmail}
+          onChange={(e) => setAdminEmail(e.target.value)}
+          error={errors.admin_email}
+          helperText="An invitation email will be sent to this address"
+        />
+        <div className="flex justify-end gap-3 pt-2">
+          <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button type="submit" loading={saving}>Provision organisation</Button>
+        </div>
+      </form>
+    </Modal>
+  )
+}
+
+/* ── SuspendModal imported from @/components/admin/SuspendModal ── */
+
+/* ── DeleteModal imported from @/components/admin/DeleteModal ── */
+
+/* ── Hard Delete Modal (permanent deletion with extra confirmation) ── */
+
+function HardDeleteModal({
+  open,
+  onClose,
+  onConfirm,
+  saving,
+  orgName,
+}: {
+  open: boolean
+  onClose: () => void
+  onConfirm: (reason: string) => void
+  saving: boolean
+  orgName: string
+}) {
+  const [step, setStep] = useState<1 | 2>(1)
+  const [reason, setReason] = useState('')
+  const [confirmText, setConfirmText] = useState('')
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    if (open) { setStep(1); setReason(''); setConfirmText(''); setError('') }
+  }, [open])
+
+  const handleStep1 = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!reason.trim()) { setError('A reason is required for permanent deletion'); return }
+    setError('')
+    setStep(2)
+  }
+
+  const handleStep2 = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (confirmText !== 'PERMANENTLY DELETE') { 
+      setError('You must type "PERMANENTLY DELETE" exactly to confirm'); 
+      return 
+    }
+    onConfirm(reason.trim())
+  }
+
+  return (
+    <Modal open={open} onClose={onClose} title="⚠️ PERMANENT DELETION">
+      {step === 1 ? (
+        <form onSubmit={handleStep1} className="space-y-4">
+          <AlertBanner variant="error" title="THIS ACTION CANNOT BE UNDONE">
+            Permanently deleting <span className="font-semibold">{orgName}</span> will:
+            <ul className="list-disc list-inside mt-2 space-y-1">
+              <li>Remove ALL data from the database</li>
+              <li>Delete all users, vehicles, customers, invoices</li>
+              <li>Delete all quotes, bookings, and settings</li>
+              <li>This is IRREVERSIBLE - data cannot be recovered</li>
+            </ul>
+          </AlertBanner>
+          <Input
+            label="Reason for permanent deletion"
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            error={error}
+            helperText="This will be logged for compliance"
+          />
+          <div className="flex justify-end gap-3 pt-2">
+            <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
+            <Button type="submit" variant="danger">Continue</Button>
+          </div>
+        </form>
+      ) : (
+        <form onSubmit={handleStep2} className="space-y-4">
+          <p className="text-sm text-muted font-semibold">
+            To confirm PERMANENT deletion, type exactly: <span className="font-mono bg-danger-soft px-2 py-1 rounded">PERMANENTLY DELETE</span>
+          </p>
+          <Input
+            label="Type to confirm"
+            value={confirmText}
+            onChange={(e) => setConfirmText(e.target.value)}
+            error={error}
+            placeholder="PERMANENTLY DELETE"
+          />
+          <div className="flex justify-end gap-3 pt-2">
+            <Button type="button" variant="ghost" onClick={() => setStep(1)}>Back</Button>
+            <Button type="submit" variant="danger" loading={saving}>⚠️ DELETE PERMANENTLY</Button>
+          </div>
+        </form>
+      )}
+    </Modal>
+  )
+}
+
+/* ── MovePlanModal imported from @/components/admin/MovePlanModal ── */
+
+/* ── Billing Date Modal ── */
+
+function BillingDateModal({
+  open,
+  onClose,
+  onConfirm,
+  saving,
+  orgName,
+  currentDate,
+}: {
+  open: boolean
+  onClose: () => void
+  onConfirm: (date: string) => void
+  saving: boolean
+  orgName: string
+  currentDate: string | null
+}) {
+  const [date, setDate] = useState('')
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    if (open) {
+      setDate(currentDate ? currentDate.split('T')[0] : '')
+      setError('')
+    }
+  }, [open, currentDate])
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!date) { setError('Please select a billing date'); return }
+    onConfirm(date)
+  }
+
+  return (
+    <Modal open={open} onClose={onClose} title="Set next billing date">
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <p className="text-sm text-muted">
+          Set or change the next billing date for <span className="font-semibold">{orgName}</span>.
+          {currentDate && (
+            <span className="block mt-1 text-muted-2">
+              Current: {new Date(currentDate).toLocaleDateString('en-NZ', { day: 'numeric', month: 'short', year: 'numeric' })}
+            </span>
+          )}
+        </p>
+        <Input
+          label="Next billing date"
+          type="date"
+          value={date}
+          onChange={(e) => setDate(e.target.value)}
+          error={error}
+        />
+        <div className="flex justify-end gap-3 pt-2">
+          <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button type="submit" loading={saving}>Save date</Button>
+        </div>
+      </form>
+    </Modal>
+  )
+}
+
+/* ── ApplyCouponModal imported from @/components/admin/ApplyCouponModal ── */
+
+/* ── Main Page ── */
+
+export function Organisations() {
+  const [orgs, setOrgs] = useState<Organisation[]>([])
+  const [plans, setPlans] = useState<Plan[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(false)
+  const [search, setSearch] = useState('')
+  const [statusFilter, setStatusFilter] = useState<string>('')
+
+  // Modal state
+  const [provisionOpen, setProvisionOpen] = useState(false)
+  const [suspendOrg, setSuspendOrg] = useState<Organisation | null>(null)
+  const [deleteOrg, setDeleteOrg] = useState<Organisation | null>(null)
+  const [hardDeleteOrg, setHardDeleteOrg] = useState<Organisation | null>(null)
+  const [movePlanOrg, setMovePlanOrg] = useState<Organisation | null>(null)
+  const [billingDateOrg, setBillingDateOrg] = useState<Organisation | null>(null)
+  const [applyCouponOrg, setApplyCouponOrg] = useState<Organisation | null>(null)
+  const [saving, setSaving] = useState(false)
+
+  const { toasts, addToast, dismissToast } = useToast()
+
+  const fetchData = async () => {
+    setLoading(true)
+    setError(false)
+    try {
+      const [orgsRes, plansRes] = await Promise.all([
+        apiClient.get<{ organisations: Array<Record<string, any>>; total: number }>('/admin/organisations'),
+        apiClient.get<{ plans: Plan[]; total: number }>('/admin/plans'),
+      ])
+      setOrgs((orgsRes.data?.organisations ?? []).map((o) => ({
+        id: o.id,
+        name: o.name,
+        plan_name: o.plan_name,
+        plan_id: o.plan_id,
+        status: o.status as OrgStatus,
+        billing_status: (o.status === 'active' ? 'current' : o.status === 'trial' ? 'trial' : 'overdue') as BillingStatus,
+        signup_date: o.created_at,
+        storage_used_gb: Math.round((o.storage_used_bytes ?? 0) / (1024 * 1024 * 1024) * 10) / 10,
+        storage_quota_gb: o.storage_quota_gb,
+        last_login: o.last_login_at || null,
+        next_billing_date: o.next_billing_date ?? null,
+        billing_interval: o.billing_interval ?? 'monthly',
+      })))
+      setPlans(plansRes.data?.plans ?? [])
+    } catch {
+      setError(true)
+      addToast('error', 'Failed to load organisations')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { fetchData() }, [])
+
+  const filteredOrgs = useMemo(() => {
+    let result = orgs
+    if (search.trim()) {
+      const q = search.toLowerCase()
+      result = result.filter(
+        (o) =>
+          o.name.toLowerCase().includes(q) ||
+          o.plan_name.toLowerCase().includes(q),
+      )
+    }
+    if (statusFilter) {
+      result = result.filter((o) => o.status === statusFilter)
+    }
+    return result
+  }, [orgs, search, statusFilter])
+
+  /* ── Actions ── */
+
+  const handleProvision = async (data: { name: string; plan_id: string; admin_email: string }) => {
+    setSaving(true)
+    try {
+      await apiClient.post('/admin/organisations', data)
+      addToast('success', `Organisation "${data.name}" provisioned`)
+      setProvisionOpen(false)
+      fetchData()
+    } catch {
+      addToast('error', 'Failed to provision organisation')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleSuspend = async (reason: string) => {
+    if (!suspendOrg) return
+    setSaving(true)
+    try {
+      await apiClient.put(`/admin/organisations/${suspendOrg.id}`, { action: 'suspend', reason })
+      addToast('success', `Organisation "${suspendOrg.name}" suspended`)
+      setSuspendOrg(null)
+      fetchData()
+    } catch {
+      addToast('error', 'Failed to suspend organisation')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleReinstate = async (org: Organisation) => {
+    try {
+      await apiClient.put(`/admin/organisations/${org.id}`, { action: 'reinstate' })
+      addToast('success', `Organisation "${org.name}" reinstated`)
+      fetchData()
+    } catch {
+      addToast('error', 'Failed to reinstate organisation')
+    }
+  }
+
+  const handleDelete = async (reason: string) => {
+    if (!deleteOrg) return
+    setSaving(true)
+    try {
+      // Step 1: Request deletion (get confirmation token)
+      const res = await apiClient.put(`/admin/organisations/${deleteOrg.id}`, {
+        action: 'delete_request',
+        reason,
+      })
+      const token = res.data.confirmation_token
+      // Step 2: Confirm deletion
+      await apiClient.delete(`/admin/organisations/${deleteOrg.id}`, {
+        data: { reason, confirmation_token: token },
+      })
+      addToast('success', `Organisation "${deleteOrg.name}" soft deleted`)
+      setDeleteOrg(null)
+      fetchData()
+    } catch {
+      addToast('error', 'Failed to delete organisation')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleHardDelete = async (reason: string) => {
+    if (!hardDeleteOrg) return
+    setSaving(true)
+    try {
+      // Step 1: Request hard deletion (get confirmation token)
+      const res = await apiClient.put(`/admin/organisations/${hardDeleteOrg.id}`, {
+        action: 'hard_delete_request',
+        reason,
+      })
+      const token = res.data.confirmation_token
+      // Step 2: Confirm hard deletion
+      await apiClient.delete(`/admin/organisations/${hardDeleteOrg.id}/hard`, {
+        data: { 
+          reason, 
+          confirmation_token: token,
+          confirm_text: 'PERMANENTLY DELETE',
+        },
+      })
+      addToast('success', `Organisation "${hardDeleteOrg.name}" permanently deleted`)
+      // Immediately remove from UI without refetching
+      setOrgs((prev) => prev.filter((o) => o.id !== hardDeleteOrg.id))
+      setHardDeleteOrg(null)
+    } catch (err: any) {
+      const errorMsg = err?.response?.data?.detail || 'Failed to permanently delete organisation'
+      addToast('error', errorMsg)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleMovePlan = async (planId: string) => {
+    if (!movePlanOrg) return
+    setSaving(true)
+    try {
+      await apiClient.put(`/admin/organisations/${movePlanOrg.id}`, {
+        action: 'move_plan',
+        new_plan_id: planId,
+      })
+      addToast('success', `Organisation "${movePlanOrg.name}" moved to new plan`)
+      setMovePlanOrg(null)
+      fetchData()
+    } catch {
+      addToast('error', 'Failed to move organisation to new plan')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleSetBillingDate = async (date: string) => {
+    if (!billingDateOrg) return
+    setSaving(true)
+    try {
+      await apiClient.put(`/admin/organisations/${billingDateOrg.id}`, {
+        action: 'set_billing_date',
+        next_billing_date: date,
+      })
+      addToast('success', `Billing date updated for "${billingDateOrg.name}"`)
+      setBillingDateOrg(null)
+      fetchData()
+    } catch {
+      addToast('error', 'Failed to update billing date')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleApplyCouponSuccess = () => {
+    addToast('success', `Coupon applied to ${applyCouponOrg?.name}`)
+    setApplyCouponOrg(null)
+    fetchData()
+  }
+
+  /* ── Table columns ── */
+
+  const columns: Column<Organisation>[] = [
+    {
+      key: 'name',
+      header: 'Organisation',
+      sortable: true,
+      render: (row) => (
+        <Link
+          to={`/admin/organisations/${row.id}`}
+          className="text-accent hover:brightness-110 hover:underline font-medium"
+        >
+          {row.name}
+        </Link>
+      ),
+    },
+    { key: 'plan_name', header: 'Plan', sortable: true },
+    {
+      key: 'status',
+      header: 'Status',
+      sortable: true,
+      render: (row) => {
+        const badge = STATUS_BADGE_MAP[row.status] ?? { variant: 'neutral' as const, label: row.status }
+        return <Badge variant={badge.variant}>{badge.label}</Badge>
+      },
+    },
+    {
+      key: 'signup_date',
+      header: 'Signup date',
+      sortable: true,
+      render: (row) => <span className="mono">{formatDate(row.signup_date)}</span>,
+    },
+    {
+      key: 'next_billing_date',
+      header: 'Next billing',
+      sortable: true,
+      render: (row) => <span className="mono">{row.next_billing_date ? formatDate(row.next_billing_date) : '—'}</span>,
+    },
+    {
+      key: 'billing_status',
+      header: 'Billing',
+      sortable: true,
+      render: (row) => {
+        const badge = BILLING_BADGE_MAP[row.billing_status] ?? { variant: 'neutral' as const, label: row.billing_status }
+        return <Badge variant={badge.variant}>{badge.label}</Badge>
+      },
+    },
+    {
+      key: 'storage_used_gb',
+      header: 'Storage',
+      sortable: true,
+      render: (row) => <span className="mono">{formatStorage(row.storage_used_gb, row.storage_quota_gb)}</span>,
+    },
+    {
+      key: 'last_login',
+      header: 'Last login',
+      sortable: true,
+      render: (row) => <span className="mono">{formatDate(row.last_login)}</span>,
+    },
+    {
+      key: 'id',
+      header: 'Actions',
+      render: (row) => (
+        <div className="flex gap-2 flex-wrap">
+          {row.status !== 'suspended' && row.status !== 'deleted' && (
+            <Button size="sm" variant="ghost" onClick={() => setSuspendOrg(row)}>
+              Suspend
+            </Button>
+          )}
+          {row.status === 'suspended' && (
+            <Button size="sm" variant="ghost" onClick={() => handleReinstate(row)}>
+              Reinstate
+            </Button>
+          )}
+          {row.status !== 'deleted' && (
+            <Button size="sm" variant="ghost" onClick={() => setMovePlanOrg(row)}>
+              Move plan
+            </Button>
+          )}
+          {row.status !== 'deleted' && (
+            <Button size="sm" variant="ghost" onClick={() => setBillingDateOrg(row)}>
+              Billing date
+            </Button>
+          )}
+          {row.status !== 'deleted' && (
+            <Button size="sm" variant="ghost" onClick={() => setApplyCouponOrg(row)}>
+              Apply Coupon
+            </Button>
+          )}
+          {row.status !== 'deleted' && (
+            <>
+              <Button size="sm" variant="danger" onClick={() => setDeleteOrg(row)}>
+                Soft Delete
+              </Button>
+              <Button size="sm" variant="danger" onClick={() => setHardDeleteOrg(row)}>
+                Hard Delete
+              </Button>
+            </>
+          )}
+        </div>
+      ),
+    },
+  ]
+
+  /* ── Render ── */
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <Spinner label="Loading organisations" />
+      </div>
+    )
+  }
+
+  if (error && orgs.length === 0) {
+    return (
+      <AlertBanner variant="error" title="Something went wrong">
+        We couldn't load the organisations list. Please refresh the page or try again later.
+      </AlertBanner>
+    )
+  }
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-2xl font-semibold text-text">Organisations</h1>
+        <div className="flex gap-2">
+          <Button variant="ghost" onClick={async () => {
+            if (!confirm('Reset the Demo Workshop account? This will delete all demo data (invoices, customers, vehicles, SMS) and reset the password to demo123.')) return
+            try {
+              await apiClient.post('/admin/demo/reset')
+              addToast('success', 'Demo account reset successfully')
+              fetchData()
+            } catch {
+              addToast('error', 'Failed to reset demo account')
+            }
+          }}>
+            Reset Demo Account
+          </Button>
+          <Button onClick={() => setProvisionOpen(true)}>Provision new organisation</Button>
+        </div>
+      </div>
+
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
+
+      <div className="flex flex-col sm:flex-row gap-3 mb-4">
+        <Input
+          label="Search organisations"
+          placeholder="Search by name or plan..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="sm:w-72"
+        />
+        <Select
+          label="Filter by status"
+          options={[
+            { value: '', label: 'All statuses' },
+            { value: 'active', label: 'Active' },
+            { value: 'trial', label: 'Trial' },
+            { value: 'suspended', label: 'Suspended' },
+            { value: 'deleted', label: 'Deleted' },
+          ]}
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value)}
+        />
+      </div>
+
+      <DataTable
+        columns={columns}
+        data={filteredOrgs}
+        keyField="id"
+        caption="Organisations management table"
+      />
+
+      {/* Modals */}
+      <ProvisionModal
+        open={provisionOpen}
+        onClose={() => setProvisionOpen(false)}
+        onSave={handleProvision}
+        saving={saving}
+        plans={plans}
+      />
+      <SuspendModal
+        open={!!suspendOrg}
+        onClose={() => setSuspendOrg(null)}
+        onConfirm={handleSuspend}
+        saving={saving}
+        orgName={suspendOrg?.name ?? ''}
+      />
+      <DeleteModal
+        open={!!deleteOrg}
+        onClose={() => setDeleteOrg(null)}
+        onConfirm={handleDelete}
+        saving={saving}
+        orgName={deleteOrg?.name ?? ''}
+      />
+      <HardDeleteModal
+        open={!!hardDeleteOrg}
+        onClose={() => setHardDeleteOrg(null)}
+        onConfirm={handleHardDelete}
+        saving={saving}
+        orgName={hardDeleteOrg?.name ?? ''}
+      />
+      <MovePlanModal
+        open={!!movePlanOrg}
+        onClose={() => setMovePlanOrg(null)}
+        onConfirm={handleMovePlan}
+        saving={saving}
+        orgName={movePlanOrg?.name ?? ''}
+        currentPlanId={movePlanOrg?.plan_id ?? ''}
+        plans={plans}
+      />
+      <BillingDateModal
+        open={!!billingDateOrg}
+        onClose={() => setBillingDateOrg(null)}
+        onConfirm={handleSetBillingDate}
+        saving={saving}
+        orgName={billingDateOrg?.name ?? ''}
+        currentDate={billingDateOrg?.next_billing_date ?? null}
+      />
+      <ApplyCouponModal
+        open={!!applyCouponOrg}
+        onClose={() => setApplyCouponOrg(null)}
+        onSuccess={handleApplyCouponSuccess}
+        orgName={applyCouponOrg?.name ?? ''}
+        orgId={applyCouponOrg?.id ?? ''}
+      />
+    </div>
+  )
+}

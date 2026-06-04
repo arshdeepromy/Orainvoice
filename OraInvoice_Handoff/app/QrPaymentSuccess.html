@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<title>Payment successful</title>
+</head>
+<body style="background:var(--canvas)">
+<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px" data-screen-label="QR payment success">
+  <div style="max-width:380px;width:100%;background:var(--card);border:1px solid var(--border);border-radius:20px;box-shadow:var(--shadow-card);padding:40px;text-align:center">
+    <div style="width:80px;height:80px;border-radius:50%;background:var(--ok-soft);display:grid;place-items:center;margin:0 auto 22px"><svg viewBox="0 0 24 24" width="42" height="42" fill="none" stroke="var(--ok)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></div>
+    <h1 style="font-size:24px">Payment successful</h1>
+    <p style="font-size:15px;color:var(--muted);margin:10px 0 0">You can close this page.</p>
+    <div style="margin-top:22px;background:var(--canvas);border-radius:var(--r-ctl);padding:13px 16px;text-align:left">
+      <div class="meta-row" style="padding:6px 0;border:none"><span class="k" style="color:var(--muted);font-size:12.5px">Invoice</span><span class="v mono" style="font-size:12.5px">INV-2039</span></div>
+      <div class="meta-row" style="padding:6px 0;border:none"><span class="k" style="color:var(--muted);font-size:12.5px">Amount</span><span class="v mono" style="font-size:12.5px">$248.00</span></div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

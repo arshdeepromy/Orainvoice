@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page" data-screen-label="Admin · Profile">
+        <div class="page-head">
+          <div><div class="eyebrow">Platform admin</div><h1>My profile</h1><p class="sub">Your admin account &amp; security</p></div>
+        </div>
+        <div id="admin-nav" data-active="profile"></div>
+
+        <div class="detail-grid">
+          <div class="stack">
+            <section class="card"><div class="card-body">
+              <div style="display:flex;align-items:center;gap:16px;margin-bottom:20px">
+                <div style="width:58px;height:58px;border-radius:15px;background:#2F62F0;display:grid;place-items:center;color:#fff;font-weight:700;font-size:22px">AR</div>
+                <div><div style="font-size:17px;font-weight:700">Arsh Randhawa</div><div style="font-size:13px;color:var(--muted)">Super admin · arsh@orainvoice.co.nz</div></div>
+                <button class="btn btn-ghost btn-sm" style="margin-left:auto">Change photo</button>
+              </div>
+              <div class="form-grid">
+                <div class="field"><label>First name</label><input class="input" value="Arsh" /></div>
+                <div class="field"><label>Last name</label><input class="input" value="Randhawa" /></div>
+                <div class="field"><label>Email</label><input class="input" value="arsh@orainvoice.co.nz" /></div>
+                <div class="field"><label>Phone</label><input class="input mono" value="021 553 110" /></div>
+                <div class="field"><label>Timezone</label><select class="select"><option selected>Pacific/Auckland (NZDT)</option><option>Australia/Sydney</option></select></div>
+                <div class="field"><label>Language</label><select class="select"><option selected>English (NZ)</option></select></div>
+              </div>
+              <div style="margin-top:18px"><button class="btn btn-primary btn-sm">Save changes</button></div>
+            </div></section>
+
+            <section class="card">
+              <div class="card-head"><h2>Change password</h2></div>
+              <div class="card-body">
+                <div class="form-grid">
+                  <div class="field full"><label>Current password</label><input class="input" type="password" placeholder="••••••••••••" /></div>
+                  <div class="field"><label>New password</label><input class="input" type="password" placeholder="At least 10 characters" /></div>
+                  <div class="field"><label>Confirm new password</label><input class="input" type="password" /></div>
+                </div>
+                <div style="margin-top:16px"><button class="btn btn-ghost btn-sm">Update password</button></div>
+              </div>
+            </section>
+          </div>
+
+          <div class="stack">
+            <section class="card"><div class="card-body">
+              <div class="section-label">Two-factor authentication</div>
+              <div class="meta-row"><span class="k">Authenticator app</span><span class="v"><span class="badge active"><span class="b-dot"></span>Enabled</span></span></div>
+              <div class="meta-row"><span class="k">Passkey</span><span class="v"><span class="badge active"><span class="b-dot"></span>1 registered</span></span></div>
+              <div class="meta-row"><span class="k">Backup codes</span><span class="v mono" style="font-weight:400;color:var(--muted)">6 remaining</span></div>
+              <div style="display:flex;gap:8px;margin-top:14px"><a class="btn btn-ghost btn-sm" href="MfaVerify.html">Manage 2FA</a><button class="btn btn-ghost btn-sm">New codes</button></div>
+            </div></section>
+            <section class="card"><div class="card-body">
+              <div class="section-label">Active sessions</div>
+              <div class="meta-row"><span class="k">MacBook · Auckland</span><span class="v"><span class="badge active"><span class="b-dot"></span>This device</span></span></div>
+              <div class="meta-row"><span class="k">iPhone · Auckland</span><span class="v mono" style="font-weight:400;color:var(--muted)">2h ago</span></div>
+              <button class="btn btn-ghost btn-sm" style="width:100%;margin-top:12px;color:var(--danger)">Sign out all other sessions</button>
+            </div></section>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="admin" data-title="Admin · Profile"></script>
+<script src="admin-nav.js"></script>
+</body>
+</html>

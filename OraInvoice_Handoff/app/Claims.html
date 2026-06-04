@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Customer claims">
+        <div class="page-head"><div><div class="eyebrow">Service</div><h1>Customer claims</h1><p class="sub">7 open · 2 awaiting parts · avg resolution 4.2 days</p></div><div class="head-actions"><a class="btn btn-primary btn-sm" href="ClaimCreate.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>New claim</a></div></div>
+        <div class="tabs"><div class="tab on">All</div><div class="tab ">Open</div><div class="tab ">Awaiting parts</div><div class="tab ">Resolved</div><div class="tab ">Rejected</div></div>
+        <div class="toolbar"><div class="search-input" style="flex:1;max-width:320px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 21l-5-5m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg><input placeholder="Search…"></div><button class="filter-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 4h18M6 12h12M10 20h4"/></svg>Filters</button></div>
+<section class="card"><div class="tbl-wrap"><table><thead><tr><th class="">Claim</th><th class="">Customer</th><th class="">Vehicle</th><th class="">Raised</th><th class="">Status</th><th class="r">Value</th></tr></thead><tbody><tr class="clickable" onclick="location.href='ClaimDetail.html'"><td class=""><span class="id">CLM-204</span></td><td class="">K. Williams</td><td class=""><span class="mono" style="color:var(--muted)">KMR-218</span></td><td class=""><span class="mono" style="color:var(--muted)">10 Nov</span></td><td class=""><span class="badge inprogress"><span class="b-dot"></span>Open</span></td><td class="r"><span class="amt">$340.00</span></td></tr><tr class="clickable" onclick="location.href='ClaimDetail.html'"><td class=""><span class="id">CLM-203</span></td><td class="">Coastal Builders</td><td class=""><span class="mono" style="color:var(--muted)">JDC-991</span></td><td class=""><span class="mono" style="color:var(--muted)">08 Nov</span></td><td class=""><span class="badge warn"><span class="b-dot"></span>Awaiting parts</span></td><td class="r"><span class="amt">$1,120.00</span></td></tr><tr class="clickable" onclick="location.href='ClaimDetail.html'"><td class=""><span class="id">CLM-202</span></td><td class="">M. Taufa</td><td class=""><span class="mono" style="color:var(--muted)">HLX-302</span></td><td class=""><span class="mono" style="color:var(--muted)">04 Nov</span></td><td class=""><span class="badge success"><span class="b-dot"></span>Resolved</span></td><td class="r"><span class="amt">$0.00</span></td></tr></tbody></table></div></section>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="" data-title="Customer claims" data-primary="New claim" data-primary-href="ClaimCreate.html"></script>
+<script>
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));t.classList.add('on');}));
+</script>
+</body>
+</html>

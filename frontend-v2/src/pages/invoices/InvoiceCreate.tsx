@@ -1,0 +1,2804 @@
+import { useState, useCallback, useEffect, useRef } from 'react'
+import { useParams, useNavigate } from 'react-router-dom'
+import apiClient from '@/api/client'
+import { Button, Input, Select, Spinner, Modal } from '@/components/ui'
+import { CustomerCreateModal } from '@/components/customers/CustomerCreateModal'
+import { VehicleLiveSearch } from '@/components/vehicles/VehicleLiveSearch'
+import { AddToStockModal } from '@/components/inventory/AddToStockModal'
+import { QrPaymentWaitingPopup } from './QrPaymentWaitingPopup'
+import { IssueInvoiceModal } from './IssueInvoiceModal'
+import { useTenant } from '@/contexts/TenantContext'
+import { useBranch } from '@/contexts/BranchContext'
+import { useAuth } from '@/contexts/AuthContext'
+import { ModuleGate } from '@/components/common/ModuleGate'
+import { useModules } from '@/contexts/ModuleContext'
+import { getInspectionLabel } from '@/utils/vehicleHelpers'
+import { setNavigationGuard, clearNavigationGuard } from '@/utils/navigationGuard'
+
+/* ============================================================
+   InvoiceCreate — Task 20 port of frontend/src/pages/invoices/InvoiceCreate.tsx.
+
+   This is the full invoice create/edit form. EVERY calculation (line totals,
+   GST inclusive/exclusive back-calculation, per-line gst-exempt handling,
+   discount %/fixed, subtotal/gst/total) is copied BYTE-FOR-BYTE from the
+   original — this is money, do not "simplify". All API calls, validation,
+   autosave/dirty-guard (navigationGuard), modals, and role/module/trade-family
+   gating are preserved verbatim. The Button `secondary` variant from the
+   original is mapped to the v2 `ghost` variant (v2 Button has no `secondary`).
+   The neutral gray/blue palette is available in v2 and kept here; the page is
+   framed in the prototype's canvas/card/sticky-header language (FR-2 / FR-2b).
+   ============================================================ */
+
+/* ------------------------------------------------------------------ */
+/*  Types                                                              */
+/* ------------------------------------------------------------------ */
+
+interface Customer {
+  id: string
+  first_name: string
+  last_name: string
+  email: string
+  phone: string
+  mobile_phone?: string
+  company_name?: string
+  display_name?: string
+  linked_vehicles?: LinkedVehicle[]
+}
+
+interface LinkedVehicle {
+  id: string
+  rego: string
+  make: string | null
+  model: string | null
+  year: number | null
+  colour: string | null
+  odometer?: number | null
+  service_due_date?: string | null
+  wof_expiry?: string | null
+  cof_expiry?: string | null
+  inspection_type?: string | null
+}
+
+interface Vehicle {
+  id: string
+  rego: string
+  make: string
+  model: string
+  year: number | null
+  colour: string
+  body_type: string
+  fuel_type: string
+  engine_size: string
+  wof_expiry: string | null
+  cof_expiry: string | null
+  inspection_type: string | null
+  registration_expiry: string | null
+  odometer?: number | null
+  newOdometer?: number | null
+  service_due_date?: string | null
+  newServiceDueDate?: string | null
+  newWofExpiry?: string | null
+  newCofExpiry?: string | null
+}
+
+interface CatalogueItem {
+  id: string
+  name: string
+  description?: string
+  default_price: number
+  gst_applicable: boolean
+  gst_inclusive?: boolean
+  category?: string
+  sku?: string
+  is_package?: boolean
+}
+
+interface TaxRate {
+  id: string
+  name: string
+  rate: number
+}
+
+interface Salesperson {
+  id: string
+  name: string
+}
+
+interface LineItem {
+  key: string
+  item_id?: string
+  stock_item_id?: string
+  description: string
+  line_description?: string
+  original_description?: string
+  quantity: number
+  rate: number
+  tax_id?: string
+  tax_rate: number
+  amount: number
+  gst_inclusive?: boolean
+  /** Original GST-inclusive unit price (before back-calculation to ex-GST rate). */
+  inclusive_price?: number
+  /** Tracks the user-entered inc-GST total for the Amount field (avoids circular re-render). */
+  _incGstTotal?: number
+}
+
+interface FormErrors {
+  customer?: string
+  lineItems?: string
+  submit?: string
+  [key: string]: string | undefined
+}
+
+/* ------------------------------------------------------------------ */
+/*  Constants                                                          */
+/* ------------------------------------------------------------------ */
+
+const PAYMENT_TERMS_OPTIONS = [
+  { value: 'due_on_receipt', label: 'Due on Receipt' },
+  { value: 'net_7', label: 'Net 7' },
+  { value: 'net_15', label: 'Net 15' },
+  { value: 'net_30', label: 'Net 30' },
+  { value: 'net_45', label: 'Net 45' },
+  { value: 'net_60', label: 'Net 60' },
+  { value: 'net_90', label: 'Net 90' },
+  { value: 'custom', label: 'Custom' },
+]
+
+const DEFAULT_TAX_RATES: TaxRate[] = [
+  { id: 'gst_15', name: 'GST (15%)', rate: 15 },
+  { id: 'gst_0', name: 'GST Exempt (0%)', rate: 0 },
+]
+
+/* ------------------------------------------------------------------ */
+/*  Helpers                                                            */
+/* ------------------------------------------------------------------ */
+
+function formatNZD(amount: number): string {
+  return new Intl.NumberFormat('en-NZ', {
+    style: 'currency',
+    currency: 'NZD',
+  }).format(amount)
+}
+
+/** Safely extract a human-readable string from any API error shape.
+ *  Handles: string, Pydantic array [{msg, loc, ...}], or unknown objects. */
+function extractErrorMsg(detail: unknown, fallback: string): string {
+  if (!detail) return fallback
+  if (typeof detail === 'string') return detail
+  if (Array.isArray(detail)) {
+    const first = detail[0]
+    if (first && typeof first === 'object' && 'msg' in first) {
+      const loc = Array.isArray((first as any).loc) ? (first as any).loc.join(' → ') : ''
+      return loc ? `${loc}: ${(first as any).msg}` : String((first as any).msg)
+    }
+    return fallback
+  }
+  return fallback
+}
+
+function formatDate(date: Date): string {
+  return date.toISOString().split('T')[0]
+}
+
+/** Format bytes into a human-readable file size string (e.g. "1.2 MB") */
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function calculateDueDate(invoiceDate: string, terms: string): string {
+  const date = new Date(invoiceDate)
+  const daysMap: Record<string, number> = {
+    due_on_receipt: 0,
+    net_7: 7,
+    net_15: 15,
+    net_30: 30,
+    net_45: 45,
+    net_60: 60,
+    net_90: 90,
+  }
+  date.setDate(date.getDate() + (daysMap[terms] || 0))
+  return formatDate(date)
+}
+
+function newLineItem(): LineItem {
+  return {
+    key: crypto.randomUUID(),
+    description: '',
+    quantity: 1,
+    rate: 0,
+    tax_rate: 15,
+    tax_id: 'gst_15',
+    amount: 0,
+  }
+}
+
+/** Check if a line item is "empty" — no description and rate is 0 */
+function isEmptyLine(item: LineItem): boolean {
+  return (!item.description || item.description.trim() === '') && item.rate === 0
+}
+
+function calcLineAmount(item: LineItem): number {
+  return Math.round(item.quantity * item.rate * 100) / 100
+}
+
+/* ------------------------------------------------------------------ */
+/*  Customer Search Component                                          */
+/* ------------------------------------------------------------------ */
+
+function CustomerSearch({
+  selectedCustomer,
+  onSelect,
+  onVehicleAutoSelect,
+  error,
+  includeVehicles = true,
+}: {
+  selectedCustomer: Customer | null
+  onSelect: (c: Customer | null) => void
+  onVehicleAutoSelect?: (v: LinkedVehicle) => void
+  error?: string
+  includeVehicles?: boolean
+}) {
+  const [query, setQuery] = useState('')
+  const [results, setResults] = useState<Customer[]>([])
+  const [loading, setLoading] = useState(false)
+  const [showDropdown, setShowDropdown] = useState(false)
+  const [showCreateModal, setShowCreateModal] = useState(false)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined)
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setShowDropdown(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  const search = useCallback(async (q: string) => {
+    if (q.length < 2) {
+      setResults([])
+      return
+    }
+    setLoading(true)
+    try {
+      const res = await apiClient.get<{ customers: Customer[]; total: number } | Customer[]>('/customers', {
+        params: { q: q, ...(includeVehicles ? { include_vehicles: true } : {}) }
+      })
+      const customers = Array.isArray(res.data) ? res.data : (res.data?.customers || [])
+      // Client-side sequential character matching — letters must appear in order
+      const term = q.toLowerCase()
+      const matchesSequence = (haystack: string, needle: string): boolean => {
+        let ni = 0
+        const h = haystack.toLowerCase()
+        for (let i = 0; i < h.length && ni < needle.length; i++) {
+          if (h[i] === needle[ni]) ni++
+        }
+        return ni === needle.length
+      }
+      const filtered = customers.filter((c) => {
+        const firstName = (c.first_name || '').toLowerCase()
+        const lastName = (c.last_name || '').toLowerCase()
+        const displayName = (c.display_name || '').toLowerCase()
+        const phone = (c.phone || '').toLowerCase()
+        const company = (c.company_name || '').toLowerCase()
+        // Check rego from linked vehicles
+        const regoMatch = (c.linked_vehicles || []).some((v: LinkedVehicle) =>
+          matchesSequence(v.rego || '', term)
+        )
+        return (
+          matchesSequence(firstName, term) ||
+          matchesSequence(lastName, term) ||
+          matchesSequence(displayName, term) ||
+          matchesSequence(phone, term) ||
+          matchesSequence(company, term) ||
+          regoMatch
+        )
+      })
+      setResults(filtered)
+    } catch {
+      setResults([])
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  const handleInputChange = (value: string) => {
+    setQuery(value)
+    setShowDropdown(true)
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(() => search(value), 300)
+  }
+
+  const handleSelect = (c: Customer) => {
+    onSelect(c)
+    setQuery(c.display_name || `${c.first_name} ${c.last_name}`)
+    setShowDropdown(false)
+
+    // Auto-select first linked vehicle if available
+    if (onVehicleAutoSelect && c.linked_vehicles && c.linked_vehicles.length > 0) {
+      onVehicleAutoSelect(c.linked_vehicles[0])
+    }
+  }
+
+  const handleClear = () => {
+    onSelect(null)
+    setQuery('')
+    setResults([])
+  }
+
+  const handleCustomerCreated = (customer: Customer) => {
+    onSelect(customer)
+    setQuery(customer.display_name || `${customer.first_name} ${customer.last_name}`)
+    setShowCreateModal(false)
+  }
+
+  if (selectedCustomer) {
+    return (
+      <div className="flex flex-col gap-1">
+        <label className="text-sm font-medium text-gray-700">Customer Name *</label>
+        <div className="flex items-center gap-2 rounded-md border border-gray-300 bg-gray-50 px-3 py-2">
+          <svg className="h-4 w-4 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+          </svg>
+          <span className="flex-1 text-gray-900">
+            {selectedCustomer.display_name || `${selectedCustomer.first_name} ${selectedCustomer.last_name}`}
+            {selectedCustomer.company_name && <span className="ml-2 text-gray-500">({selectedCustomer.company_name})</span>}
+          </span>
+          <button type="button" onClick={handleClear} className="rounded p-1 text-gray-400 hover:text-gray-600" aria-label="Change customer">✕</button>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <>
+      <div ref={containerRef} className="relative flex flex-col gap-1">
+        <label className="text-sm font-medium text-gray-700">Customer Name *</label>
+        <div className={`flex items-center gap-2 rounded-md border px-3 shadow-sm focus-within:ring-2 focus-within:ring-blue-500 ${error ? 'border-red-500' : 'border-gray-300'}`}>
+          <svg className="h-4 w-4 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+          </svg>
+          <input
+            type="text"
+            placeholder="Search or select a customer"
+            value={query}
+            onChange={(e) => handleInputChange(e.target.value)}
+            onFocus={() => query.length >= 2 && setShowDropdown(true)}
+            className="w-full py-2 text-gray-900 bg-transparent placeholder:text-gray-400 focus:outline-none"
+            autoComplete="off"
+          />
+        </div>
+        {error && <p className="text-sm text-red-600">{error}</p>}
+        {showDropdown && (
+          <div className="absolute top-full left-0 right-0 z-30 mt-1 max-h-64 overflow-auto rounded-md border border-gray-200 bg-white shadow-lg">
+            {loading && <div className="flex items-center gap-2 px-4 py-3 text-sm text-gray-500"><Spinner size="sm" /> Searching…</div>}
+            {!loading && results.length > 0 && results.map((c) => (
+              <button key={c.id} type="button" onClick={() => handleSelect(c)} className="w-full px-4 py-3 text-left hover:bg-gray-50">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <span className="font-medium text-gray-900">{c.display_name || `${c.first_name} ${c.last_name}`}</span>
+                    {c.company_name && <span className="ml-2 text-sm text-gray-500">({c.company_name})</span>}
+                  </div>
+                  {c.linked_vehicles && c.linked_vehicles.length > 0 && (
+                    <span className="text-xs text-blue-600 bg-blue-50 px-2 py-0.5 rounded">
+                      {c.linked_vehicles.length} vehicle{c.linked_vehicles.length > 1 ? 's' : ''}
+                    </span>
+                  )}
+                </div>
+                {c.linked_vehicles && c.linked_vehicles.length > 0 && (
+                  <div className="mt-1 text-xs text-gray-500">
+                    {c.linked_vehicles.slice(0, 2).map(v => v.rego).join(', ')}
+                    {c.linked_vehicles.length > 2 && ` +${c.linked_vehicles.length - 2} more`}
+                  </div>
+                )}
+              </button>
+            ))}
+            {!loading && query.length >= 2 && results.length === 0 && <div className="px-4 py-3 text-sm text-gray-500">No customers found</div>}
+            <button type="button" onClick={() => { setShowDropdown(false); setShowCreateModal(true) }} className="w-full border-t border-gray-100 px-4 py-3 text-left text-sm font-medium text-blue-600 hover:bg-blue-50">
+              + Add New Customer
+            </button>
+          </div>
+        )}
+      </div>
+      <CustomerCreateModal open={showCreateModal} onClose={() => setShowCreateModal(false)} onCustomerCreated={handleCustomerCreated} />
+    </>
+  )
+}
+
+
+/* ------------------------------------------------------------------ */
+/*  Item Table Row Component                                           */
+/* ------------------------------------------------------------------ */
+
+function ItemTableRow({
+  item,
+  index,
+  catalogueItems,
+  taxRates,
+  onChange,
+  onRemove,
+  onItemCreated,
+  readOnly = false,
+}: {
+  item: LineItem
+  index: number
+  catalogueItems: CatalogueItem[]
+  taxRates: TaxRate[]
+  onChange: (index: number, updated: LineItem) => void
+  onRemove: (index: number) => void
+  onItemCreated: (ci: CatalogueItem) => void
+  readOnly?: boolean
+}) {
+  const [showItemDropdown, setShowItemDropdown] = useState(false)
+  const [itemSearch, setItemSearch] = useState('')
+  const [showInlineForm, setShowInlineForm] = useState(false)
+  const [inlineName, setInlineName] = useState('')
+  const [inlineUnit, setInlineUnit] = useState('')
+  const [inlinePrice, setInlinePrice] = useState('')
+  const [inlineDescription, setInlineDescription] = useState('')
+  const [inlineGstMode, setInlineGstMode] = useState<'inclusive' | 'exclusive' | 'exempt' | ''>('')
+  const [inlineSaving, setInlineSaving] = useState(false)
+  const [inlineError, setInlineError] = useState('')
+  const [descUpdating, setDescUpdating] = useState(false)
+  const [descUpdated, setDescUpdated] = useState(false)
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setShowItemDropdown(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  const update = (patch: Partial<LineItem>) => {
+    const updated = { ...item, ...patch }
+    updated.amount = calcLineAmount(updated)
+    onChange(index, updated)
+  }
+
+  const handleItemSelect = (catalogueItem: CatalogueItem) => {
+    // GST-inclusive: back-calculate ex-GST rate so invoice shows proper breakdown
+    // GST-exempt: rate as-is, 0% tax
+    // GST-exclusive (default): rate as-is, 15% tax
+    const isGstInclusive = catalogueItem.gst_inclusive === true
+    const isGstExempt = !catalogueItem.gst_applicable
+    let rate: number
+    let taxRate: number
+    let taxId: string
+    if (isGstExempt) {
+      rate = catalogueItem.default_price
+      taxRate = 0
+      taxId = 'gst_0'
+    } else if (isGstInclusive) {
+      rate = Math.round((catalogueItem.default_price / 1.15) * 100) / 100
+      taxRate = 15
+      taxId = 'gst_15'
+    } else {
+      rate = catalogueItem.default_price
+      taxRate = 15
+      taxId = 'gst_15'
+    }
+    update({
+      item_id: catalogueItem.id,
+      description: catalogueItem.name,
+      line_description: catalogueItem.description || '',
+      original_description: catalogueItem.description || '',
+      rate,
+      tax_rate: taxRate,
+      tax_id: taxId,
+      gst_inclusive: isGstInclusive,
+      inclusive_price: isGstInclusive ? catalogueItem.default_price : undefined,
+    })
+    setShowItemDropdown(false)
+    setItemSearch('')
+    setDescUpdated(false)
+  }
+
+  const handleTaxChange = (taxId: string) => {
+    const tax = taxRates.find(t => t.id === taxId)
+    update({ tax_id: taxId, tax_rate: tax?.rate || 0 })
+  }
+
+  const filteredItems = (Array.isArray(catalogueItems) ? catalogueItems : []).filter(ci =>
+    ci.name.toLowerCase().includes(itemSearch.toLowerCase()) ||
+    (ci.sku && ci.sku.toLowerCase().includes(itemSearch.toLowerCase()))
+  )
+
+  const handleInlineItemSubmit = async () => {
+    if (!inlineName.trim()) { setInlineError('Name is required.'); return }
+    if (!inlineGstMode) { setInlineError('Please select a GST type.'); return }
+    if (!inlinePrice.trim() || isNaN(Number(inlinePrice))) { setInlineError('Valid selling price is required.'); return }
+    setInlineSaving(true)
+    setInlineError('')
+    try {
+      const res = await apiClient.post<{ item: { id: string; name: string; default_price: string; is_gst_exempt: boolean; gst_inclusive: boolean; category: string | null; description: string | null } }>('/catalogue/items', {
+        name: inlineName.trim(),
+        default_price: inlinePrice.trim(),
+        is_gst_exempt: inlineGstMode === 'exempt',
+        gst_inclusive: inlineGstMode === 'inclusive',
+        description: inlineDescription.trim() || null,
+        category: inlineUnit.trim() || null,
+      })
+      const created = res.data.item
+      const mapped: CatalogueItem = {
+        id: created.id,
+        name: created.name,
+        default_price: Number(created.default_price),
+        gst_applicable: !created.is_gst_exempt,
+        gst_inclusive: created.gst_inclusive ?? false,
+        category: created.category || undefined,
+      }
+      onItemCreated(mapped)
+      handleItemSelect(mapped)
+      setShowInlineForm(false)
+      setInlineName(''); setInlinePrice(''); setInlineDescription(''); setInlineUnit(''); setInlineGstMode('')
+    } catch (err: any) {
+      setInlineError(err?.response?.data?.detail || 'Failed to create item.')
+    } finally {
+      setInlineSaving(false)
+    }
+  }
+
+  const descriptionChanged = item.item_id && item.line_description !== undefined && item.line_description !== (item.original_description || '')
+
+  const handleUpdateDescriptionPermanently = async () => {
+    if (!item.item_id || !item.line_description) return
+    setDescUpdating(true)
+    try {
+      await apiClient.put(`/catalogue/items/${item.item_id}`, { description: item.line_description.trim() })
+      update({ original_description: item.line_description })
+      setDescUpdated(true)
+      setTimeout(() => setDescUpdated(false), 3000)
+    } catch { /* silent */ }
+    finally { setDescUpdating(false) }
+  }
+
+  return (
+    <tr className="border-b border-gray-100 hover:bg-gray-50 align-top">
+      {/* Item Details */}
+      <td className="py-3 px-2">
+        <div ref={containerRef} className="relative">
+          <input
+            type="text"
+            value={item.description}
+            onChange={(e) => { update({ description: e.target.value }); setItemSearch(e.target.value) }}
+            onFocus={() => setShowItemDropdown(true)}
+            placeholder="Type or click to select an item"
+            disabled={readOnly}
+            className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-500 disabled:cursor-not-allowed"
+          />
+          {item.item_id && (
+            <div className="mt-1">
+              {item.gst_inclusive && (
+                <span className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5 mb-1">
+                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                  GST inclusive — rate shows ex-GST, GST added in totals
+                </span>
+              )}
+              <textarea
+                value={item.line_description || ''}
+                onChange={(e) => { update({ line_description: e.target.value }); setDescUpdated(false) }}
+                placeholder="Item description"
+                rows={2}
+                className="w-full rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-400 resize-y"
+              />
+              {descUpdated ? (
+                <span className="text-[10px] text-green-600 flex items-center gap-1">
+                  <svg className="w-3 h-3 animate-bounce" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+                  Updated
+                </span>
+              ) : descriptionChanged ? (
+                <span className="text-[10px] text-red-500">
+                  Description changed —{' '}
+                  <button type="button" disabled={descUpdating} onClick={handleUpdateDescriptionPermanently}
+                    className="text-blue-600 hover:underline font-medium disabled:opacity-50">
+                    {descUpdating ? 'Updating…' : 'Update permanently'}
+                  </button>
+                </span>
+              ) : null}
+            </div>
+          )}
+          {showItemDropdown && (
+            <div className="absolute top-full left-0 right-0 z-50 mt-1 max-h-48 overflow-auto rounded-md border border-gray-200 bg-white shadow-lg">
+              {filteredItems.slice(0, 10).map((ci) => (
+                <button
+                  key={ci.id}
+                  type="button"
+                  onClick={() => handleItemSelect(ci)}
+                  className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium text-gray-900">{ci.name}</span>
+                    {(ci.is_package ?? false) && (
+                      <span className="inline-flex items-center rounded-full bg-blue-100 px-1.5 py-0.5 text-[10px] font-medium text-blue-700">📦 Package</span>
+                    )}
+                  </div>
+                  {ci.sku && <div className="text-xs text-gray-500">SKU: {ci.sku}</div>}
+                  <div className="text-xs text-gray-500">{formatNZD(ci.default_price)}</div>
+                </button>
+              ))}
+              {filteredItems.length === 0 && (
+                <div className="px-3 py-2 text-sm text-gray-500">No items found</div>
+              )}
+              <button type="button"
+                onClick={() => { setShowInlineForm(true); setInlineName(itemSearch.trim()); setShowItemDropdown(false) }}
+                className="w-full px-3 py-2 text-left text-sm text-blue-600 font-medium hover:bg-blue-50">
+                + Add new item
+              </button>
+            </div>
+          )}
+          {showInlineForm && (
+            <div className="mt-2 rounded-md border border-gray-200 bg-gray-50 p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <h4 className="text-sm font-semibold text-gray-900">New Item</h4>
+                <button type="button" onClick={() => setShowInlineForm(false)} className="text-gray-400 hover:text-gray-600 text-lg leading-none">&times;</button>
+              </div>
+              <hr className="border-gray-200" />
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Item name *</label>
+                <input type="text" value={inlineName} onChange={(e) => setInlineName(e.target.value)}
+                  className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Description</label>
+                <textarea value={inlineDescription} onChange={(e) => setInlineDescription(e.target.value)} rows={3} placeholder="Optional item description"
+                  className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">GST *</label>
+                <div className="flex rounded-md border border-gray-300 overflow-hidden">
+                  {(['inclusive', 'exclusive', 'exempt'] as const).map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => setInlineGstMode(mode)}
+                      className={`flex-1 px-3 py-2 text-xs font-medium transition-colors ${
+                        inlineGstMode === mode
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-white text-gray-700 hover:bg-gray-50'
+                      } ${mode !== 'inclusive' ? 'border-l border-gray-300' : ''}`}
+                    >
+                      GST {mode.charAt(0).toUpperCase() + mode.slice(1)}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-1">
+                    {!inlineGstMode ? (
+                      <span className="flex items-center gap-1 text-amber-600">
+                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" /></svg>
+                        Select a GST type above to unlock
+                      </span>
+                    ) : inlineGstMode === 'inclusive' ? 'Default price (incl. GST) *'
+                      : inlineGstMode === 'exempt' ? 'Default price *'
+                      : 'Default price (ex-GST) *'}
+                  </label>
+                  <input type="number" min="0" step="0.01" value={inlinePrice} onChange={(e) => setInlinePrice(e.target.value)} placeholder="e.g. 85.00"
+                    disabled={!inlineGstMode}
+                    className={`w-full rounded border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${!inlineGstMode ? 'bg-gray-100 cursor-not-allowed border-dashed border-amber-300' : ''}`} />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-1">Category</label>
+                  <input type="text" value={inlineUnit} onChange={(e) => setInlineUnit(e.target.value)} placeholder="e.g. Plumbing, Electrical"
+                    className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </div>
+              </div>
+              {inlineError && <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{inlineError}</div>}
+              <div className="flex justify-end gap-2">
+                <button type="button" disabled={inlineSaving} onClick={() => setShowInlineForm(false)}
+                  className="rounded border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100">
+                  Cancel
+                </button>
+                <button type="button" disabled={inlineSaving} onClick={handleInlineItemSubmit}
+                  className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50">
+                  {inlineSaving ? 'Saving…' : 'Create Item'}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </td>
+      {/* Quantity */}
+      <td className="py-3 px-2 w-24">
+        <input
+          type="number"
+          min="1"
+          step="1"
+          value={item.quantity}
+          onChange={(e) => update({ quantity: Math.max(1, Number(e.target.value) || 1) })}
+          disabled={readOnly}
+          className="w-full rounded border border-gray-300 px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-500 disabled:cursor-not-allowed"
+        />
+      </td>
+      {/* Rate */}
+      <td className="py-3 px-2 w-32">
+        <input
+          type="number"
+          min="0"
+          step="0.01"
+          value={item.rate}
+          onChange={(e) => update({ rate: Math.max(0, Number(e.target.value) || 0), gst_inclusive: false, inclusive_price: undefined, _incGstTotal: undefined })}
+          disabled={readOnly}
+          className="w-full rounded border border-gray-300 px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-500 disabled:cursor-not-allowed"
+        />
+      </td>
+      {/* Tax */}
+      <td className="py-3 px-2 w-36">
+        <div className="rounded-md border border-gray-200 bg-gray-50 px-3 py-1.5 text-center">
+          <span className="block text-sm font-semibold text-gray-900">
+            {formatNZD(item.tax_rate > 0 ? Math.round(item.amount * item.tax_rate) / 100 : 0)}
+          </span>
+          <select
+            value={item.tax_id || ''}
+            onChange={(e) => handleTaxChange(e.target.value)}
+            disabled={readOnly}
+            className="mt-0.5 w-full rounded border-0 bg-transparent px-0 py-0 text-[11px] text-blue-600 text-center cursor-pointer hover:text-blue-800 focus:outline-none focus:ring-0 appearance-none font-medium disabled:cursor-not-allowed disabled:text-gray-500"
+          >
+            {taxRates.map((tax) => (
+              <option key={tax.id} value={tax.id}>{tax.name}</option>
+            ))}
+          </select>
+        </div>
+      </td>
+      {/* Amount (line total including GST) — editable, back-calculates rate */}
+      <td className="py-3 px-2 w-28">
+        <input
+          type="number"
+          min="0"
+          step="0.01"
+          value={item._incGstTotal !== undefined ? item._incGstTotal : Math.round((item.amount + (item.tax_rate > 0 ? Math.round(item.amount * item.tax_rate) / 100 : 0)) * 100) / 100}
+          onChange={(e) => {
+            const incGstTotal = Math.max(0, Number(e.target.value) || 0)
+            const qty = item.quantity || 1
+            const incGstPerUnit = incGstTotal / qty
+            const taxMultiplier = 1 + (item.tax_rate > 0 ? item.tax_rate / 100 : 0)
+            const exGstRate = Math.round((incGstPerUnit / taxMultiplier) * 100) / 100
+            update({
+              rate: exGstRate,
+              gst_inclusive: true,
+              inclusive_price: Math.round(incGstPerUnit * 100) / 100,
+              _incGstTotal: incGstTotal,
+            })
+          }}
+          disabled={readOnly}
+          className="w-full rounded border border-gray-300 px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-500 disabled:cursor-not-allowed"
+        />
+      </td>
+      {/* Remove */}
+      <td className="py-3 px-2 w-12">
+        <button
+          type="button"
+          onClick={() => onRemove(index)}
+          disabled={readOnly}
+          className="rounded p-1 text-gray-400 hover:text-red-500 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:text-gray-400"
+          aria-label="Remove item"
+        >
+          <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+          </svg>
+        </button>
+      </td>
+    </tr>
+  )
+}
+
+
+/* ------------------------------------------------------------------ */
+/*  Main Component                                                     */
+/* ------------------------------------------------------------------ */
+
+export default function InvoiceCreate() {
+  const { id: editId } = useParams<{ id: string }>()
+  const navigate = useNavigate()
+  const isEditMode = Boolean(editId)
+  const { settings, tradeFamily, refetch: refetchTenant } = useTenant()
+  const { selectedBranchId } = useBranch()
+  const { user } = useAuth()
+  const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
+  const { isEnabled } = useModules()
+  const vehiclesEnabled = isEnabled('vehicles')
+  const [loadingInvoice, setLoadingInvoice] = useState(isEditMode)
+
+  // Original invoice status when editing — used to lock the line-item
+  // editor on already-issued invoices. Editing prices/quantities on a
+  // non-draft invoice is rejected by the backend (state machine) and a
+  // credit note is the correct mechanism for corrections.
+  const [originalStatus, setOriginalStatus] = useState<string | null>(null)
+  const isLineItemsLocked = isEditMode && originalStatus !== null && originalStatus !== 'draft'
+
+  // Read pre-fill params from URL (e.g., /invoices/new?customer_id=xxx&vehicle_rego=yyy
+  // or vehicle_regos=A,B,C from the multi-vehicle picker on the customer profile).
+  const [searchParams] = useState(() => new URLSearchParams(window.location.search))
+  const prefillCustomerId = searchParams.get('customer_id')
+  const prefillVehicleRego = searchParams.get('vehicle_rego')
+  const prefillVehicleRegos = (searchParams.get('vehicle_regos') ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+
+  // Invoice header fields
+  const [customer, setCustomer] = useState<Customer | null>(null)
+  const [vehicles, setVehicles] = useState<Vehicle[]>([])
+  const [invoiceNumber, setInvoiceNumber] = useState('')
+  const [orderNumber, setOrderNumber] = useState('')
+  const [invoiceDate, setInvoiceDate] = useState(() => formatDate(new Date()))
+  const [terms, setTerms] = useState('due_on_receipt')
+  const [dueDate, setDueDate] = useState(() => formatDate(new Date()))
+  const [salesperson, setSalesperson] = useState('')
+  const [subject, setSubject] = useState('')
+
+  // GST from org settings
+  const gstNumber = settings?.gst?.gst_number || ''
+
+  // Auto-fill linked vehicles when customer is selected
+  useEffect(() => {
+    if (!customer || !vehiclesEnabled || vehicles.length > 0) return
+    // If customer already has linked_vehicles from search results, use those
+    if (customer.linked_vehicles && customer.linked_vehicles.length > 0) {
+      setVehicles(customer.linked_vehicles.map(v => ({
+        id: v.id,
+        rego: v.rego,
+        make: v.make || '',
+        model: v.model || '',
+        year: v.year,
+        colour: v.colour || '',
+        body_type: '',
+        fuel_type: '',
+        engine_size: '',
+        wof_expiry: v.wof_expiry ?? null,
+        cof_expiry: v.cof_expiry ?? null,
+        inspection_type: v.inspection_type ?? null,
+        registration_expiry: null,
+        odometer: v.odometer ?? null,
+        service_due_date: v.service_due_date ?? null,
+      })))
+      return
+    }
+    // Otherwise fetch linked vehicles from API
+    let cancelled = false
+    async function fetchLinkedVehicles() {
+      try {
+        const res = await apiClient.get('/customers', {
+          params: { q: customer!.email || `${customer!.first_name} ${customer!.last_name}`, include_vehicles: true, limit: 1 }
+        })
+        if (cancelled) return
+        const customers = Array.isArray(res.data) ? res.data : (res.data?.customers || [])
+        const match = customers.find((c: Customer) => c.id === customer!.id)
+        if (match?.linked_vehicles && match.linked_vehicles.length > 0) {
+          setVehicles(match.linked_vehicles.map((v: LinkedVehicle) => ({
+            id: v.id,
+            rego: v.rego,
+            make: v.make || '',
+            model: v.model || '',
+            year: v.year,
+            colour: v.colour || '',
+            body_type: '',
+            fuel_type: '',
+            engine_size: '',
+            wof_expiry: v.wof_expiry ?? null,
+            cof_expiry: v.cof_expiry ?? null,
+            inspection_type: v.inspection_type ?? null,
+            registration_expiry: null,
+            odometer: v.odometer ?? null,
+            service_due_date: v.service_due_date ?? null,
+          })))
+        }
+      } catch {
+        // Non-blocking
+      }
+    }
+    fetchLinkedVehicles()
+    return () => { cancelled = true }
+  }, [customer, vehiclesEnabled])
+
+  // Line items
+  const [lineItems, setLineItems] = useState<LineItem[]>([newLineItem()])
+
+  // Totals adjustments
+  const [discountType, setDiscountType] = useState<'percentage' | 'fixed'>('percentage')
+  const [discountValue, setDiscountValue] = useState(0)
+  const [shippingCharges, setShippingCharges] = useState(0)
+  const [adjustment, setAdjustment] = useState(0)
+
+  // Notes and terms
+  const [customerNotes, setCustomerNotes] = useState('')
+  const [termsAndConditions, setTermsAndConditions] = useState('')
+  const [saveTermsAsDefault, setSaveTermsAsDefault] = useState(false)
+
+  // Pre-fill notes from org settings once loaded (only on create, not edit)
+  useEffect(() => {
+    if (!editId && settings?.invoice?.default_notes_enabled && settings?.invoice?.default_notes) {
+      setCustomerNotes(prev => prev || settings.invoice.default_notes || '')
+    }
+  }, [editId, settings?.invoice?.default_notes_enabled, settings?.invoice?.default_notes])
+
+  // Pre-fill T&C from org settings once loaded (only on create, not edit)
+  useEffect(() => {
+    if (!editId && settings?.invoice?.terms_and_conditions_enabled && settings?.invoice?.terms_and_conditions) {
+      setTermsAndConditions(prev => prev || settings.invoice.terms_and_conditions || '')
+    }
+  }, [editId, settings?.invoice?.terms_and_conditions_enabled, settings?.invoice?.terms_and_conditions])
+
+  // Attachments
+  const [attachments, setAttachments] = useState<File[]>([])
+  const [existingAttachments, setExistingAttachments] = useState<{ id: string; file_name: string; file_size: number; mime_type: string; created_at: string }[]>([])
+  const [uploading, setUploading] = useState(false)
+
+  // Payment gateway
+  const [paymentGateway, setPaymentGateway] = useState('cash')
+  const [stripeConnected, setStripeConnected] = useState(false)
+
+  // QR Payment popup state
+  const [showQrPaymentPopup, setShowQrPaymentPopup] = useState(false)
+  const [qrSessionData, setQrSessionData] = useState<{ sessionId: string; amount: number; invoiceNumber: string; invoiceId: string } | null>(null)
+
+  // Make recurring
+  const [makeRecurring, setMakeRecurring] = useState(false)
+
+  // Catalogue data
+  const [catalogueItems, setCatalogueItems] = useState<CatalogueItem[]>([])
+  const [taxRates] = useState<TaxRate[]>(DEFAULT_TAX_RATES)
+  const [salespeople, setSalespeople] = useState<Salesperson[]>([])
+
+  // Form state
+  const [saving, setSaving] = useState(false)
+  const [errors, setErrors] = useState<FormErrors>({})
+  const [paidModalOpen, setPaidModalOpen] = useState(false)
+  const [paidMethod, setPaidMethod] = useState('cash')
+  const [paidSaving, setPaidSaving] = useState(false)
+  const [issueModalOpen, setIssueModalOpen] = useState(false)
+  const [issueError, setIssueError] = useState<string | null>(null)
+
+  // Ref to store initial loaded state for edit mode dirty comparison
+  const initialStateRef = useRef<{
+    customerId: string | null
+    subject: string
+    orderNumber: string
+    customerNotes: string
+    lineItems: string  // JSON-stringified (without keys) for comparison
+    vehicles: string   // JSON-stringified (without transients) for comparison
+    discountValue: number
+    shippingCharges: number
+    adjustment: number
+    attachmentsCount: number
+  } | null>(null)
+
+  // Flag to capture initial state on next render after loadInvoice completes
+  const [captureInitialState, setCaptureInitialState] = useState(false)
+
+  // Unsaved changes detection
+  // Helper to compare line items ignoring the `key` field (which is a random UUID for React rendering)
+  const stripLineItemKeys = (items: LineItem[]) => items.map(({ key, ...rest }) => rest)
+  const stripVehicleTransients = (vehs: Vehicle[]) => vehs.map(({ newOdometer, newServiceDueDate, newWofExpiry, newCofExpiry, ...rest }) => rest)
+
+  const isDirty = isEditMode && initialStateRef.current
+    ? Boolean(
+        (customer?.id || null) !== initialStateRef.current.customerId ||
+        subject.trim() !== initialStateRef.current.subject ||
+        orderNumber.trim() !== initialStateRef.current.orderNumber ||
+        customerNotes.trim() !== initialStateRef.current.customerNotes ||
+        JSON.stringify(stripLineItemKeys(lineItems)) !== initialStateRef.current.lineItems ||
+        JSON.stringify(stripVehicleTransients(vehicles)) !== initialStateRef.current.vehicles ||
+        discountValue !== initialStateRef.current.discountValue ||
+        shippingCharges !== initialStateRef.current.shippingCharges ||
+        adjustment !== initialStateRef.current.adjustment ||
+        attachments.length !== initialStateRef.current.attachmentsCount
+      )
+    : isEditMode && !initialStateRef.current
+    ? false  // Edit mode but initial state not yet captured — not dirty
+    : Boolean(
+        customer ||
+        subject.trim() ||
+        orderNumber.trim() ||
+        customerNotes.trim() ||
+        lineItems.some(li => li.description.trim() || li.quantity !== 1 || li.rate !== 0) ||
+        vehicles.length > 0 ||
+        discountValue > 0 ||
+        shippingCharges > 0 ||
+        adjustment !== 0 ||
+        attachments.length > 0
+      )
+
+  // Capture initial state after loadInvoice populates form (runs once on the render after load)
+  useEffect(() => {
+    if (captureInitialState) {
+      initialStateRef.current = {
+        customerId: customer?.id || null,
+        subject: subject.trim(),
+        orderNumber: orderNumber.trim(),
+        customerNotes: customerNotes.trim(),
+        lineItems: JSON.stringify(stripLineItemKeys(lineItems)),
+        vehicles: JSON.stringify(stripVehicleTransients(vehicles)),
+        discountValue,
+        shippingCharges,
+        adjustment,
+        attachmentsCount: attachments.length,
+      }
+      setCaptureInitialState(false)
+    }
+  }, [captureInitialState])
+
+  // Register navigation guard with layout
+  const isDirtyRef = useRef(isDirty)
+  isDirtyRef.current = isDirty
+  const handleSaveDraftRef = useRef<() => Promise<void>>(() => Promise.resolve())
+
+  // Rich text T&C editor ref
+  const tcEditorRef = useRef<HTMLDivElement>(null)
+  const tcUserEditingRef = useRef(false)
+
+  // Sync T&C state into contentEditable div when value changes externally (e.g., edit mode load, initial pre-fill)
+  useEffect(() => {
+    if (tcUserEditingRef.current) {
+      tcUserEditingRef.current = false
+      return
+    }
+    if (tcEditorRef.current) {
+      if (termsAndConditions && tcEditorRef.current.innerHTML !== termsAndConditions) {
+        tcEditorRef.current.innerHTML = termsAndConditions
+      } else if (!termsAndConditions && tcEditorRef.current.innerHTML !== '') {
+        tcEditorRef.current.innerHTML = ''
+      }
+    }
+  }, [termsAndConditions])
+
+  useEffect(() => {
+    setNavigationGuard({
+      isDirty: () => isDirtyRef.current,
+      onSave: () => handleSaveDraftRef.current(),
+    })
+    return () => clearNavigationGuard()
+  }, [])
+
+  // Unsaved changes modal state (for Cancel button only)
+  const [unsavedModalOpen, setUnsavedModalOpen] = useState(false)
+  const pendingNavigationRef = useRef<string | null>(null)
+
+  /** Try to navigate — shows modal if dirty, otherwise navigates immediately */
+  const guardedNavigate = useCallback((to: string) => {
+    if (isDirty && !saving) {
+      pendingNavigationRef.current = to
+      setUnsavedModalOpen(true)
+    } else {
+      navigate(to)
+    }
+  }, [isDirty, saving, navigate])
+
+  // Fetch Stripe Connect status for payment method option
+  useEffect(() => {
+    const controller = new AbortController()
+    apiClient.get<{ is_connected: boolean }>('/payments/online-payments/status', { signal: controller.signal })
+      .then(res => setStripeConnected(res.data?.is_connected ?? false))
+      .catch(() => {})
+    return () => controller.abort()
+  }, [])
+
+  // Fetch existing attachments when editing an invoice
+  useEffect(() => {
+    if (!editId) return
+    const controller = new AbortController()
+    apiClient.get<{ attachments: { id: string; file_name: string; file_size: number; mime_type: string; created_at: string }[]; total: number }>(`/invoices/${editId}/attachments`, { signal: controller.signal })
+      .then(res => setExistingAttachments(res.data?.attachments ?? []))
+      .catch(() => {})
+    return () => controller.abort()
+  }, [editId])
+
+  // Load existing invoice for edit mode
+  useEffect(() => {
+    if (!editId) return
+    let cancelled = false
+    async function loadInvoice() {
+      try {
+        const res = await apiClient.get(`/invoices/${editId}`)
+        const inv = res.data?.invoice || res.data
+        if (cancelled) return
+
+        // Populate form fields from existing invoice
+        if (inv.customer) {
+          setCustomer(inv.customer)
+        }
+        if (inv.vehicle_rego) {
+          const primaryVehicle = {
+            id: inv.vehicle?.id || '',
+            rego: inv.vehicle_rego,
+            make: inv.vehicle_make || '',
+            model: inv.vehicle_model || '',
+            year: inv.vehicle_year || null,
+            colour: inv.vehicle?.colour || '',
+            body_type: '',
+            fuel_type: '',
+            engine_size: '',
+            inspection_type: inv.vehicle?.inspection_type ?? null,
+            wof_expiry: inv.vehicle?.wof_expiry || null,
+            cof_expiry: inv.vehicle?.cof_expiry || null,
+            registration_expiry: null,
+            odometer: inv.vehicle_odometer || null,
+            service_due_date: inv.vehicle?.service_due_date || null,
+          }
+          const additionalVehicles = (inv.additional_vehicles || []).map((av: Record<string, unknown>) => ({
+            id: (av.id as string) || '',
+            rego: (av.rego as string) || '',
+            make: (av.make as string) || '',
+            model: (av.model as string) || '',
+            year: (av.year as number) || null,
+            colour: '',
+            body_type: '',
+            fuel_type: '',
+            engine_size: '',
+            wof_expiry: (av.wof_expiry as string) || null,
+            registration_expiry: null,
+            odometer: (av.odometer as number) || null,
+            service_due_date: null,
+          }))
+          setVehicles([primaryVehicle, ...additionalVehicles])
+        }
+        if (inv.invoice_number) setInvoiceNumber(inv.invoice_number)
+        if (inv.status) setOriginalStatus(String(inv.status))
+        if (inv.due_date) setDueDate(inv.due_date)
+        if (inv.issue_date) setInvoiceDate(inv.issue_date)
+        if (inv.notes_customer) setCustomerNotes(inv.notes_customer)
+        if (inv.terms_and_conditions != null) setTermsAndConditions(inv.terms_and_conditions)
+        if (inv.discount_type) setDiscountType(inv.discount_type)
+        if (inv.discount_value != null) setDiscountValue(Number(inv.discount_value))
+
+        // Load line items
+        if (inv.line_items && inv.line_items.length > 0) {
+          setLineItems(inv.line_items.map((li: Record<string, unknown>) => ({
+            key: String(li.id || crypto.randomUUID()),
+            item_id: li.catalogue_item_id ? String(li.catalogue_item_id) : '',
+            stock_item_id: li.stock_item_id ? String(li.stock_item_id) : undefined,
+            description: String(li.description || ''),
+            quantity: Number(li.quantity || 1),
+            rate: Number(li.unit_price || li.rate || 0),
+            tax_id: li.is_gst_exempt ? 'gst_0' : 'gst_15',
+            tax_rate: li.is_gst_exempt ? 0 : 15,
+            amount: Number(li.line_total || 0),
+            gst_inclusive: Boolean(li.gst_inclusive),
+            inclusive_price: li.inclusive_price ? Number(li.inclusive_price) : undefined,
+          })))
+        }
+
+        // Load fluid usage from invoice_data_json
+        const savedFluidUsage = inv.fluid_usage || []
+        if (savedFluidUsage.length > 0) {
+          setFluidUsages(savedFluidUsage.map((fu: Record<string, unknown>) => ({
+            key: crypto.randomUUID(),
+            stock_item_id: String(fu.stock_item_id || ''),
+            item_name: String(fu.item_name || ''),
+            litres: Number(fu.litres || 0),
+            catalogue_item_id: String(fu.catalogue_item_id || ''),
+          })))
+        }
+
+        // Signal to capture initial state on next render (after React processes the state updates above)
+        setCaptureInitialState(true)
+      } catch {
+        // Failed to load invoice for editing
+      } finally {
+        if (!cancelled) setLoadingInvoice(false)
+      }
+    }
+    loadInvoice()
+    return () => { cancelled = true }
+  }, [editId])
+
+  // Load catalogue data
+  useEffect(() => {
+    let cancelled = false
+    async function load() {
+      try {
+        const [itemsRes, salespeopleRes] = await Promise.all([
+          apiClient.get<CatalogueItem[] | { items: CatalogueItem[] }>('/catalogue/items', { params: { active_only: true } }).catch(() => ({ data: [] })),
+          apiClient.get<{ salespeople: Salesperson[] }>('/org/salespeople').catch(() => ({ data: { salespeople: [] } })),
+        ])
+        if (!cancelled) {
+          // Handle both array and object response formats
+          const items = itemsRes.data
+          const rawItems = Array.isArray(items) ? items : ((items as any)?.items || [])
+          setCatalogueItems(rawItems.map((item: any) => ({
+            id: item.id,
+            name: item.name,
+            description: item.description ?? undefined,
+            default_price: typeof item.default_price === 'string' ? parseFloat(item.default_price) : (item.default_price ?? 0),
+            gst_applicable: item.gst_applicable ?? (item.is_gst_exempt === false),
+            gst_inclusive: item.gst_inclusive ?? false,
+            category: item.category ?? undefined,
+            sku: item.sku ?? undefined,
+            is_package: item.is_package ?? false,
+          })))
+          // Set salespeople from API
+          const salespeopleData = salespeopleRes.data
+          const salespeopleArray = Array.isArray(salespeopleData) ? salespeopleData : (salespeopleData?.salespeople || [])
+          setSalespeople(salespeopleArray)
+          // Auto-select the logged-in user as salesperson (if not editing and not already set)
+          if (!editId && !salesperson && user?.id) {
+            const currentUser = salespeopleArray.find((s: Salesperson) => s.id === user.id)
+            if (currentUser) {
+              setSalesperson(currentUser.id)
+            }
+          }
+        }
+      } catch {
+        // Non-blocking
+      }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [])
+
+  // Pre-fill customer and vehicle from URL query params (e.g., from Customer Profile "Issue Invoice" button)
+  useEffect(() => {
+    if (!prefillCustomerId || isEditMode) return
+    let cancelled = false
+    async function prefill() {
+      try {
+        const res = await apiClient.get<any>(`/customers/${prefillCustomerId}`)
+        if (cancelled) return
+        const c = res.data
+        if (c) {
+          const customerObj: Customer = {
+            id: c.id,
+            first_name: c.first_name ?? '',
+            last_name: c.last_name ?? '',
+            display_name: `${c.first_name ?? ''} ${c.last_name ?? ''}`.trim(),
+            email: c.email ?? null,
+            phone: c.phone ?? null,
+            linked_vehicles: (c.vehicles ?? []).map((v: any) => ({
+              id: v.id,
+              rego: v.rego ?? '',
+              make: v.make ?? '',
+              model: v.model ?? '',
+              year: v.year ?? null,
+            })),
+          }
+          setCustomer(customerObj)
+          // Multi-vehicle prefill from the customer-profile picker
+          // (?vehicle_regos=A,B,C). The first rego becomes the primary
+          // vehicle on the form; the rest are loaded as additional
+          // vehicles. Falls through to the single-rego branch below
+          // when ``prefillVehicleRegos`` is empty so existing single-
+          // vehicle entries (e.g. ?vehicle_rego=A) keep working.
+          if (
+            prefillVehicleRegos.length > 0 &&
+            vehiclesEnabled
+          ) {
+            const matched: Vehicle[] = []
+            for (const rego of prefillVehicleRegos) {
+              // Try the customer's linked vehicles first.
+              const local = (c.vehicles ?? []).find(
+                (v: any) => (v.rego ?? '').toUpperCase() === rego.toUpperCase(),
+              )
+              if (local) {
+                matched.push({
+                  id: local.id,
+                  rego: local.rego ?? '',
+                  make: local.make ?? '',
+                  model: local.model ?? '',
+                  year: local.year ?? null,
+                  odometer: local.odometer ?? null,
+                  wof_expiry: local.wof_expiry ?? null,
+                  cof_expiry: local.cof_expiry ?? null,
+                  inspection_type: local.inspection_type ?? null,
+                  service_due_date: local.service_due_date ?? null,
+                } as Vehicle)
+                continue
+              }
+              // Fall back to the global rego search per vehicle.
+              try {
+                const searchRes = await apiClient.get<{ results: any[] }>(
+                  '/vehicles/search',
+                  { params: { q: rego } },
+                )
+                const found = (searchRes.data?.results ?? []).find(
+                  (v: any) => (v.rego ?? '').toUpperCase() === rego.toUpperCase(),
+                )
+                if (found) {
+                  matched.push({
+                    id: found.id,
+                    rego: found.rego ?? '',
+                    make: found.make ?? '',
+                    model: found.model ?? '',
+                    year: found.year ?? null,
+                    odometer: found.odometer ?? null,
+                    wof_expiry: found.wof_expiry ?? null,
+                    cof_expiry: found.cof_expiry ?? null,
+                    inspection_type: found.inspection_type ?? null,
+                    service_due_date: found.service_due_date ?? null,
+                  } as Vehicle)
+                }
+              } catch { /* non-blocking */ }
+            }
+            if (matched.length > 0) {
+              setVehicles(matched)
+              return
+            }
+            // Multi-rego list resolved to nothing — fall through to the
+            // single-vehicle branches below as a safety net.
+          }
+          // Pre-fill vehicle if rego provided and vehicles module enabled
+          if (prefillVehicleRego && vehiclesEnabled && (c.vehicles ?? []).length > 0) {
+            const matchedVehicle = (c.vehicles ?? []).find((v: any) => v.rego === prefillVehicleRego)
+            if (matchedVehicle) {
+              setVehicles([{
+                id: matchedVehicle.id,
+                rego: matchedVehicle.rego ?? '',
+                make: matchedVehicle.make ?? '',
+                model: matchedVehicle.model ?? '',
+                year: matchedVehicle.year ?? null,
+                odometer: matchedVehicle.odometer ?? null,
+                wof_expiry: matchedVehicle.wof_expiry ?? null,
+                cof_expiry: matchedVehicle.cof_expiry ?? null,
+                inspection_type: matchedVehicle.inspection_type ?? null,
+                service_due_date: matchedVehicle.service_due_date ?? null,
+              } as Vehicle])
+            } else {
+              // Vehicle rego not in customer's linked vehicles — search globally
+              try {
+                const searchRes = await apiClient.get<{ results: any[] }>('/vehicles/search', { params: { q: prefillVehicleRego } })
+                const found = (searchRes.data?.results ?? []).find((v: any) => v.rego?.toUpperCase() === prefillVehicleRego.toUpperCase())
+                if (found) {
+                  setVehicles([{
+                    id: found.id,
+                    rego: found.rego ?? '',
+                    make: found.make ?? '',
+                    model: found.model ?? '',
+                    year: found.year ?? null,
+                    odometer: found.odometer ?? null,
+                    wof_expiry: found.wof_expiry ?? null,
+                    cof_expiry: found.cof_expiry ?? null,
+                    inspection_type: found.inspection_type ?? null,
+                    service_due_date: found.service_due_date ?? null,
+                  } as Vehicle])
+                }
+              } catch { /* non-blocking */ }
+            }
+          } else if (prefillVehicleRego && vehiclesEnabled) {
+            // No linked vehicles on customer but rego was provided — search globally
+            try {
+              const searchRes = await apiClient.get<{ results: any[] }>('/vehicles/search', { params: { q: prefillVehicleRego } })
+              const found = (searchRes.data?.results ?? []).find((v: any) => v.rego?.toUpperCase() === prefillVehicleRego.toUpperCase())
+              if (found) {
+                setVehicles([{
+                  id: found.id,
+                  rego: found.rego ?? '',
+                  make: found.make ?? '',
+                  model: found.model ?? '',
+                  year: found.year ?? null,
+                  odometer: found.odometer ?? null,
+                  wof_expiry: found.wof_expiry ?? null,
+                  cof_expiry: found.cof_expiry ?? null,
+                  inspection_type: found.inspection_type ?? null,
+                  service_due_date: found.service_due_date ?? null,
+                } as Vehicle])
+              }
+            } catch { /* non-blocking */ }
+          } else if (vehiclesEnabled && (c.vehicles ?? []).length > 0) {
+            // Auto-fill first linked vehicle
+            const v = c.vehicles[0]
+            setVehicles([{
+              id: v.id,
+              rego: v.rego ?? '',
+              make: v.make ?? '',
+              model: v.model ?? '',
+              year: v.year ?? null,
+              odometer: v.odometer ?? null,
+              wof_expiry: v.wof_expiry ?? null,
+              cof_expiry: v.cof_expiry ?? null,
+              inspection_type: v.inspection_type ?? null,
+              service_due_date: v.service_due_date ?? null,
+            } as Vehicle])
+          }
+        }
+      } catch {
+        // Non-blocking — user can still manually select customer
+      }
+    }
+    prefill()
+    return () => { cancelled = true }
+  }, [prefillCustomerId, prefillVehicleRego, isEditMode, vehiclesEnabled])
+
+  // Update due date when terms or invoice date changes
+  useEffect(() => {
+    if (terms !== 'custom') {
+      setDueDate(calculateDueDate(invoiceDate, terms))
+    }
+  }, [invoiceDate, terms])
+
+  // T&C pre-fill is handled in useState initializer (conditional on toggle + create/edit mode)
+
+  // Calculate totals
+  const subTotal = lineItems.reduce((sum, item) => sum + item.amount, 0)
+  const discountAmount = discountType === 'percentage'
+    ? (subTotal * discountValue / 100)
+    : discountValue
+  const afterDiscount = subTotal - discountAmount
+  // For GST-inclusive items, derive GST from the inclusive price to avoid
+  // rounding errors. Ex: $150 incl → GST = $150 - ($150/1.15) = $19.57
+  // instead of $130.43 × 0.15 = $19.56 (loses 1 cent).
+  const taxAmount = lineItems.reduce((sum, item) => {
+    if (item.tax_rate <= 0) return sum
+    if (item.gst_inclusive && item.inclusive_price) {
+      // Reconstruct the inclusive total for the line (qty × inclusive unit price)
+      const inclTotal = Math.round(item.quantity * item.inclusive_price * 100) / 100
+      // GST = inclusive - ex-GST amount
+      const gst = Math.round((inclTotal - item.amount) * 100) / 100
+      return sum + gst
+    }
+    return sum + Math.round(item.amount * item.tax_rate) / 100
+  }, 0)
+  const total = afterDiscount + taxAmount + shippingCharges + adjustment
+
+  // Line item management
+  const addLineItem = () => {
+    setLineItems(prev => [...prev, newLineItem()])
+  }
+
+  // Inventory stock picker state
+  const [stockPickerOpen, setStockPickerOpen] = useState(false)
+  const [quickAddStockOpen, setQuickAddStockOpen] = useState(false)
+  const [stockItems, setStockItems] = useState<{id:string;catalogue_item_id:string;catalogue_type:string;item_name:string;part_number:string|null;brand:string|null;subtitle:string|null;current_quantity:number;reserved_quantity:number;available_quantity:number;sell_price:number|null;cost_per_unit:number|null;gst_mode:string|null;supplier_name:string|null;location:string|null}[]>([])
+  const [stockLoading, setStockLoading] = useState(false)
+  const [stockSearch, setStockSearch] = useState('')
+  const [stockFilter, setStockFilter] = useState<'all'|'part'|'tyre'>('all')
+  const [labourPickerOpen, setLabourPickerOpen] = useState(false)
+  const [labourRates, setLabourRates] = useState<{id:string;name:string;hourly_rate:string}[]>([])
+  const [labourLoading, setLabourLoading] = useState(false)
+
+  const openStockPicker = async () => {
+    setStockPickerOpen(true); setStockSearch(''); setStockFilter('all'); setStockLoading(true)
+    try {
+      const res = await apiClient.get('/inventory/stock-items', { params: { limit: 500 } })
+      setStockItems((res.data as any).stock_items || [])
+    } catch { setStockItems([]) } finally { setStockLoading(false) }
+  }
+  const addStockLineItem = (item: typeof stockItems[0]) => {
+    const sellPrice = item.sell_price || 0
+    const isGstInclusive = item.gst_mode === 'inclusive'
+    const isGstExempt = item.gst_mode === 'exempt'
+    // GST-inclusive: back-calculate ex-GST rate so GST breakdown shows correctly
+    // GST-exclusive: rate is already ex-GST, apply 15%
+    // GST-exempt: rate as-is, 0% tax
+    let rate: number
+    let taxRate: number
+    let taxId: string
+    if (isGstExempt) {
+      rate = sellPrice
+      taxRate = 0
+      taxId = 'gst_0'
+    } else if (isGstInclusive) {
+      // Back-calculate: ex-GST = inclusive / 1.15
+      rate = Math.round((sellPrice / 1.15) * 100) / 100
+      taxRate = 15
+      taxId = 'gst_15'
+    } else {
+      rate = sellPrice
+      taxRate = 15
+      taxId = 'gst_15'
+    }
+    const desc = item.subtitle ? `${item.item_name} (${item.subtitle})` : item.item_name
+    const newItem: Partial<LineItem> = {
+      item_id: item.catalogue_item_id,
+      stock_item_id: item.id,
+      description: desc,
+      quantity: 1,
+      rate,
+      tax_rate: taxRate,
+      tax_id: taxId,
+      amount: rate,
+      gst_inclusive: isGstInclusive,
+      inclusive_price: isGstInclusive ? sellPrice : undefined,
+    }
+    setLineItems(prev => {
+      const emptyIdx = prev.findIndex(isEmptyLine)
+      if (emptyIdx >= 0) {
+        // Fill the first empty line
+        const updated = [...prev]
+        updated[emptyIdx] = { ...updated[emptyIdx], ...newItem }
+        return updated
+      }
+      // No empty line — append new one
+      return [...prev, { key: crypto.randomUUID(), ...newItem } as LineItem]
+    })
+    setStockPickerOpen(false)
+  }
+  const openLabourPicker = async () => {
+    setLabourPickerOpen(true); setLabourLoading(true)
+    try { setLabourRates((await apiClient.get('/catalogue/labour-rates')).data.labour_rates || []) }
+    catch { setLabourRates([]) } finally { setLabourLoading(false) }
+  }
+  const addLabourLineItem = (rate: typeof labourRates[0]) => {
+    const labourRate = parseFloat(rate.hourly_rate) || 0
+    const newItem: Partial<LineItem> = {
+      description: `Labour: ${rate.name}`,
+      quantity: 1,
+      rate: labourRate,
+      tax_rate: 15,
+      tax_id: 'gst_15',
+      amount: labourRate,
+    }
+    setLineItems(prev => {
+      const emptyIdx = prev.findIndex(isEmptyLine)
+      if (emptyIdx >= 0) {
+        const updated = [...prev]
+        updated[emptyIdx] = { ...updated[emptyIdx], ...newItem }
+        return updated
+      }
+      return [...prev, { key: crypto.randomUUID(), ...newItem } as LineItem]
+    })
+    setLabourPickerOpen(false)
+  }
+
+  // Fluid / Oil usage tracking (not invoiced, just inventory tracking)
+  interface FluidUsage { key: string; stock_item_id: string; item_name: string; litres: number; catalogue_item_id: string }
+  const [fluidUsages, setFluidUsages] = useState<FluidUsage[]>([])
+  const [fluidPickerOpen, setFluidPickerOpen] = useState(false)
+  const [fluidItems, setFluidItems] = useState<typeof stockItems>([])
+  const [fluidLoading, setFluidLoading] = useState(false)
+  const [fluidSearch, setFluidSearch] = useState('')
+
+  const openFluidPicker = async () => {
+    setFluidPickerOpen(true); setFluidSearch(''); setFluidLoading(true)
+    try {
+      const res = await apiClient.get('/inventory/stock-items', { params: { limit: 500 } })
+      const all = (res.data as any).stock_items || []
+      setFluidItems(all.filter((si: any) => si.catalogue_type === 'fluid' && si.available_quantity > 0))
+    } catch { setFluidItems([]) } finally { setFluidLoading(false) }
+  }
+  const addFluidUsage = (item: typeof stockItems[0]) => {
+    setFluidUsages(prev => [...prev, {
+      key: crypto.randomUUID(),
+      stock_item_id: item.id,
+      item_name: item.item_name,
+      litres: 1,
+      catalogue_item_id: item.catalogue_item_id,
+    }])
+    setFluidPickerOpen(false)
+  }
+  const updateFluidLitres = (key: string, litres: number) => {
+    setFluidUsages(prev => prev.map(f => f.key === key ? { ...f, litres: Math.max(0, litres) } : f))
+  }
+  const removeFluidUsage = (key: string) => {
+    setFluidUsages(prev => prev.filter(f => f.key !== key))
+  }
+
+  const updateLineItem = (index: number, updated: LineItem) => {
+    setLineItems(prev => prev.map((item, i) => i === index ? updated : item))
+  }
+
+  const removeLineItem = (index: number) => {
+    if (lineItems.length > 1) {
+      setLineItems(prev => prev.filter((_, i) => i !== index))
+    }
+  }
+
+  // File handling
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) {
+      const totalAllowed = 5 - existingAttachments.length
+      const newFiles = Array.from(e.target.files)
+      setAttachments(prev => {
+        const remaining = totalAllowed - prev.length
+        if (remaining <= 0) return prev
+        return [...prev, ...newFiles.slice(0, remaining)]
+      })
+    }
+  }
+
+  const removeAttachment = (index: number) => {
+    setAttachments(prev => prev.filter((_, i) => i !== index))
+  }
+
+  // Delete an existing (server-side) attachment
+  const deleteExistingAttachment = async (attachmentId: string) => {
+    if (!editId) return
+    try {
+      await apiClient.delete(`/invoices/${editId}/attachments/${attachmentId}`)
+      setExistingAttachments(prev => prev.filter(a => a.id !== attachmentId))
+    } catch {
+      // Non-blocking — attachment may already be deleted
+    }
+  }
+
+  // Validation
+  const validate = (): boolean => {
+    const errs: FormErrors = {}
+    if (!customer) errs.customer = 'Please select a customer'
+    if (lineItems.every(item => !item.description.trim())) {
+      errs.lineItems = 'Add at least one item'
+    }
+    setErrors(errs)
+    return Object.keys(errs).length === 0
+  }
+
+  // Build payload
+  const buildPayload = (status: 'draft' | 'sent') => {
+    // Compute vehicle field update flags by comparing user-entered values against originals
+    const primaryVehicle = vehicles[0] ?? null
+    const computeVehicleUpdateFlags = () => {
+      if (!primaryVehicle || !isAutomotive || !vehiclesEnabled) {
+        return { vehicle_wof_updated: false, vehicle_cof_updated: false, vehicle_service_due_updated: false }
+      }
+      // A field is "updated" if the user-entered value is non-empty AND differs from the vehicle record value
+      const wofUserValue = primaryVehicle.newWofExpiry
+      const wofOriginal = primaryVehicle.wof_expiry ?? ''
+      const vehicle_wof_updated = wofUserValue != null && wofUserValue !== '' && wofUserValue !== wofOriginal
+
+      const cofUserValue = primaryVehicle.newCofExpiry
+      const cofOriginal = primaryVehicle.cof_expiry ?? ''
+      const vehicle_cof_updated = cofUserValue != null && cofUserValue !== '' && cofUserValue !== cofOriginal
+
+      const svcUserValue = primaryVehicle.newServiceDueDate
+      const svcOriginal = primaryVehicle.service_due_date ?? ''
+      const vehicle_service_due_updated = svcUserValue != null && svcUserValue !== '' && svcUserValue !== svcOriginal
+
+      return { vehicle_wof_updated, vehicle_cof_updated, vehicle_service_due_updated }
+    }
+    const updateFlags = computeVehicleUpdateFlags()
+
+    return {
+    customer_id: customer?.id,
+    branch_id: selectedBranchId || undefined,
+    // Only include vehicle fields when vehicles module is enabled and trade is automotive
+    ...(isAutomotive && vehiclesEnabled ? {
+      vehicle_rego: vehicles[0]?.rego,
+      vehicle_make: vehicles[0]?.make,
+      vehicle_model: vehicles[0]?.model,
+      vehicle_year: vehicles[0]?.year,
+      vehicle_odometer: vehicles[0]?.newOdometer ?? vehicles[0]?.odometer ?? undefined,
+      global_vehicle_id: vehicles[0]?.id || undefined,
+      vehicle_service_due_date: vehicles[0]?.newServiceDueDate ?? vehicles[0]?.service_due_date ?? undefined,
+      vehicle_wof_expiry_date: vehicles[0]?.inspection_type === 'cof'
+        ? undefined
+        : (vehicles[0]?.newWofExpiry ?? vehicles[0]?.wof_expiry ?? undefined),
+      vehicle_cof_expiry_date: vehicles[0]?.inspection_type === 'cof'
+        ? (vehicles[0]?.newCofExpiry ?? vehicles[0]?.cof_expiry ?? undefined)
+        : undefined,
+      // Vehicle field update flags for vehicle_display storage
+      ...updateFlags,
+      vehicles: vehicles.map(v => ({
+        id: v.id || undefined,
+        rego: v.rego,
+        make: v.make,
+        model: v.model,
+        year: v.year,
+        odometer: v.newOdometer ?? v.odometer ?? undefined,
+      })),
+    } : {}),
+    invoice_number: isEditMode ? invoiceNumber : undefined,
+    order_number: orderNumber || undefined,
+    issue_date: invoiceDate,
+    due_date: dueDate,
+    payment_terms: terms,
+    salesperson_id: salesperson || undefined,
+    subject: subject || undefined,
+    gst_number: gstNumber || undefined,
+    status,
+    discount_type: discountType,
+    discount_value: discountValue,
+    shipping_charges: shippingCharges,
+    adjustment,
+    customer_notes: customerNotes || undefined,
+    terms_and_conditions: termsAndConditions || undefined,
+    payment_gateway: paymentGateway,
+    is_recurring: makeRecurring,
+    fluid_usage: fluidUsages.filter(f => f.litres > 0).map(f => ({
+      stock_item_id: f.stock_item_id,
+      catalogue_item_id: f.catalogue_item_id,
+      litres: f.litres,
+      item_name: f.item_name,
+    })),
+    line_items: lineItems.filter(item => item.description.trim()).map(item => ({
+      item_type: item.stock_item_id ? 'part' : (item.item_id ? 'service' : 'service'),
+      catalogue_item_id: item.item_id || undefined,
+      stock_item_id: item.stock_item_id || undefined,
+      description: (item.line_description
+        ? `${item.description}\n${item.line_description}`
+        : item.description).slice(0, 2000),
+      quantity: item.quantity,
+      rate: item.rate,
+      tax_id: item.tax_id,
+      tax_rate: item.tax_rate,
+      amount: item.amount,
+      gst_inclusive: item.gst_inclusive || false,
+      inclusive_price: item.inclusive_price || undefined,
+    })),
+  }
+  }
+
+  // Save handlers
+  // Save terms as default if checkbox is checked
+  const maybeSaveTermsAsDefault = async () => {
+    if (saveTermsAsDefault && termsAndConditions.trim()) {
+      try {
+        await apiClient.put('/org/settings', {
+          terms_and_conditions: termsAndConditions.trim(),
+        })
+        setSaveTermsAsDefault(false)
+        // Refresh tenant context so next invoice picks up the new default
+        refetchTenant()
+      } catch {
+        // Non-blocking
+      }
+    }
+  }
+
+  // Upload attachments sequentially after invoice is saved
+  const uploadAttachments = async (invoiceId: string) => {
+    if (attachments.length === 0) return
+    setUploading(true)
+    for (const file of attachments) {
+      try {
+        const formData = new FormData()
+        formData.append('file', file)
+        await apiClient.post(`/invoices/${invoiceId}/attachments`, formData, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+        })
+      } catch {
+        console.warn(`Failed to upload attachment: ${file.name}`)
+      }
+    }
+    setAttachments([])
+    setUploading(false)
+  }
+
+  const handleSaveDraft = async (options?: { skipNavigation?: boolean }) => {
+    if (!validate()) return
+    setSaving(true)
+    try {
+      if (isEditMode && editId) {
+        const res = await apiClient.put(`/invoices/${editId}`, buildPayload('draft'))
+        await maybeSaveTermsAsDefault()
+        await uploadAttachments(editId)
+        const inv = (res.data as any)?.invoice || res.data
+        if (!options?.skipNavigation) {
+          navigate(`/invoices/${editId}`, { state: { invoice: inv } })
+        }
+      } else {
+        const res = await apiClient.post('/invoices', buildPayload('draft'))
+        await maybeSaveTermsAsDefault()
+        const inv = (res.data as any)?.invoice || res.data
+        const newId = inv?.id
+        if (newId) await uploadAttachments(newId)
+        if (!options?.skipNavigation) {
+          if (newId) {
+            // Fetch full detail for instant preview
+            const detailRes = await apiClient.get(`/invoices/${newId}`)
+            const fullInvoice = (detailRes.data as any)?.invoice || detailRes.data
+            navigate(`/invoices/${newId}`, { state: { invoice: fullInvoice } })
+          } else {
+            navigate('/invoices')
+          }
+        }
+      }
+    } catch (err: unknown) {
+      const msg = extractErrorMsg((err as any)?.response?.data?.detail, 'Failed to save draft. Please try again.')
+      setErrors({ submit: msg })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  // Wire up the ref so the navigation guard can call handleSaveDraft (skip internal navigation — OrgLayout handles post-save nav)
+  handleSaveDraftRef.current = () => handleSaveDraft({ skipNavigation: true })
+
+  const handleCreateInvoice = () => {
+    if (!validate()) return
+    setIssueModalOpen(true)
+  }
+
+  const handleIssueConfirm = async (paymentMethod: string, shouldEmail: boolean) => {
+    setSaving(true)
+    setIssueError(null)
+    setPaymentGateway(paymentMethod)
+    try {
+      const status = shouldEmail ? 'sent' : 'issued'
+      const payload = { ...buildPayload(status as 'draft' | 'sent'), payment_gateway: paymentMethod }
+      if (isEditMode && editId) {
+        await apiClient.put(`/invoices/${editId}`, payload)
+        await maybeSaveTermsAsDefault()
+        await uploadAttachments(editId)
+        // Fetch full detail for instant preview
+        const detailRes = await apiClient.get(`/invoices/${editId}`)
+        const fullInvoice = (detailRes.data as any)?.invoice || detailRes.data
+        setIssueModalOpen(false)
+        navigate(`/invoices/${editId}`, { state: { invoice: fullInvoice } })
+      } else {
+        const res = await apiClient.post('/invoices', payload)
+        await maybeSaveTermsAsDefault()
+        const inv = (res.data as any)?.invoice || res.data
+        const newId = inv?.id
+        if (newId) await uploadAttachments(newId)
+        if (newId) {
+          // Fetch full detail for instant preview (includes org info, customer, line items)
+          const detailRes = await apiClient.get(`/invoices/${newId}`)
+          const fullInvoice = (detailRes.data as any)?.invoice || detailRes.data
+          setIssueModalOpen(false)
+          navigate(`/invoices/${newId}`, { state: { invoice: fullInvoice } })
+        } else {
+          setIssueModalOpen(false)
+          navigate('/invoices')
+        }
+      }
+    } catch (err: unknown) {
+      const msg = extractErrorMsg((err as any)?.response?.data?.detail, 'Failed to issue invoice')
+      setIssueError(msg)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleMarkPaidAndEmail = async () => {
+    if (!validate()) return
+    setPaidSaving(true)
+    try {
+      if (isEditMode && editId) {
+        // Edit mode: update + issue, then record payment separately (2 calls)
+        await apiClient.put(`/invoices/${editId}`, buildPayload('sent'))
+        await uploadAttachments(editId)
+        // Fetch issued invoice to get total for payment
+        const detailRes = await apiClient.get(`/invoices/${editId}`)
+        const inv = (detailRes.data as any)?.invoice || detailRes.data
+        const total = Number(inv?.total || inv?.total_incl_gst || 0)
+        if (total > 0) {
+          await apiClient.post('/payments/cash', {
+            invoice_id: editId,
+            amount: total,
+            method: paidMethod,
+            note: 'Paid at invoice creation',
+          })
+        }
+        await maybeSaveTermsAsDefault()
+        // Fetch final state with paid status
+        const finalRes = await apiClient.get(`/invoices/${editId}`)
+        const finalInv = (finalRes.data as any)?.invoice || finalRes.data
+        setPaidModalOpen(false)
+        navigate(`/invoices/${editId}`, { state: { invoice: finalInv } })
+      } else {
+        // New invoice: single API call with mark_paid flag
+        const payload = {
+          ...buildPayload('sent'),
+          mark_paid: true,
+          payment_method: paidMethod,
+        }
+        const res = await apiClient.post('/invoices', payload)
+        await maybeSaveTermsAsDefault()
+        const inv = (res.data as any)?.invoice || res.data
+        const newId = inv?.id
+        if (newId) await uploadAttachments(newId)
+        setPaidModalOpen(false)
+        // Fetch full invoice detail for instant preview (includes org, customer, payments)
+        if (newId) {
+          const detailRes = await apiClient.get(`/invoices/${newId}`)
+          const fullInv = (detailRes.data as any)?.invoice || detailRes.data
+          navigate(`/invoices/${newId}`, { state: { invoice: fullInv } })
+        } else {
+          navigate('/invoices')
+        }
+      }
+    } catch (err: unknown) {
+      const msg = extractErrorMsg((err as any)?.response?.data?.detail, 'Failed to process. Please try again.')
+      setErrors({ submit: msg })
+    } finally {
+      setPaidSaving(false)
+    }
+  }
+
+  const handleQrPayment = async () => {
+    if (!validate()) return
+    setSaving(true)
+    try {
+      const payload = buildPayload('sent')
+      const res = await apiClient.post<{
+        session_id: string
+        invoice_id: string
+        invoice_number: string
+        amount: number
+        amount_cents: number
+        expires_at: string
+        currency: string
+      }>('/payments/qr-session', payload)
+
+      const session = res.data
+      setQrSessionData({
+        sessionId: session?.session_id ?? '',
+        amount: Number(session?.amount ?? 0),
+        invoiceNumber: session?.invoice_number ?? '',
+        invoiceId: session?.invoice_id ?? '',
+      })
+      setShowQrPaymentPopup(true)
+    } catch (err: unknown) {
+      const msg = extractErrorMsg((err as any)?.response?.data?.detail, 'Failed to create QR payment session. Please try again.')
+      setErrors({ submit: msg })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleCancel = () => {
+    const target = isEditMode && editId ? `/invoices/${editId}` : '/invoices'
+    guardedNavigate(target)
+  }
+
+  if (loadingInvoice) {
+    return (
+      <div className="flex justify-center py-16">
+        <Spinner label="Loading invoice" />
+      </div>
+    )
+  }
+
+  return (
+    <div className="bg-canvas min-h-full">
+      {/* Header */}
+      <div className="bg-card border-b border-border px-6 py-3 sticky top-0 z-10">
+        <div className="max-w-4xl mx-auto flex items-center justify-between">
+          <h1 className="text-lg font-semibold text-text">{isEditMode ? 'Edit Invoice' : 'New Invoice'}</h1>
+          <div className="flex items-center gap-2">
+            <Button variant="ghost" size="sm" onClick={handleCancel}>Cancel</Button>
+            <Button variant="ghost" size="sm" onClick={() => handleSaveDraft()} loading={saving}>Save as Draft</Button>
+            <Button variant="ghost" size="sm" onClick={() => { if (validate()) setPaidModalOpen(true) }} loading={paidSaving}>Mark Paid &amp; Email</Button>
+            {stripeConnected && (
+              <button
+                type="button"
+                onClick={handleQrPayment}
+                disabled={saving}
+                className="inline-flex items-center gap-1.5 rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 transition-colors disabled:opacity-50"
+              >
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" aria-hidden="true">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5A1.125 1.125 0 013.75 9.375v-4.5zM3.75 14.625c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5a1.125 1.125 0 01-1.125-1.125v-4.5zM13.5 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5a1.125 1.125 0 01-1.125-1.125v-4.5z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 14.625c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5a1.125 1.125 0 01-1.125-1.125v-4.5z" />
+                </svg>
+                QR Payment
+              </button>
+            )}
+            <Button size="sm" onClick={handleCreateInvoice} loading={saving}>{isEditMode ? 'Issue Invoice' : 'Create Invoice'}</Button>
+          </div>
+        </div>
+      </div>
+
+      <div className="px-6 py-8">
+        <div className="max-w-4xl mx-auto bg-card rounded-card shadow-card border border-border p-8 space-y-6">
+
+          {/* Customer and Invoice Details */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {/* Left Column */}
+            <div className="space-y-4">
+              <CustomerSearch
+                selectedCustomer={customer}
+                onSelect={(c) => {
+                  setCustomer(c)
+                  if (!c) setVehicles([])
+                }}
+                includeVehicles={vehiclesEnabled}
+                onVehicleAutoSelect={vehiclesEnabled ? (v) => {
+                  // Only auto-select if no vehicles are currently selected
+                  if (vehicles.length === 0) {
+                    setVehicles([{
+                      id: v.id,
+                      rego: v.rego,
+                      make: v.make || '',
+                      model: v.model || '',
+                      year: v.year,
+                      colour: v.colour || '',
+                      body_type: '',
+                      fuel_type: '',
+                      engine_size: '',
+                      wof_expiry: v.wof_expiry ?? null,
+                      cof_expiry: v.cof_expiry ?? null,
+                      inspection_type: v.inspection_type ?? null,
+                      registration_expiry: null,
+                      odometer: v.odometer ?? null,
+                      service_due_date: v.service_due_date ?? null,
+                    }])
+                  }
+                } : undefined}
+                error={errors.customer}
+              />
+
+              {/* Vehicle Search — only shown when vehicles module is enabled and trade is automotive */}
+              {isAutomotive && <ModuleGate module="vehicles">
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-gray-700">Vehicles</label>
+                {vehicles.map((v, index) => (
+                  <div key={v.id || index} className="flex items-start gap-2">
+                    <div className="flex-1 rounded-lg border border-gray-200 bg-white p-3 text-sm shadow-sm">
+                      {/* Header: Rego + Make/Model */}
+                      <div className="flex items-center justify-between mb-3 pb-2 border-b border-gray-100">
+                        <div className="flex items-center gap-2">
+                          <span className="inline-flex items-center rounded bg-yellow-100 px-2 py-0.5 text-xs font-bold font-mono text-gray-900">
+                            {v.rego}
+                          </span>
+                          {(v.make || v.model) && (
+                            <span className="text-sm text-gray-700">
+                              {[v.year, v.make, v.model].filter(Boolean).join(' ')}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Helper text */}
+                      <p className="text-xs text-blue-600 bg-blue-50 border border-blue-100 rounded px-2 py-1.5 mb-3">
+                        💡 These fields are pre-filled from last known values. Update them to reflect current readings.
+                      </p>
+
+                      {/* Vertical stack — each field on its own row for clarity */}
+                      <div className="space-y-3">
+                        {/* Odometer */}
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <label className="block text-xs font-semibold text-gray-700">
+                              Odometer (km)
+                            </label>
+                            {v.odometer != null && v.odometer > 0 && (
+                              <span className="text-[11px] text-gray-500">
+                                Last: <span className="font-semibold text-gray-900">{(v.odometer ?? 0).toLocaleString()} km</span>
+                              </span>
+                            )}
+                          </div>
+                          <input
+                            type="number"
+                            min="0"
+                            placeholder="Enter new reading"
+                            value={v.newOdometer ?? v.odometer ?? ''}
+                            onChange={(e) => {
+                              const val = e.target.value ? Number(e.target.value) : null
+                              setVehicles(prev => prev.map((veh, i) => i === index ? { ...veh, newOdometer: val } : veh))
+                            }}
+                            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          />
+                        </div>
+
+                        {/* Service Due */}
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <label className="block text-xs font-semibold text-gray-700">
+                              Service Due
+                            </label>
+                            {v.service_due_date && (
+                              <span className="text-[11px] text-gray-500">
+                                Last: <span className="font-semibold text-gray-900">{new Date(v.service_due_date).toLocaleDateString('en-NZ', { day: '2-digit', month: 'short', year: 'numeric' })}</span>
+                              </span>
+                            )}
+                          </div>
+                          <input
+                            type="date"
+                            lang="en-NZ"
+                            value={v.newServiceDueDate ?? v.service_due_date ?? ''}
+                            onChange={(e) => {
+                              const val = e.target.value || null
+                              setVehicles(prev => prev.map((veh, i) => i === index ? { ...veh, newServiceDueDate: val } : veh))
+                            }}
+                            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          />
+                          {(() => {
+                            const isServiceDueDateChanged = (
+                              v.newServiceDueDate != null &&
+                              v.newServiceDueDate !== '' &&
+                              v.newServiceDueDate !== (v.service_due_date ?? '')
+                            )
+                            return isServiceDueDateChanged ? (
+                              <p className="mt-1 text-xs text-amber-600">
+                                Ensure you have updated the odometer reading too
+                              </p>
+                            ) : null
+                          })()}
+                        </div>
+
+                        {/* WOF / COF */}
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <label className="block text-xs font-semibold text-gray-700">
+                              {getInspectionLabel(v)}
+                            </label>
+                            {v.inspection_type === 'cof' ? (
+                              v.cof_expiry && (
+                                <span className="text-[11px] text-gray-500">
+                                  Last: <span className="font-semibold text-gray-900">{new Date(v.cof_expiry).toLocaleDateString('en-NZ', { day: '2-digit', month: 'short', year: 'numeric' })}</span>
+                                </span>
+                              )
+                            ) : (
+                              v.wof_expiry && (
+                                <span className="text-[11px] text-gray-500">
+                                  Last: <span className="font-semibold text-gray-900">{new Date(v.wof_expiry).toLocaleDateString('en-NZ', { day: '2-digit', month: 'short', year: 'numeric' })}</span>
+                                </span>
+                              )
+                            )}
+                          </div>
+                          <input
+                            type="date"
+                            lang="en-NZ"
+                            value={v.inspection_type === 'cof'
+                              ? (v.newCofExpiry ?? v.cof_expiry ?? '')
+                              : (v.newWofExpiry ?? v.wof_expiry ?? '')}
+                            onChange={(e) => {
+                              const val = e.target.value || null
+                              if (v.inspection_type === 'cof') {
+                                setVehicles(prev => prev.map((veh, i) => i === index ? { ...veh, newCofExpiry: val } : veh))
+                              } else {
+                                setVehicles(prev => prev.map((veh, i) => i === index ? { ...veh, newWofExpiry: val } : veh))
+                              }
+                            }}
+                            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setVehicles(prev => prev.filter((_, i) => i !== index))}
+                      className="mt-2 rounded p-1 text-gray-400 hover:text-red-500"
+                      aria-label="Remove vehicle"
+                    >
+                      <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </div>
+                ))}
+                <VehicleLiveSearch
+                  vehicle={null}
+                  onVehicleFound={(v) => {
+                    if (v && !vehicles.some(existing => existing.id === v.id)) {
+                      setVehicles(prev => [...prev, v])
+                    }
+                  }}
+                  onCustomerAutoSelect={(c) => {
+                    // Only auto-select if no customer is currently selected
+                    if (!customer) {
+                      setCustomer({
+                        id: c.id,
+                        first_name: c.first_name,
+                        last_name: c.last_name,
+                        email: c.email || '',
+                        phone: c.phone || '',
+                        mobile_phone: c.mobile_phone || undefined,
+                        display_name: c.display_name || undefined,
+                        company_name: c.company_name || undefined,
+                      })
+                    }
+                  }}
+                />
+                {vehicles.length > 0 && (
+                  <p className="text-xs text-gray-500">
+                    {vehicles.length} vehicle{vehicles.length > 1 ? 's' : ''} added. Search above to add more.
+                  </p>
+                )}
+              </div>
+              </ModuleGate>}
+            </div>
+
+            {/* Right Column */}
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <Input
+                  label="Invoice#"
+                  value={invoiceNumber}
+                  onChange={(e) => setInvoiceNumber(e.target.value)}
+                  placeholder="Auto-generated on issue"
+                  disabled={!isEditMode}
+                />
+                <Input
+                  label="Order Number"
+                  value={orderNumber}
+                  onChange={(e) => setOrderNumber(e.target.value)}
+                  placeholder="Optional"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <Input
+                  label="Invoice Date"
+                  type="date"
+                  value={invoiceDate}
+                  onChange={(e) => setInvoiceDate(e.target.value)}
+                />
+                <Select
+                  label="Terms"
+                  options={PAYMENT_TERMS_OPTIONS}
+                  value={terms}
+                  onChange={(e) => setTerms(e.target.value)}
+                />
+              </div>
+              <div>
+                <Input
+                  label="Due Date"
+                  type="date"
+                  value={dueDate}
+                  onChange={(e) => { setDueDate(e.target.value); setTerms('custom') }}
+                />
+              </div>
+
+              <Select
+                label="Salesperson"
+                options={[{ value: '', label: 'Select a salesperson' }, ...salespeople.map(s => ({ value: s.id, label: s.name }))]}
+                value={salesperson}
+                onChange={(e) => setSalesperson(e.target.value)}
+              />
+            </div>
+          </div>
+
+          {/* GST Number */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <Input
+              label="GST No*"
+              value={gstNumber}
+              disabled
+              helperText={gstNumber ? 'Auto-populated from organisation settings' : 'Configure GST in organisation settings'}
+            />
+            <Input
+              label="Subject"
+              value={subject}
+              onChange={(e) => setSubject(e.target.value)}
+              placeholder="Let your customer know what this invoice is for"
+            />
+          </div>
+
+          {/* Line Items */}
+          <div>
+            {errors.lineItems && <p className="text-sm text-red-600 mb-2">{errors.lineItems}</p>}
+
+            {isLineItemsLocked && (
+              <div
+                role="status"
+                className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+              >
+                <p className="font-medium">
+                  Line items are locked on issued invoices
+                </p>
+                <p className="mt-1">
+                  This invoice is already <span className="font-semibold">{originalStatus}</span>.
+                  Prices and quantities can&apos;t be changed once an invoice is issued — that would break
+                  GST records, payments, and accounting integrations. To correct an amount, either{' '}
+                  <span className="font-semibold">issue a credit note</span> (recommended for partial
+                  corrections) or <span className="font-semibold">void this invoice</span> and create a
+                  new one. You can still edit notes, due date, vehicle metadata, and terms below.
+                </p>
+              </div>
+            )}
+
+            <div className="overflow-visible border border-gray-200 rounded-lg">
+              <table className="w-full">
+                <thead className="bg-gray-50">
+                  <tr className="text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    <th className="py-3 px-2">Details</th>
+                    <th className="py-3 px-2 w-24">Quantity</th>
+                    <th className="py-3 px-2 w-32">Rate</th>
+                    <th className="py-3 px-2 w-36">Tax</th>
+                    <th className="py-3 px-2 w-28 text-right">Amount</th>
+                    <th className="py-3 px-2 w-12"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {lineItems.map((item, index) => (
+                    <ItemTableRow
+                      key={item.key}
+                      item={item}
+                      index={index}
+                      catalogueItems={catalogueItems}
+                      taxRates={taxRates}
+                      onChange={updateLineItem}
+                      onRemove={removeLineItem}
+                      onItemCreated={(ci) => setCatalogueItems(prev => [...prev, ci])}
+                      readOnly={isLineItemsLocked}
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="flex gap-3 mt-3">
+              <Button variant="ghost" size="sm" onClick={addLineItem} disabled={isLineItemsLocked}>
+                + Add New Row
+              </Button>
+              <Button variant="ghost" size="sm" onClick={openStockPicker} disabled={isLineItemsLocked}>+ Add from Inventory</Button>
+              {isAutomotive && vehiclesEnabled && (
+                <>
+                  <Button variant="ghost" size="sm" onClick={openLabourPicker} disabled={isLineItemsLocked}>+ Labour Charge</Button>
+                </>
+              )}
+              <Button variant="ghost" size="sm" disabled>
+                Add Items in Bulk
+              </Button>
+            </div>
+          </div>
+
+          {/* Fluid / Oil Usage Tracking (not invoiced — inventory tracking only) */}
+          {isAutomotive && vehiclesEnabled && vehicles.length > 0 && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50/50 p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <svg className="w-5 h-5 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" /></svg>
+                  <span className="text-sm font-medium text-amber-900">Oil / Fluid Used</span>
+                  <span className="text-xs text-amber-600">(tracked against vehicle — not added to invoice total)</span>
+                </div>
+                <Button variant="ghost" size="sm" onClick={openFluidPicker}>+ Add Fluid</Button>
+              </div>
+              {fluidUsages.length > 0 && (
+                <div className="space-y-2">
+                  {fluidUsages.map(f => (
+                    <div key={f.key} className="flex items-center gap-3 bg-white rounded-md border border-amber-100 px-3 py-2">
+                      <span className="flex-1 text-sm text-gray-900">{f.item_name}</span>
+                      <div className="flex items-center gap-1">
+                        <input
+                          type="number"
+                          min="0.1"
+                          step="0.1"
+                          value={f.litres}
+                          onChange={e => updateFluidLitres(f.key, parseFloat(e.target.value) || 0)}
+                          className="w-20 rounded border border-gray-300 px-2 py-1 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                        <span className="text-xs text-gray-500">L</span>
+                      </div>
+                      <button type="button" onClick={() => removeFluidUsage(f.key)} className="text-gray-400 hover:text-red-500 p-1" aria-label="Remove">
+                        <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {fluidUsages.length === 0 && (
+                <p className="text-xs text-amber-700">No fluids recorded. Click "+ Add Fluid" to track oil/fluid used on this vehicle.</p>
+              )}
+            </div>
+          )}
+
+          {/* Totals Section */}
+          <div className="flex justify-end">
+            <div className="w-full max-w-sm space-y-3">
+              <div className="flex justify-between text-sm">
+                <span className="text-gray-600">Sub Total (Ex GST)</span>
+                <span className="font-medium text-gray-900">{formatNZD(subTotal)}</span>
+              </div>
+
+              {/* Discount */}
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-sm text-gray-600">Discount</span>
+                <div className="flex items-center gap-2">
+                  <div className="inline-flex rounded-md border border-gray-300">
+                    <button
+                      type="button"
+                      onClick={() => setDiscountType('percentage')}
+                      className={`min-w-[40px] px-3 py-1.5 text-sm font-semibold text-center rounded-l-md transition-colors ${discountType === 'percentage' ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
+                    >
+                      %
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDiscountType('fixed')}
+                      className={`min-w-[40px] px-3 py-1.5 text-sm font-semibold text-center rounded-r-md border-l border-gray-300 transition-colors ${discountType === 'fixed' ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
+                    >
+                      $
+                    </button>
+                  </div>
+                  <input
+                    type="number"
+                    min="0"
+                    step={discountType === 'percentage' ? '1' : '0.01'}
+                    value={discountValue}
+                    onChange={(e) => setDiscountValue(Math.max(0, Number(e.target.value) || 0))}
+                    className="w-24 rounded-md border border-gray-300 px-3 py-1.5 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                </div>
+              </div>
+              {discountAmount > 0 && (
+                <div className="flex justify-between text-sm text-red-600">
+                  <span></span>
+                  <span>-{formatNZD(discountAmount)}</span>
+                </div>
+              )}
+
+              {/* Tax */}
+              <div className="flex justify-between text-sm">
+                <span className="text-gray-600">GST (15%)</span>
+                <span className="text-gray-900">{formatNZD(taxAmount)}</span>
+              </div>
+
+              {/* Shipping */}
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-sm text-gray-600">Shipping Charges</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={shippingCharges}
+                  onChange={(e) => setShippingCharges(Math.max(0, Number(e.target.value) || 0))}
+                  className="w-24 rounded border border-gray-300 px-2 py-1 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+
+              {/* Adjustment */}
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-sm text-gray-600">Adjustment</span>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={adjustment}
+                  onChange={(e) => setAdjustment(Number(e.target.value) || 0)}
+                  className="w-24 rounded border border-gray-300 px-2 py-1 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+
+              {/* Total */}
+              <div className="flex justify-between text-base font-semibold border-t border-gray-200 pt-3">
+                <span className="text-gray-900">Total (NZD)</span>
+                <span className="text-gray-900">{formatNZD(total)}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Customer Notes */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Customer Notes</label>
+            <textarea
+              value={customerNotes}
+              onChange={(e) => setCustomerNotes(e.target.value)}
+              rows={3}
+              placeholder="Enter any notes to be displayed in your transaction"
+              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+
+          {/* Terms & Conditions */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Terms & Conditions</label>
+            <div
+              ref={tcEditorRef}
+              contentEditable
+              role="textbox"
+              aria-multiline="true"
+              aria-label="Terms and conditions"
+              onInput={() => {
+                if (tcEditorRef.current) {
+                  tcUserEditingRef.current = true
+                  setTermsAndConditions(tcEditorRef.current.innerHTML)
+                }
+              }}
+              className="w-full min-h-[80px] rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 shadow-sm prose prose-sm max-w-none focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <label className="mt-2 flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={saveTermsAsDefault}
+                onChange={(e) => setSaveTermsAsDefault(e.target.checked)}
+                className="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+              />
+              <span className="text-sm text-gray-600">Use this in future for all invoices of all customers.</span>
+            </label>
+          </div>
+
+          {/* Attach Files */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Attach File(s) to Invoice</label>
+
+            {/* Existing attachments (from server) */}
+            {existingAttachments.length > 0 && (
+              <div className="mb-3 space-y-2">
+                {existingAttachments.map((att) => (
+                  <div key={att.id} className="flex items-center gap-2 text-sm text-gray-600 bg-gray-50 rounded-md px-3 py-2 border border-gray-200">
+                    <svg className="h-4 w-4 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                    </svg>
+                    <span className="flex-1 truncate">{att.file_name}</span>
+                    <span className="text-xs text-gray-400 shrink-0">{formatFileSize(att.file_size ?? 0)}</span>
+                    <button
+                      type="button"
+                      onClick={() => deleteExistingAttachment(att.id)}
+                      className="text-red-500 hover:text-red-700 shrink-0"
+                      aria-label={`Delete ${att.file_name}`}
+                    >
+                      <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                      </svg>
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* File picker for new attachments */}
+            {(existingAttachments.length + attachments.length) < 5 && (
+              <div className="flex items-center gap-4">
+                <label className="cursor-pointer inline-flex items-center gap-2 px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 bg-white hover:bg-gray-50">
+                  <svg className="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                  </svg>
+                  Upload Files
+                  <input type="file" multiple onChange={handleFileChange} className="hidden" />
+                </label>
+                <span className="text-sm text-gray-500">
+                  You can upload a maximum of {5 - existingAttachments.length - attachments.length} more file{(5 - existingAttachments.length - attachments.length) !== 1 ? 's' : ''}, 20MB each
+                </span>
+              </div>
+            )}
+            {(existingAttachments.length + attachments.length) >= 5 && (
+              <p className="text-sm text-gray-500">Maximum of 5 attachments reached.</p>
+            )}
+            {attachments.length > 0 && (
+              <div className="mt-3 space-y-2">
+                {attachments.map((file, index) => (
+                  <div key={index} className="flex items-center gap-2 text-sm text-gray-600">
+                    <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                    <span>{file.name}</span>
+                    <span className="text-xs text-gray-400">{formatFileSize(file.size)}</span>
+                    <button type="button" onClick={() => removeAttachment(index)} className="text-red-500 hover:text-red-700">✕</button>
+                  </div>
+                ))}
+              </div>
+            )}
+            {uploading && (
+              <div className="mt-3 flex items-center gap-2 text-sm text-blue-600">
+                <Spinner size="sm" />
+                <span>Uploading attachments...</span>
+              </div>
+            )}
+          </div>
+
+          {/* Make Recurring */}
+          <div className="border-t border-gray-200 pt-4">
+            <label className="flex items-center gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={makeRecurring}
+                onChange={(e) => setMakeRecurring(e.target.checked)}
+                className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+              />
+              <span className="text-sm font-medium text-gray-700">Make Recurring</span>
+            </label>
+            {makeRecurring && (
+              <p className="mt-2 text-sm text-gray-500 ml-7">
+                Recurring invoice settings will be available after saving.
+              </p>
+            )}
+          </div>
+
+          {/* Submit Error */}
+          {errors.submit && (
+            <p className="text-sm text-red-600" role="alert">{errors.submit}</p>
+          )}
+
+          {/* Bottom Actions */}
+          <div className="flex justify-end gap-2 pt-4 border-t border-gray-200">
+            <Button variant="ghost" size="sm" onClick={handleCancel}>Cancel</Button>
+            <Button variant="ghost" size="sm" onClick={() => handleSaveDraft()} loading={saving}>Save as Draft</Button>
+            <Button variant="ghost" size="sm" onClick={() => { if (validate()) setPaidModalOpen(true) }} loading={paidSaving}>Mark Paid &amp; Email</Button>
+            {stripeConnected && (
+              <button
+                type="button"
+                onClick={handleQrPayment}
+                disabled={saving}
+                className="inline-flex items-center gap-1.5 rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 transition-colors disabled:opacity-50"
+              >
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" aria-hidden="true">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5A1.125 1.125 0 013.75 9.375v-4.5zM3.75 14.625c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5a1.125 1.125 0 01-1.125-1.125v-4.5zM13.5 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5a1.125 1.125 0 01-1.125-1.125v-4.5z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 14.625c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5a1.125 1.125 0 01-1.125-1.125v-4.5z" />
+                </svg>
+                QR Payment
+              </button>
+            )}
+            <Button size="sm" onClick={handleCreateInvoice} loading={saving}>{isEditMode ? 'Issue Invoice' : 'Create Invoice'}</Button>
+          </div>
+        </div>
+      </div>
+
+      {/* Mark Paid & Email Modal */}
+      <Modal open={paidModalOpen} onClose={() => setPaidModalOpen(false)} title="Mark Paid & Email">
+        <p className="text-sm text-gray-600 mb-4">
+          This will issue the invoice, record full payment, and email the paid invoice to the customer.
+        </p>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Payment Method</label>
+          <select
+            value={paidMethod}
+            onChange={(e) => setPaidMethod(e.target.value)}
+            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+          >
+            <option value="cash">Cash</option>
+            <option value="eftpos">EFTPOS</option>
+            <option value="bank_transfer">Bank Transfer</option>
+            <option value="card">Card</option>
+            <option value="cheque">Cheque</option>
+          </select>
+        </div>
+        <div className="mt-4 flex justify-end gap-2">
+          <Button variant="ghost" onClick={() => setPaidModalOpen(false)}>Cancel</Button>
+          <Button onClick={handleMarkPaidAndEmail} loading={paidSaving}>Confirm &amp; Send</Button>
+        </div>
+      </Modal>
+
+      {/* Issue Invoice Modal */}
+      <IssueInvoiceModal
+        open={issueModalOpen}
+        onClose={() => { setIssueModalOpen(false); setIssueError(null) }}
+        onConfirm={handleIssueConfirm}
+        customerEmail={customer?.email ?? null}
+        loading={saving}
+        stripeConnected={stripeConnected}
+        error={issueError}
+      />
+
+      {/* Inventory Stock Picker Modal */}
+      <Modal open={stockPickerOpen} onClose={() => setStockPickerOpen(false)} title="Add from Inventory">
+        <div className="space-y-3">
+          <div className="flex gap-2">
+            <input type="text" placeholder="Search by name, part number, brand..." value={stockSearch} onChange={e => setStockSearch(e.target.value)} className="flex-1 rounded-md border border-gray-300 px-3 py-2 text-sm" />
+            <button type="button" onClick={() => setQuickAddStockOpen(true)} className="shrink-0 rounded-md bg-blue-600 px-3 py-2 text-xs font-medium text-white hover:bg-blue-700 transition-colors whitespace-nowrap">+ Quick Add Stock</button>
+          </div>
+          <div className="flex gap-2">
+            {(['all', 'part', 'tyre'] as const).map(f => (
+              <button key={f} type="button" onClick={() => setStockFilter(f)}
+                className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${stockFilter === f ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+                {f === 'all' ? 'All' : f.charAt(0).toUpperCase() + f.slice(1) + 's'}
+              </button>
+            ))}
+          </div>
+          {stockLoading ? <div className="py-8 text-center text-sm text-gray-500">Loading inventory...</div> : (
+            <div className="max-h-80 overflow-y-auto divide-y divide-gray-100">
+              {stockItems
+                .filter(si => si.catalogue_type !== 'fluid')
+                .filter(si => stockFilter === 'all' || si.catalogue_type === stockFilter)
+                .filter(si => !stockSearch || si.item_name.toLowerCase().includes(stockSearch.toLowerCase()) || (si.part_number && si.part_number.toLowerCase().includes(stockSearch.toLowerCase())) || (si.brand && si.brand.toLowerCase().includes(stockSearch.toLowerCase())))
+                .filter(si => si.available_quantity > 0)
+                .map(si => (
+                <button key={si.id} onClick={() => addStockLineItem(si)} className="w-full text-left px-3 py-2.5 hover:bg-blue-50 flex items-center justify-between gap-3">
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium text-gray-900 truncate">{si.item_name}</div>
+                    <div className="text-xs text-gray-500 flex flex-wrap gap-x-2">
+                      {si.part_number && <span>{si.part_number}</span>}
+                      <span className="capitalize">{si.catalogue_type}</span>
+                      {si.brand && <span>· {si.brand}</span>}
+                      {si.subtitle && <span>· {si.subtitle}</span>}
+                      {si.location && <span>· 📍 {si.location}</span>}
+                    </div>
+                    <div className="text-xs text-gray-400 mt-0.5">
+                      Available: {si.available_quantity}{si.catalogue_type === 'fluid' ? 'L' : ' units'}
+                      {si.reserved_quantity > 0 && <span className="ml-1 text-orange-500">({si.reserved_quantity} held)</span>}
+                      {si.supplier_name && <span> · {si.supplier_name}</span>}
+                      {si.gst_mode === 'inclusive' && <span className="ml-1 text-amber-600">(GST inc.)</span>}
+                      {si.gst_mode === 'exempt' && <span className="ml-1 text-amber-600">(GST exempt)</span>}
+                    </div>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <div className="text-sm font-medium text-gray-900">{si.sell_price != null ? formatNZD(si.sell_price) : '—'}</div>
+                    <div className="text-xs text-gray-500">{si.catalogue_type === 'fluid' ? '/L' : '/unit'}</div>
+                  </div>
+                </button>
+              ))}
+              {stockItems.filter(si => si.available_quantity > 0).length === 0 && !stockLoading && <div className="py-8 text-center text-sm text-gray-500">No items in stock.</div>}
+            </div>
+          )}
+        </div>
+      </Modal>
+
+      {/* Quick Add Stock Modal — same workflow as inventory page's "Add to Stock" */}
+      <AddToStockModal
+        isOpen={quickAddStockOpen}
+        onClose={() => setQuickAddStockOpen(false)}
+        onSuccess={() => { openStockPicker() }}
+      />
+
+      {/* Labour Picker Modal */}
+      <Modal open={labourPickerOpen} onClose={() => setLabourPickerOpen(false)} title="Add Labour Charge">
+        {labourLoading ? <div className="py-8 text-center text-sm text-gray-500">Loading...</div> : (
+          <div className="max-h-64 overflow-y-auto divide-y divide-gray-100">
+            {labourRates.map(rate => (
+              <button key={rate.id} onClick={() => addLabourLineItem(rate)} className="w-full text-left px-3 py-2.5 hover:bg-blue-50 flex items-center justify-between">
+                <span className="text-sm font-medium text-gray-900">{rate.name}</span>
+                <span className="text-sm font-medium text-gray-900">${rate.hourly_rate}/hr</span>
+              </button>
+            ))}
+            {labourRates.length === 0 && !labourLoading && <div className="py-8 text-center text-sm text-gray-500">No labour rates configured.</div>}
+          </div>
+        )}
+      </Modal>
+
+      {/* Fluid / Oil Picker Modal */}
+      <Modal open={fluidPickerOpen} onClose={() => setFluidPickerOpen(false)} title="Add Oil / Fluid Usage">
+        <div className="space-y-3">
+          <p className="text-xs text-gray-500">Select a fluid from inventory to track usage against this vehicle. This will not be added to the invoice total — it only decrements stock.</p>
+          <input type="text" placeholder="Search fluids..." value={fluidSearch} onChange={e => setFluidSearch(e.target.value)} className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm" />
+          {fluidLoading ? <div className="py-8 text-center text-sm text-gray-500">Loading...</div> : (
+            <div className="max-h-64 overflow-y-auto divide-y divide-gray-100">
+              {fluidItems
+                .filter(si => !fluidSearch || si.item_name.toLowerCase().includes(fluidSearch.toLowerCase()) || (si.brand && si.brand.toLowerCase().includes(fluidSearch.toLowerCase())))
+                .map(si => (
+                <button key={si.id} onClick={() => addFluidUsage(si)} className="w-full text-left px-3 py-2.5 hover:bg-amber-50 flex items-center justify-between gap-3">
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium text-gray-900">{si.item_name}</div>
+                    <div className="text-xs text-gray-500">
+                      {si.brand && <span>{si.brand} · </span>}
+                      Available: {si.available_quantity}L
+                      {si.reserved_quantity > 0 && <span className="text-orange-500"> ({si.reserved_quantity}L held)</span>}
+                      {si.supplier_name && <span> · {si.supplier_name}</span>}
+                      {si.location && <span> · 📍 {si.location}</span>}
+                    </div>
+                  </div>
+                  <span className="text-xs text-gray-400 shrink-0">{si.available_quantity}L avail</span>
+                </button>
+              ))}
+              {fluidItems.length === 0 && !fluidLoading && <div className="py-8 text-center text-sm text-gray-500">No fluids in stock.</div>}
+            </div>
+          )}
+        </div>
+      </Modal>
+
+      {/* Unsaved Changes Modal */}
+      <Modal
+        open={unsavedModalOpen}
+        onClose={() => { setUnsavedModalOpen(false); pendingNavigationRef.current = null }}
+        title="Unsaved Changes"
+      >
+        <p className="text-sm text-gray-600 mb-4">
+          You have unsaved changes on this invoice. Would you like to save it as a draft before leaving?
+        </p>
+        <div className="flex justify-end gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setUnsavedModalOpen(false)
+              const target = pendingNavigationRef.current
+              pendingNavigationRef.current = null
+              if (target) navigate(target)
+            }}
+          >
+            Discard
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => { setUnsavedModalOpen(false); pendingNavigationRef.current = null }}
+          >
+            Stay
+          </Button>
+          <Button
+            size="sm"
+            onClick={async () => {
+              setUnsavedModalOpen(false)
+              await handleSaveDraft()
+            }}
+            loading={saving}
+          >
+            Save as Draft
+          </Button>
+        </div>
+      </Modal>
+
+      {/* QR Payment Waiting Popup */}
+      {showQrPaymentPopup && qrSessionData && (
+        <QrPaymentWaitingPopup
+          sessionId={qrSessionData.sessionId}
+          amount={qrSessionData.amount}
+          invoiceNumber={qrSessionData.invoiceNumber}
+          onClose={() => {
+            setShowQrPaymentPopup(false)
+            if (qrSessionData.invoiceId) {
+              navigate(`/invoices/${qrSessionData.invoiceId}`)
+            } else {
+              navigate('/invoices')
+            }
+          }}
+          onPaymentComplete={() => {
+            setShowQrPaymentPopup(false)
+            if (qrSessionData.invoiceId) {
+              navigate(`/invoices/${qrSessionData.invoiceId}`)
+            } else {
+              navigate('/invoices')
+            }
+          }}
+        />
+      )}
+    </div>
+  )
+}

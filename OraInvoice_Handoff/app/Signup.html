@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Start free trial · OraInvoice</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<link rel="stylesheet" href="auth.css" />
+</head>
+<body>
+<div class="auth">
+  <div class="auth-brand">
+    <div class="logo-row">
+      <div class="logo-mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h7l5 5v11a2 2 0 01-2 2z"/></svg></div>
+      <div class="logo-name"><b>Ora</b><span class="dim">Invoice</span></div>
+    </div>
+    <div class="pitch">
+      <div class="eyebrow">14-day free trial · no card to start</div>
+      <h2>Set up your workshop in under five minutes.</h2>
+      <p>Join 2,400+ New Zealand workshops and trades running their day on OraInvoice.</p>
+      <div class="auth-feat">
+        <div class="f"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M20 6L9 17l-5-5"/></svg></span>Free for 14 days — full access</div>
+        <div class="f"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M20 6L9 17l-5-5"/></svg></span>Cancel anytime, keep your data</div>
+        <div class="f"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M20 6L9 17l-5-5"/></svg></span>NZ-based support, GST done right</div>
+      </div>
+    </div>
+    <div class="foot"><span class="pin"></span>Trusted by Kerikeri Motors, North Panel &amp; 2,400 more</div>
+  </div>
+
+  <div class="auth-form-wrap">
+    <div class="auth-card">
+      <div class="auth-head">
+        <div class="mobile-logo"><div class="logo-mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h7l5 5v11a2 2 0 01-2 2z"/></svg></div><div class="logo-name" style="color:var(--text)"><b>Ora</b><span style="color:var(--muted-2)">Invoice</span></div></div>
+        <h1 id="wiz-title">Create your organisation</h1>
+        <p id="wiz-sub">Tell us about your business.</p>
+      </div>
+
+      <div class="wiz-steps" id="steps">
+        <div class="st active" data-i="0"><span class="num">1</span><span class="lb">Business</span></div>
+        <div class="bar"></div>
+        <div class="st" data-i="1"><span class="num">2</span><span class="lb">Admin</span></div>
+        <div class="bar"></div>
+        <div class="st" data-i="2"><span class="num">3</span><span class="lb">Plan</span></div>
+        <div class="bar"></div>
+        <div class="st" data-i="3"><span class="num">4</span><span class="lb">Confirm</span></div>
+      </div>
+
+      <!-- Step 1: Business -->
+      <div class="wiz-panel on" data-panel="0">
+        <div class="auth-form">
+          <div class="field"><label>Organisation name</label><input class="input" placeholder="e.g. Kerikeri Motors Ltd" value="Kerikeri Motors Ltd" /></div>
+          <div class="field"><label>Trade / industry</label>
+            <select class="select">
+              <option>Automotive &amp; mechanical</option>
+              <option>Panel &amp; paint</option>
+              <option>Electrical</option>
+              <option>Plumbing &amp; gas</option>
+              <option>Building &amp; construction</option>
+              <option>Other trades</option>
+            </select>
+          </div>
+          <div class="field"><label>Country</label>
+            <select class="select"><option>New Zealand</option><option>Australia</option></select>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 2: Admin -->
+      <div class="wiz-panel" data-panel="1">
+        <div class="auth-form">
+          <div class="form-grid">
+            <div class="field"><label>First name</label><input class="input" placeholder="Arsh" value="Arsh" /></div>
+            <div class="field"><label>Last name</label><input class="input" placeholder="Randhawa" value="Randhawa" /></div>
+          </div>
+          <div class="field"><label>Work email</label><input class="input" type="email" placeholder="you@workshop.co.nz" value="arsh@kerikerimotors.co.nz" /></div>
+          <div class="field">
+            <label>Password</label>
+            <div class="field-pw">
+              <input class="input" id="pw" type="password" placeholder="Create a password" oninput="strength(this.value)" value="Workshop2025!" />
+              <button type="button" class="peek" onclick="togglePw('pw',this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg></button>
+            </div>
+            <div class="pw-meter s4" id="meter"><i></i><i></i><i></i><i></i></div>
+            <div class="pw-hint" id="pw-hint">Strong — at least 12 characters with a number &amp; symbol.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 3: Plan -->
+      <div class="wiz-panel" data-panel="2">
+        <div class="seg" style="margin-bottom:16px" id="bill-seg">
+          <button class="on" data-bill="monthly">Monthly</button>
+          <button data-bill="annual">Annual · save 17%</button>
+        </div>
+        <div class="plan-grid">
+          <div class="plan" data-plan="solo" onclick="pickPlan(this)">
+            <div class="pn">Solo</div>
+            <div class="pp">$0<small>/14-day trial</small></div>
+            <div class="pd">For owner-operators</div>
+            <ul class="pf"><li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg>1 user · 1 branch</li><li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg>Invoices &amp; quotes</li></ul>
+          </div>
+          <div class="plan on" data-plan="pro" onclick="pickPlan(this)">
+            <span class="pop">Popular</span>
+            <div class="pn">Pro</div>
+            <div class="pp" data-m="$79" data-a="$65">$79<small>/mo</small></div>
+            <div class="pd">For growing workshops</div>
+            <ul class="pf"><li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg>Up to 12 users</li><li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg>Job cards &amp; bookings</li><li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg>Xero &amp; bank feeds</li></ul>
+          </div>
+          <div class="plan" data-plan="multi" onclick="pickPlan(this)">
+            <div class="pn">Multi-site</div>
+            <div class="pp" data-m="$159" data-a="$132">$159<small>/mo</small></div>
+            <div class="pd">For franchises</div>
+            <ul class="pf"><li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg>Unlimited users</li><li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg>Multi-branch &amp; roles</li></ul>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 4: Confirm -->
+      <div class="wiz-panel" data-panel="3">
+        <div class="card" style="box-shadow:none">
+          <div class="card-body">
+            <div class="meta-row"><span class="k">Organisation</span><span class="v">Kerikeri Motors Ltd</span></div>
+            <div class="meta-row"><span class="k">Admin</span><span class="v">Arsh Randhawa</span></div>
+            <div class="meta-row"><span class="k">Email</span><span class="v" style="font-weight:400;color:var(--muted)">arsh@kerikerimotors.co.nz</span></div>
+            <div class="meta-row"><span class="k">Plan</span><span class="v" id="sum-plan">Pro · Monthly</span></div>
+            <div class="meta-row"><span class="k">Today's total</span><span class="v mono" style="color:var(--ok)">$0.00 — 14-day trial</span></div>
+          </div>
+        </div>
+        <div class="alert info" style="margin-top:16px">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 16v-4m0-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+          <div>Your card won't be charged until the trial ends on <b>15 Nov 2025</b>. We'll email you a reminder 3 days before.</div>
+        </div>
+        <label class="checkline" style="margin-top:16px;align-items:flex-start"><input class="checkbox" type="checkbox" checked style="margin-top:1px" /><span>I agree to the <a class="auth-link" href="#">Terms of Service</a> and <a class="auth-link" href="#">Privacy Policy</a>.</span></label>
+      </div>
+
+      <div class="wiz-foot">
+        <button class="btn btn-ghost" id="back-btn" onclick="go(-1)" style="visibility:hidden">Back</button>
+        <button class="btn btn-primary" id="next-btn" onclick="go(1)">Continue</button>
+      </div>
+      <p class="auth-foot-link">Already have an account? <a href="Login.html">Sign in</a></p>
+    </div>
+  </div>
+</div>
+
+<script>
+let step = 0; const N = 4;
+const TITLES = [
+  ['Create your organisation', 'Tell us about your business.'],
+  ['Your admin account', 'You\u2019ll use this to sign in and manage the team.'],
+  ['Choose a plan', 'Start free for 14 days. Change or cancel anytime.'],
+  ['Review &amp; confirm', 'One last check before we set things up.'],
+];
+function render() {
+  document.querySelectorAll('.wiz-panel').forEach(p => p.classList.toggle('on', +p.dataset.panel === step));
+  document.querySelectorAll('#steps .st').forEach(s => {
+    const i = +s.dataset.i;
+    s.classList.toggle('active', i === step);
+    s.classList.toggle('done', i < step);
+  });
+  document.querySelectorAll('#steps .bar').forEach((b, i) => b.classList.toggle('done', i < step));
+  document.getElementById('wiz-title').innerHTML = TITLES[step][0];
+  document.getElementById('wiz-sub').innerHTML = TITLES[step][1];
+  document.getElementById('back-btn').style.visibility = step === 0 ? 'hidden' : 'visible';
+  document.getElementById('next-btn').textContent = step === N-1 ? 'Start free trial' : 'Continue';
+}
+function go(d) {
+  if (step === N-1 && d === 1) { window.location.href = 'SetupGuide.html'; return; }
+  step = Math.max(0, Math.min(N-1, step + d));
+  render();
+}
+function togglePw(id, btn) { const el = document.getElementById(id); el.type = el.type === 'password' ? 'text' : 'password'; btn.style.color = el.type === 'text' ? 'var(--accent)' : ''; }
+function strength(v) {
+  let s = 0; if (v.length >= 8) s++; if (v.length >= 12) s++; if (/[0-9]/.test(v)) s++; if (/[^A-Za-z0-9]/.test(v)) s++;
+  s = Math.min(4, s);
+  document.getElementById('meter').className = 'pw-meter s' + s;
+  document.getElementById('pw-hint').textContent = ['Too short','Weak password','Fair — add a symbol','Good password','Strong — at least 12 characters with a number & symbol.'][s];
+}
+function pickPlan(el) {
+  document.querySelectorAll('.plan').forEach(p => p.classList.remove('on'));
+  el.classList.add('on');
+  updateSummary();
+}
+let bill = 'monthly';
+document.querySelectorAll('#bill-seg button').forEach(b => b.addEventListener('click', () => {
+  document.querySelectorAll('#bill-seg button').forEach(x => x.classList.remove('on'));
+  b.classList.add('on'); bill = b.dataset.bill;
+  document.querySelectorAll('.plan .pp[data-m]').forEach(pp => { pp.firstChild.textContent = bill === 'annual' ? pp.dataset.a : pp.dataset.m; });
+  updateSummary();
+}));
+function updateSummary() {
+  const on = document.querySelector('.plan.on');
+  const name = on.querySelector('.pn').textContent;
+  document.getElementById('sum-plan').textContent = `${name} · ${bill === 'annual' ? 'Annual' : 'Monthly'}`;
+}
+render();
+</script>
+</body>
+</html>

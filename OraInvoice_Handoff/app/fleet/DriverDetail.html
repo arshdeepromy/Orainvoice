@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="../ds.css" />
+<link rel="stylesheet" href="fleet.css" />
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Fleet portal driver detail">
+        <div class="crumbs"><a href="Drivers.html">Drivers</a><span class="sep">/</span><span style="color:var(--text)">Tane Edwards</span></div>
+        <div class="page-head">
+          <div class="row-flex" style="gap:14px"><span class="avatar-sm" style="width:46px;height:46px;font-size:16px;background:#1F8A5B">TE</span><div><h1 style="font-size:23px">Tane Edwards</h1><p class="sub" style="margin-top:2px">tane@northlandfreight.co.nz · <span class="badge active"><span class="b-dot"></span>Active</span></p></div></div>
+          <div class="head-actions"><button class="btn btn-ghost btn-sm">Edit</button><button class="btn btn-ghost btn-sm" style="color:var(--danger)">Deactivate</button></div>
+        </div>
+        <div class="detail-grid">
+          <section class="card">
+            <div class="card-head"><h2>Recent checklists</h2></div>
+            <div class="tbl-wrap"><table>
+              <thead><tr><th>Vehicle</th><th>When</th><th class="r">Fail</th><th>Result</th></tr></thead>
+              <tbody>
+                <tr class="clickable" onclick="location.href='ChecklistSubmit.html'"><td class="mono" style="font-weight:600">NPR-447</td><td class="mono" style="color:var(--muted)">Today 6:42am</td><td class="r mono" style="color:var(--danger)">3</td><td><span class="badge overdue"><span class="b-dot"></span>Failed</span></td></tr>
+                <tr class="clickable" onclick="location.href='ChecklistSubmit.html'"><td class="mono" style="font-weight:600">NPR-220</td><td class="mono" style="color:var(--muted)">2 days ago</td><td class="r mono">1</td><td><span class="badge overdue"><span class="b-dot"></span>Failed</span></td></tr>
+                <tr class="clickable" onclick="location.href='ChecklistSubmit.html'"><td class="mono" style="font-weight:600">NPR-447</td><td class="mono" style="color:var(--muted)">4 days ago</td><td class="r mono">0</td><td><span class="badge paid"><span class="b-dot"></span>Passed</span></td></tr>
+              </tbody>
+            </table></div>
+          </section>
+          <div class="stack">
+            <section class="card"><div class="card-body">
+              <div class="section-label">Assigned vehicles</div>
+              <a href="VehicleDetail.html" class="meta-row" style="text-decoration:none"><span class="k mono" style="font-weight:600;color:var(--text)">NPR-447</span><span class="v" style="color:var(--muted);font-weight:400">Isuzu NPR 400</span></a>
+              <a href="VehicleDetail.html" class="meta-row" style="text-decoration:none"><span class="k mono" style="font-weight:600;color:var(--text)">NPR-220</span><span class="v" style="color:var(--muted);font-weight:400">Isuzu NPR 300</span></a>
+              <a href="VehicleDetail.html" class="meta-row" style="text-decoration:none;border-bottom:none"><span class="k mono" style="font-weight:600;color:var(--text)">HBR-440</span><span class="v" style="color:var(--muted);font-weight:400">Fuso Canter</span></a>
+            </div></section>
+            <section class="card"><div class="card-body">
+              <div class="section-label">This month</div>
+              <div class="meta-row"><span class="k">Checklists</span><span class="v mono">18</span></div>
+              <div class="meta-row"><span class="k">Pass rate</span><span class="v mono" style="color:var(--ok)">86%</span></div>
+              <div class="meta-row"><span class="k">Phone</span><span class="v mono" style="font-weight:400">021 552 8841</span></div>
+            </div></section>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="fleet-shell.js" data-active="drivers" data-title="Tane Edwards"></script>
+</body>
+</html>

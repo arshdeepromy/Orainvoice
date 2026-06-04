@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+.rego { font-family: var(--mono); font-weight: 600; font-size: 12px; background: var(--ink); color: #fff; padding: 3px 9px; border-radius: 6px; letter-spacing: .04em; }
+.wof-ok { color: var(--ok); } .wof-soon { color: var(--warn); } .wof-exp { color: var(--danger); }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Vehicles">
+        <div class="page-head">
+          <div><div class="eyebrow">Automotive</div><h1>Vehicles</h1><p class="sub">1,284 vehicles · 38 WOF due this month · 6 expired</p></div>
+          <div class="head-actions">
+            <button class="btn btn-ghost btn-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3"/></svg>Export</button>
+            <button class="btn btn-primary btn-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>Add vehicle</button>
+          </div>
+        </div>
+        <div class="kpis">
+          <div class="kpi"><div class="top"><span class="label">All vehicles</span></div><div class="val">1,284</div></div>
+          <div class="kpi"><div class="top"><span class="label">WOF due (30d)</span></div><div class="val" style="color:var(--warn)">38</div></div>
+          <div class="kpi"><div class="top"><span class="label">WOF expired</span></div><div class="val" style="color:var(--danger)">6</div></div>
+          <div class="kpi"><div class="top"><span class="label">In workshop now</span></div><div class="val">9</div></div>
+        </div>
+        <div class="toolbar">
+          <div class="search-input" style="flex:1;max-width:320px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 21l-5-5m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg><input placeholder="Search rego, make or owner…" /></div>
+          <button class="filter-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 4h18M6 12h12M10 20h4"/></svg>Filters</button>
+          <div class="spacer"></div>
+          <span style="font-size:12.5px;color:var(--muted)">Sort: <b style="color:var(--text)">WOF due</b></span>
+        </div>
+        <section class="card">
+          <div class="tbl-wrap"><table>
+            <thead><tr><th>Rego</th><th>Vehicle</th><th>Owner</th><th class="r">Odometer</th><th>Inspection</th><th>WOF/COF</th><th>Last service</th><th style="width:44px"></th></tr></thead>
+            <tbody id="rows"></tbody>
+          </table></div>
+          <div class="pagination"><div class="info">Showing <span class="mono">1–10</span> of <span class="mono">1,284</span></div><div class="pg-btns"><button disabled>‹</button><button class="on">1</button><button>2</button><button>3</button><button>…</button><button>129</button><button>›</button></div></div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="" data-title="Vehicles"></script>
+<script>
+const V=[
+  {r:'KMR-218',mk:'Toyota Corolla',yr:'2019',o:'K. Williams',km:'84,210',insp:'WOF',exp:'Mar 2026',cls:'wof-ok',last:'12 Nov'},
+  {r:'JDC-991',mk:'Ford Ranger',yr:'2021',o:'Coastal Builders',km:'62,840',insp:'WOF',exp:'18 Nov',cls:'wof-soon',last:'04 Nov'},
+  {r:'NPR-447',mk:'Isuzu NPR',yr:'2018',o:'Northland Freight',km:'210,500',insp:'COF',exp:'02 Nov',cls:'wof-exp',last:'06 Nov'},
+  {r:'HLX-302',mk:'Toyota Hilux',yr:'2020',o:'M. Taufa',km:'48,900',insp:'WOF',exp:'Apr 2026',cls:'wof-ok',last:'10 Oct'},
+  {r:'MZD-118',mk:'Mazda CX-5',yr:'2017',o:'L. Brown',km:'112,300',insp:'WOF',exp:'25 Nov',cls:'wof-soon',last:'28 Sep'},
+  {r:'OBK-556',mk:'Subaru Outback',yr:'2016',o:'R. Singh',km:'138,700',insp:'WOF',exp:'Feb 2026',cls:'wof-ok',last:'04 Nov'},
+  {r:'CIV-873',mk:'Honda Civic',yr:'2022',o:'J. Patel',km:'21,400',insp:'WOF',exp:'Jun 2026',cls:'wof-ok',last:'15 Oct'},
+  {r:'TRK-204',mk:'Hino 500',yr:'2015',o:'Northland Freight',km:'298,100',insp:'COF',exp:'30 Nov',cls:'wof-soon',last:'06 Nov'},
+];
+document.getElementById('rows').innerHTML=V.map(v=>`
+  <tr class="clickable" onclick="location.href='VehicleDetail.html'">
+    <td><span class="rego">${v.r}</span></td>
+    <td><div class="cell-2"><span class="cust">${v.mk}</span><span class="s">${v.yr}</span></div></td>
+    <td>${v.o}</td>
+    <td class="r mono" style="color:var(--muted)">${v.km} km</td>
+    <td><span class="mono" style="font-size:12px;color:var(--muted)">${v.insp}</span></td>
+    <td class="mono ${v.cls}" style="font-weight:600;font-size:12.5px">${v.exp}</td>
+    <td class="mono" style="color:var(--muted)">${v.last}</td>
+    <td><button class="icon-btn btn-sm" style="border:none;width:30px;height:30px" onclick="event.stopPropagation()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="12" cy="19" r="1.4"/></svg></button></td>
+  </tr>`).join('');
+</script>
+</body>
+</html>

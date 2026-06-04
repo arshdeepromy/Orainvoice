@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+</head>
+<body>
+<div class="app"><div id="sidebar"></div><div class="main"><div id="topbar"></div>
+<main class="content"><div class="page page-wide" data-screen-label="Bank accounts">
+<div class="page-head"><div><div class="eyebrow">Money</div><h1>Bank accounts</h1><p class="sub">2 connected accounts</p></div><div class="head-actions"><button class="btn btn-primary btn-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>Connect account</button></div></div>
+<section class="card"><div class="tbl-wrap"><table><thead><tr><th class="">Account</th><th class="">Number</th><th class="">Type</th><th class="r">Balance</th><th class="">Status</th></tr></thead><tbody><tr class="" ><td class=""><span class="cust">ASB Business</span></td><td class=""><span class="mono" style="color:var(--muted)">12-3145-0098712-00</span></td><td class=""><span class="mono" style="color:var(--muted)">Cheque</span></td><td class="r"><span class="amt">$62,140.00</span></td><td class=""><span class="badge active"><span class="b-dot"></span>Connected</span></td></tr><tr class="" ><td class=""><span class="cust">ASB Savings</span></td><td class=""><span class="mono" style="color:var(--muted)">12-3145-0098713-00</span></td><td class=""><span class="mono" style="color:var(--muted)">Savings</span></td><td class="r"><span class="amt">$28,400.00</span></td><td class=""><span class="badge active"><span class="b-dot"></span>Connected</span></td></tr></tbody></table></div></section>
+</div></main></div></div>
+<script src="shell.js" data-active="banking" data-title="Bank accounts" data-primary="Connect"></script>
+<script>
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));t.classList.add('on');}));
+</script>
+</body></html>

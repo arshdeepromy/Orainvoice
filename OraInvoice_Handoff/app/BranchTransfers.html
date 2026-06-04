@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Branch stock transfers">
+        <div class="page-head">
+          <div><div class="eyebrow">Branch management</div><h1>Branch transfers</h1><p class="sub">Move stock between your branches</p></div>
+          <div class="head-actions"><button class="btn btn-primary btn-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>New transfer</button></div>
+        </div>
+        <div class="seg" style="margin-bottom:22px"><button class="on">All</button><button>In transit</button><button>Received</button><button>Draft</button></div>
+        <section class="card"><div class="tbl-wrap"><table>
+          <thead><tr><th>Transfer</th><th>From</th><th>To</th><th class="r">Items</th><th>Sent</th><th>Status</th></tr></thead>
+          <tbody>
+            <tr class="clickable" onclick="location.href='TransferDetail.html'"><td><span class="id">BT-58</span></td><td>Kerikeri · BR-01</td><td>Whangarei · BR-02</td><td class="r mono">14</td><td class="mono" style="color:var(--muted)">Today</td><td><span class="badge inprogress"><span class="b-dot"></span>In transit</span></td></tr>
+            <tr class="clickable" onclick="location.href='TransferDetail.html'"><td><span class="id">BT-57</span></td><td>Whangarei · BR-02</td><td>Kerikeri · BR-01</td><td class="r mono">6</td><td class="mono" style="color:var(--muted)">Yesterday</td><td><span class="badge completed"><span class="b-dot"></span>Received</span></td></tr>
+            <tr class="clickable" onclick="location.href='TransferDetail.html'"><td><span class="id">BT-56</span></td><td>Kerikeri · BR-01</td><td>Paihia · BR-03</td><td class="r mono">22</td><td class="mono" style="color:var(--muted)">2 days ago</td><td><span class="badge completed"><span class="b-dot"></span>Received</span></td></tr>
+            <tr class="clickable" onclick="location.href='TransferDetail.html'"><td><span class="id">BT-55</span></td><td>Paihia · BR-03</td><td>Whangarei · BR-02</td><td class="r mono">3</td><td class="mono" style="color:var(--muted)">—</td><td><span class="badge draft"><span class="b-dot"></span>Draft</span></td></tr>
+          </tbody>
+        </table></div></section>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="" data-title="Branch transfers"></script>
+<script>document.querySelectorAll('.seg button').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('.seg button').forEach(x=>x.classList.remove('on'));b.classList.add('on');}));</script>
+</body>
+</html>

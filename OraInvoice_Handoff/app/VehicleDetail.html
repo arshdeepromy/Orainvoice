@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+.veh-hero { display:flex; align-items:center; gap:18px; padding:22px; background:var(--ink); border-radius:var(--r-card); color:#fff; margin-bottom:var(--gap); flex-wrap:wrap; }
+.veh-hero .rego { font-family:var(--mono); font-weight:600; font-size:20px; background:rgba(255,255,255,.12); padding:8px 14px; border-radius:10px; letter-spacing:.04em; }
+.veh-hero .vn { font-size:20px; font-weight:700; }
+.veh-hero .vs { font-size:13px; color:rgba(255,255,255,.6); margin-top:3px; }
+.spec-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:0; }
+.spec { padding:14px 16px; border-right:1px solid var(--border); }
+.spec:last-child { border-right:none; }
+.spec .k { font-family:var(--mono); font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted-2); }
+.spec .v { font-size:14px; font-weight:600; margin-top:4px; }
+@media(max-width:760px){ .spec-grid{grid-template-columns:1fr 1fr} .spec{border-bottom:1px solid var(--border)} }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Vehicle detail">
+        <div class="crumbs"><a href="Vehicles.html">Vehicles</a><span class="sep">/</span><span style="color:var(--text)">KMR-218</span></div>
+        <div class="veh-hero">
+          <span class="rego">KMR-218</span>
+          <div style="flex:1;min-width:200px"><div class="vn">2019 Toyota Corolla</div><div class="vs">1.8L Hybrid · Silver · Hatchback · VIN JTDBR32E90J123456</div></div>
+          <div class="head-actions">
+            <button class="btn btn-ghost btn-sm" style="background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.2);color:#fff">Edit</button>
+            <a class="btn btn-ghost btn-sm" href="PPSRSearch.html" style="background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.2);color:#fff"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>PPSR check</a>
+            <a class="btn btn-primary btn-sm" href="JobCardDetail.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>New job</a>
+          </div>
+        </div>
+
+        <section class="card" style="margin-bottom:var(--gap)"><div class="spec-grid">
+          <div class="spec"><div class="k">Odometer</div><div class="v">84,210 km</div></div>
+          <div class="spec"><div class="k">WOF expiry</div><div class="v" style="color:var(--ok)">Mar 2026</div></div>
+          <div class="spec"><div class="k">Rego expiry</div><div class="v">Jan 2026</div></div>
+          <div class="spec"><div class="k">Fuel</div><div class="v">Hybrid</div></div>
+        </div></section>
+
+        <div class="detail-grid">
+          <div class="stack">
+            <div class="tabs">
+              <div class="tab on">Service history <span class="n">14</span></div>
+              <div class="tab">Invoices <span class="n">11</span></div>
+              <div class="tab">Notes</div>
+            </div>
+            <section class="card"><div class="tbl-wrap"><table>
+              <thead><tr><th>Date</th><th>Service</th><th class="r">Odometer</th><th>Job</th><th class="r">Total</th></tr></thead><tbody>
+              <tr class="clickable" onclick="location.href='JobCardDetail.html'"><td class="mono" style="color:var(--muted)">12 Nov 25</td><td><span class="cust">Brake service</span></td><td class="r mono">84,210</td><td><span class="id">JC-1187</span></td><td class="r amt">$503.50</td></tr>
+              <tr class="clickable"><td class="mono" style="color:var(--muted)">10 May 25</td><td><span class="cust">WOF + full service</span></td><td class="r mono">79,040</td><td><span class="id">JC-0982</span></td><td class="r amt">$420.00</td></tr>
+              <tr class="clickable"><td class="mono" style="color:var(--muted)">14 Nov 24</td><td><span class="cust">Tyres ×4 + alignment</span></td><td class="r mono">71,800</td><td><span class="id">JC-0741</span></td><td class="r amt">$890.00</td></tr>
+              <tr class="clickable"><td class="mono" style="color:var(--muted)">02 Jun 24</td><td><span class="cust">Cambelt + water pump</span></td><td class="r mono">66,210</td><td><span class="id">JC-0588</span></td><td class="r amt">$1,240.00</td></tr>
+            </tbody></table></div></section>
+          </div>
+          <div class="stack">
+            <section class="card"><div class="card-body">
+              <div class="section-label">Owner</div>
+              <div class="row-flex" style="margin-bottom:14px"><span class="avatar-sm" style="background:#1F8A5B;width:36px;height:36px;font-size:13px">KW</span><div><div style="font-size:14px;font-weight:600">K. Williams</div><a href="CustomerDetail.html" style="font-size:12.5px;color:var(--accent)">View customer →</a></div></div>
+              <div class="meta-row"><span class="k">Phone</span><span class="v mono">021 447 9920</span></div>
+              <div class="meta-row"><span class="k">Email</span><span class="v">kwilliams@xtra.co.nz</span></div>
+            </div></section>
+            <section class="card"><div class="card-body">
+              <div class="section-label">Reminders</div>
+              <div class="meta-row"><span class="k">Next WOF</span><span class="v" style="color:var(--ok)">Mar 2026</span></div>
+              <div class="meta-row"><span class="k">Next service</span><span class="v" style="color:var(--warn)">90,000 km</span></div>
+              <button class="btn btn-ghost btn-sm" style="width:100%;margin-top:12px">Send WOF reminder</button>
+            </div></section>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="" data-title="Vehicle KMR-218"></script>
+<script>document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));t.classList.add('on');}));</script>
+</body>
+</html>

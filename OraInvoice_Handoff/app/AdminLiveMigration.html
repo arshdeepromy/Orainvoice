@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+.phase { display:flex; align-items:center; gap:14px; padding:14px 0; border-bottom:1px solid var(--border); }
+.phase:last-child { border-bottom:none; }
+.phase .dot { width:30px; height:30px; border-radius:50%; display:grid; place-items:center; flex-shrink:0; }
+.phase .dot.done { background:var(--ok-soft); color:var(--ok); }
+.phase .dot.run { background:var(--accent-soft); color:var(--accent); }
+.phase .dot.wait { background:var(--canvas); color:var(--muted-2); }
+.log { background:var(--ink); border-radius:var(--r-ctl); padding:14px 16px; font-family:var(--mono); font-size:12px; line-height:1.7; color:rgba(255,255,255,.8); max-height:240px; overflow-y:auto; }
+.log .t { color:rgba(255,255,255,.4); }
+.log .ok { color:#6EE7B7; } .log .warn { color:#FBBF77; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Admin live migration">
+        <div class="page-head">
+          <div><div class="eyebrow">Platform admin</div><h1>Live import</h1><p class="sub">Streaming data migration from a legacy system into a tenant</p></div>
+          <div class="head-actions"><button class="btn btn-ghost btn-sm" style="color:var(--danger)">Pause</button><button class="btn btn-primary btn-sm">View on org</button></div>
+        </div>
+        <div id="admin-nav" data-active="migration"></div>
+        <div class="tabs"><a class="tab" href="AdminMigration.html">Schema migrations</a><a class="tab on" href="AdminLiveMigration.html">Live import</a></div>
+
+        <div class="kpis">
+          <div class="kpi"><div class="top"><span class="label">Org</span></div><div class="val" style="font-size:18px">Coastal Auto</div></div>
+          <div class="kpi"><div class="top"><span class="label">Rows processed</span></div><div class="val">184,920</div></div>
+          <div class="kpi"><div class="top"><span class="label">Throughput</span></div><div class="val" style="font-size:20px">2,140<span class="c" style="font-size:13px">/s</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">Errors</span></div><div class="val" style="color:var(--warn)">12</div></div>
+        </div>
+
+        <div class="detail-grid">
+          <div class="stack">
+            <section class="card"><div class="card-body">
+              <div class="section-label">Overall progress</div>
+              <div style="display:flex;align-items:center;gap:14px;margin-bottom:8px"><div class="progress" style="flex:1"><i style="width:72%"></i></div><span class="mono" style="font-weight:600">72%</span></div>
+              <p style="font-size:12.5px;color:var(--muted);margin:0">Est. 6m 20s remaining · started 14:02</p>
+            </div></section>
+            <section class="card"><div class="card-head"><h2>Live log</h2><span class="badge inprogress"><span class="b-dot"></span>Streaming</span></div><div class="card-body">
+              <div class="log" id="log"></div>
+            </div></section>
+          </div>
+          <section class="card"><div class="card-body">
+            <div class="section-label">Phases</div>
+            <div class="phase"><span class="dot done"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M20 6L9 17l-5-5"/></svg></span><div style="flex:1"><div style="font-size:13.5px;font-weight:600">Connect &amp; snapshot</div><div style="font-size:12px;color:var(--muted)">Source verified</div></div></div>
+            <div class="phase"><span class="dot done"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M20 6L9 17l-5-5"/></svg></span><div style="flex:1"><div style="font-size:13.5px;font-weight:600">Customers &amp; vehicles</div><div style="font-size:12px;color:var(--muted)">42,180 rows</div></div></div>
+            <div class="phase"><span class="dot run"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4v5h.6M20 20v-5h-.6m0 0a8 8 0 01-15.3-2"/></svg></span><div style="flex:1"><div style="font-size:13.5px;font-weight:600">Invoices &amp; payments</div><div style="font-size:12px;color:var(--muted)">In progress · 72%</div></div></div>
+            <div class="phase"><span class="dot wait">4</span><div style="flex:1"><div style="font-size:13.5px;font-weight:600;color:var(--muted)">Reconcile &amp; verify</div><div style="font-size:12px;color:var(--muted-2)">Queued</div></div></div>
+          </div></section>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="admin" data-title="Live import"></script>
+<script src="admin-nav.js"></script>
+<script>
+const L=[
+  ['14:08:22','Importing invoices batch 184/256…',''],
+  ['14:08:21','✓ Batch 183 committed (720 rows)','ok'],
+  ['14:08:19','⚠ 2 invoices missing GST — defaulted to 15%','warn'],
+  ['14:08:18','✓ Batch 182 committed (718 rows)','ok'],
+  ['14:08:16','Mapping legacy payment refs…',''],
+  ['14:08:15','✓ Batch 181 committed (721 rows)','ok'],
+];
+document.getElementById('log').innerHTML=L.map(l=>`<div><span class="t">${l[0]}</span> <span class="${l[2]}">${l[1]}</span></div>`).join('');
+</script>
+</body>
+</html>

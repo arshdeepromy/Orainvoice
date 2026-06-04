@@ -4611,6 +4611,60 @@ async def email_invoice(
     _org_email = invoice_dict.get("org_email") or ""
     _org_phone = invoice_dict.get("org_phone") or ""
 
+    # --- Build the public invoice-view URL for the email CTA (ISSUE-169) ---
+    # The "Send Invoice" email must link to the public invoice HTML view
+    # (the same link the "Share" button produces — invoices/public_router.py),
+    # NOT the /pay/{token} payment page. Once an invoice is settled the payment
+    # page renders "Paid"/payment info, which confused customers who expected
+    # to see their actual invoice. The invoice-view page still shows its own
+    # "Pay Online" button while the invoice is payable, so online payment stays
+    # reachable for unpaid invoices. The dedicated "Send Payment Link" action
+    # (payments/service.py) is unaffected and still sends the payment page.
+    _inv_data_for_share = invoice_dict.get("invoice_data_json") or {}
+    _share_token = _inv_data_for_share.get("share_token")
+    if not _share_token:
+        import secrets as _secrets
+        from sqlalchemy.orm.attributes import flag_modified as _flag_modified
+
+        _share_token = _secrets.token_urlsafe(32)
+        _inv_share_result = await db.execute(
+            select(Invoice).where(Invoice.id == invoice_id)
+        )
+        _inv_share_obj = _inv_share_result.scalar_one_or_none()
+        if _inv_share_obj:
+            _data = _inv_share_obj.invoice_data_json or {}
+            _data["share_token"] = _share_token
+            _inv_share_obj.invoice_data_json = _data
+            _flag_modified(_inv_share_obj, "invoice_data_json")
+            await db.flush()
+    from app.config import settings as _app_settings_cta
+
+    # Resolve the base origin for the invoice-view URL. Mirror how the payment
+    # emails source their link: they reuse the invoice's stored
+    # ``payment_page_url`` verbatim, which already carries the correct PUBLIC
+    # origin (it was built from the request origin when the invoice was issued
+    # and the customer has proven it reachable). So prefer the origin parsed
+    # from ``payment_page_url`` over rebuilding from settings — otherwise
+    # background callers that pass no ``base_url`` (e.g. the mark-paid
+    # auto-email) fall through to ``settings.frontend_base_url`` which can be a
+    # dev value like ``http://localhost``. Order: request origin → payment-page
+    # origin → configured frontend base → localhost (last-ditch only).
+    _payment_origin: str | None = None
+    if payment_page_url:
+        from urllib.parse import urlsplit as _urlsplit
+
+        _parts = _urlsplit(payment_page_url)
+        if _parts.scheme and _parts.netloc:
+            _payment_origin = f"{_parts.scheme}://{_parts.netloc}"
+
+    _cta_base = (
+        base_url
+        or _payment_origin
+        or getattr(_app_settings_cta, "frontend_base_url", "")
+        or "http://localhost"
+    ).rstrip("/")
+    _invoice_view_url = f"{_cta_base}/api/v1/public/invoice/{_share_token}"
+
     _template_variables = {
         "customer_first_name": _customer_first_name,
         "customer_last_name": _customer_last_name,
@@ -4618,7 +4672,10 @@ async def email_invoice(
         "invoice_number": inv_number,
         "total_due": _total_due_formatted,
         "due_date": _due_date_str,
-        "payment_link": payment_page_url or "",
+        # The invoice-issued email CTA links to the invoice view, not the
+        # payment page (ISSUE-169). The default "View Invoice" template button
+        # uses {{payment_link}}, so this variable carries the invoice-view URL.
+        "payment_link": _invoice_view_url,
         "org_name": org_name,
         "org_email": _org_email,
         "org_phone": _org_phone,
@@ -4669,7 +4726,10 @@ async def email_invoice(
         # phrasing, so the partial-vs-full logic does not override it.
         _email_subject = _rendered_template.subject
         _email_body = _rendered_template.body
-        _payment_cta_url = _rendered_template.cta_url or payment_page_url or ""
+        # CTA prefers the template's own button URL (which, for the default
+        # template, is the invoice-view URL via {{payment_link}}); falls back
+        # to the invoice-view URL. NOT the payment page (ISSUE-169).
+        _payment_cta_url = _rendered_template.cta_url or _invoice_view_url
     else:
         _balance_due_str = (
             f"{_currency_symbol}{balance_due:.2f}"
@@ -4696,54 +4756,26 @@ async def email_invoice(
             _email_subject = f"Invoice {inv_number} from {org_name}"
             _partial_summary = ""
 
-        _payment_cta_url = payment_page_url or ""
+        # CTA is the public invoice-view URL, not the payment page (ISSUE-169).
+        _payment_cta_url = _invoice_view_url
 
-        if _payment_cta_url:
-            _email_body = (
-                f"Hi {_customer_first_name or 'there'},\n\n"
-                f"Your invoice is ready. You can view it online using the button below.\n\n"
-                f"If you have any questions, please contact us.\n\n"
-                f"Kind regards,\n"
-                f"{org_name}\n"
-            )
-        else:
-            _email_body = (
-                f"Hi {_customer_first_name or 'there'},\n\n"
-                f"Your invoice is ready. You can view it online using the button below.\n\n"
-                f"If you have any questions, please contact us.\n\n"
-                f"Kind regards,\n"
-                f"{org_name}\n"
-            )
+        _email_body = (
+            f"Hi {_customer_first_name or 'there'},\n\n"
+            f"Your invoice is ready. You can view it online using the button below.\n\n"
+            f"If you have any questions, please contact us.\n\n"
+            f"Kind regards,\n"
+            f"{org_name}\n"
+        )
         if attachments_skipped_size:
             _email_body += (
                 "\nNote: Some attachments were too large to include in this email.\n"
             )
 
-    # Universal fallback: if no CTA URL yet (no payment link, no template
-    # button URL), generate a public share link so the customer can always
-    # view the invoice online.
+    # Universal safety net: every path above sets _payment_cta_url to the
+    # invoice-view URL, but guard against an empty CTA just in case so the
+    # email always carries a working "View Invoice" link (ISSUE-169).
     if not _payment_cta_url:
-        import secrets as _secrets
-        _inv_data = invoice_dict.get("invoice_data_json") or {}
-        _share_token = _inv_data.get("share_token")
-        if not _share_token:
-            _share_token = _secrets.token_urlsafe(32)
-            # Persist the share token on the invoice
-            _inv_result = await db.execute(
-                select(Invoice).where(Invoice.id == invoice_id)
-            )
-            _inv_obj = _inv_result.scalar_one_or_none()
-            if _inv_obj:
-                _data = _inv_obj.invoice_data_json or {}
-                _data["share_token"] = _share_token
-                _inv_obj.invoice_data_json = _data
-                from sqlalchemy.orm.attributes import flag_modified
-                flag_modified(_inv_obj, "invoice_data_json")
-                await db.flush()
-        # Build the public share URL
-        from app.config import settings as _app_settings
-        _base = (base_url or getattr(_app_settings, "frontend_base_url", "") or "http://localhost").rstrip("/")
-        _payment_cta_url = f"{_base}/api/v1/public/invoice/{_share_token}"
+        _payment_cta_url = _invoice_view_url
 
     # Build HTML body with conditional email signature.
     # Use the unified transactional-HTML renderer so Gmail / Outlook
@@ -4779,7 +4811,7 @@ async def email_invoice(
     # PDF is NOT attached to avoid Gmail's content filter silently
     # dropping emails with financial PDF attachments from new/low-volume
     # sending domains. Instead, the "View Invoice" CTA button links to
-    # the payment page where customers can view and download the PDF.
+    # the public invoice view where customers can view and download the PDF.
     # Once domain reputation is established, this can be re-enabled.
     _email_attachments: list[EmailAttachment] = []
 

@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Fleet checklist failures">
+        <div class="page-head">
+          <div><div class="eyebrow">B2B · Fleet portal</div><h1>Checklist failures</h1><p class="sub">Pre-trip inspection items flagged as failed by fleet drivers</p></div>
+          <div class="head-actions">
+            <select class="select" style="width:auto" id="win" onchange="render()"><option value="7">Last 7 days</option><option value="30" selected>Last 30 days</option><option value="90">Last 90 days</option><option value="365">Last year</option></select>
+          </div>
+        </div>
+
+        <div class="tabs">
+          <a class="tab" href="FleetPortalAdmin.html">Overview</a>
+          <a class="tab" href="FleetBookings.html">Bookings</a>
+          <a class="tab" href="FleetQuotes.html">Quotes</a>
+          <a class="tab" href="FleetAccounts.html">Accounts</a>
+          <a class="tab on" href="FleetChecklistFailures.html">Checklist fails</a>
+          <a class="tab" href="FleetPortalSettings.html">Settings</a>
+        </div>
+
+        <div class="kpis" style="grid-template-columns:repeat(3,1fr)">
+          <div class="kpi"><div class="top"><span class="label">Failed inspections</span><span class="ico red"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4m0 4h.01M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L14.7 3.9a2 2 0 00-3.4 0z"/></svg></span></div><div class="val" style="color:var(--danger)">11</div></div>
+          <div class="kpi"><div class="top"><span class="label">Vehicles affected</span></div><div class="val">7</div></div>
+          <div class="kpi"><div class="top"><span class="label">Failed items</span></div><div class="val">23</div></div>
+        </div>
+
+        <section class="card">
+          <div class="tbl-wrap"><table>
+            <thead><tr><th>When</th><th>Fleet</th><th>Vehicle</th><th>Driver</th><th class="r">Failed</th><th class="r">Passed</th><th class="r">N/A</th></tr></thead>
+            <tbody id="rows"></tbody>
+          </table></div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="" data-title="Checklist failures"></script>
+<script>
+const ALL=[
+  {when:'Today, 6:42am',d:0,fleet:'Northland Freight',rego:'NPR-447',driver:'T. Edwards',f:3,p:18,na:1},
+  {when:'Today, 6:10am',d:0,fleet:'Coastal Builders',rego:'JDC-991',driver:'M. Reti',f:1,p:20,na:0},
+  {when:'Yesterday, 7:05am',d:1,fleet:'Harbour Logistics',rego:'HBR-012',driver:'S. Kaur',f:2,p:19,na:1},
+  {when:'2 days ago',d:2,fleet:'Northland Freight',rego:'NPR-220',driver:'T. Edwards',f:4,p:16,na:0},
+  {when:'5 days ago',d:5,fleet:'Coastal Builders',rego:'JDC-118',driver:'L. Brown',f:1,p:21,na:0},
+  {when:'12 days ago',d:12,fleet:'Harbour Logistics',rego:'HBR-440',driver:'S. Kaur',f:2,p:18,na:2},
+  {when:'21 days ago',d:21,fleet:'Northland Freight',rego:'NPR-447',driver:'A. Wills',f:1,p:20,na:1},
+  {when:'48 days ago',d:48,fleet:'Te Awa Joinery',rego:'TAJ-009',driver:'K. Mahe',f:2,p:19,na:0},
+];
+function render(){
+  const win=parseInt(document.getElementById('win').value,10);
+  const rows=ALL.filter(r=>r.d<=win);
+  document.getElementById('rows').innerHTML=rows.length?rows.map(r=>`<tr>
+    <td><span class="mono" style="color:var(--muted)">${r.when}</span></td>
+    <td>${r.fleet}</td>
+    <td><span class="cust mono" style="font-weight:600">${r.rego}</span></td>
+    <td>${r.driver}</td>
+    <td class="r"><span class="amt" style="color:var(--danger)">${r.f}</span></td>
+    <td class="r"><span class="amt" style="color:var(--ok)">${r.p}</span></td>
+    <td class="r"><span class="mono" style="color:var(--muted-2)">${r.na}</span></td>
+  </tr>`).join('')
+    :`<tr><td colspan="7"><div class="empty" style="padding:40px"><div class="e-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 11l3 3L22 4M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg></div><h3>No failures in this window</h3><p>Every inspection passed in the selected period.</p></div></td></tr>`;
+}
+render();
+</script>
+</body>
+</html>

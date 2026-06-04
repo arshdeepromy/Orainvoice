@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Time tracking">
+        <div class="page-head">
+          <div><div class="eyebrow">Work</div><h1>Time tracking</h1><p class="sub">Today · 9 clocked in · 64.5 hrs logged</p></div>
+          <div class="head-actions"><button class="btn btn-primary btn-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>Clock entry</button></div>
+        </div>
+        <div class="kpis"><div class="kpi"><div class="top"><span class="label">Logged today</span></div><div class="val" >64.5<span class="c">h</span></div></div><div class="kpi"><div class="top"><span class="label">Billable</span></div><div class="val" >58.0<span class="c">h</span></div></div><div class="kpi"><div class="top"><span class="label">Clocked in</span></div><div class="val" >9</div></div><div class="kpi"><div class="top"><span class="label">Jobs touched</span></div><div class="val" >11</div></div></div>
+
+
+        <section class="card">
+          <div class="tbl-wrap"><table><thead><tr><th class="">Staff</th><th class="">Job</th><th class="">Started</th><th class="r">Duration</th><th class="">Billable</th><th class="">Status</th></tr></thead><tbody><tr class="" ><td class=" "><span class="cust">Dave Mceachern</span></td><td class=" "><span class="id">JC-1187</span></td><td class=" "><span class="mono" style="color:var(--muted)">08:05</span></td><td class="r "><span class="amt">3.5h</span></td><td class=" "><span class="badge ok"><span class="b-dot"></span>Yes</span></td><td class=" "><span class="badge inprogress"><span class="b-dot"></span>Running</span></td></tr><tr class="" ><td class=" "><span class="cust">Sina Faleolo</span></td><td class=" "><span class="id">JC-1186</span></td><td class=" "><span class="mono" style="color:var(--muted)">08:20</span></td><td class="r "><span class="amt">3.2h</span></td><td class=" "><span class="badge ok"><span class="b-dot"></span>Yes</span></td><td class=" "><span class="badge inprogress"><span class="b-dot"></span>Running</span></td></tr><tr class="" ><td class=" "><span class="cust">Tom Cole</span></td><td class=" "><span class="id">JC-1185</span></td><td class=" "><span class="mono" style="color:var(--muted)">09:00</span></td><td class="r "><span class="amt">2.0h</span></td><td class=" "><span class="badge neutral"><span class="b-dot"></span>No</span></td><td class=" "><span class="badge active"><span class="b-dot"></span>Stopped</span></td></tr></tbody></table></div>
+          <div class="pagination"><div class="info">Showing <span class="mono">1–3</span> of <span class="mono">34</span></div><div class="pg-btns"><button disabled>‹</button><button class="on">1</button><button>2</button><button>3</button><button>›</button></div></div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="time" data-title="Time tracking"></script>
+<script>
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));t.classList.add('on');}));
+</script>
+</body>
+</html>

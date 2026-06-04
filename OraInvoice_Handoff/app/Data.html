@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+</head>
+<body>
+<div class="app"><div id="sidebar"></div><div class="main"><div id="topbar"></div>
+<main class="content"><div class="page " data-screen-label="Import / Export">
+<div class="page-head"><div><div class="eyebrow">System</div><h1>Import / Export</h1><p class="sub">Bring data in or take it out</p></div></div>
+  <div class="kpis" style="grid-template-columns:1fr 1fr"><a class="kpi" href="#" style="display:block"><div class="top"><span class="label">Import</span><span class="ico blue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12m0 0l4-4m-4 4l-4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2"/></svg></span></div><div style="font-size:13.5px;font-weight:600;margin-top:6px">Customers, items, invoices</div><div style="font-size:12.5px;color:var(--muted);margin-top:3px">CSV or Xero / MYOB migration</div></a>
+  <a class="kpi" href="#" style="display:block"><div class="top"><span class="label">Export</span><span class="ico green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 15V3m0 12l4-4m-4 4l-4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2"/></svg></span></div><div style="font-size:13.5px;font-weight:600;margin-top:6px">Full data export</div><div style="font-size:12.5px;color:var(--muted);margin-top:3px">CSV, PDF or accounting file</div></a></div>
+  <section class="card" style="margin-top:var(--gap)"><div class="card-head"><h2>Recent jobs</h2></div><div class="tbl-wrap"><table><thead><tr><th>Job</th><th>Type</th><th>Records</th><th>Status</th></tr></thead><tbody>
+  <tr><td class="mono" style="color:var(--muted)">Customer import</td><td>CSV</td><td class="mono">312</td><td><span class="badge success"><span class="b-dot"></span>Complete</span></td></tr>
+  <tr><td class="mono" style="color:var(--muted)">Xero migration</td><td>Accounting</td><td class="mono">1,840</td><td><span class="badge success"><span class="b-dot"></span>Complete</span></td></tr>
+  </tbody></table></div></section>
+</div></main></div></div>
+<script src="shell.js" data-active="" data-title="Import / Export"></script>
+</body></html>

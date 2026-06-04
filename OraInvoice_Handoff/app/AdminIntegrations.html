@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+  .int-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: var(--gap); }
+  @media (max-width:1080px){ .int-grid { grid-template-columns: 1fr 1fr; } }
+  @media (max-width:680px){ .int-grid { grid-template-columns: 1fr; } }
+  .int { background: var(--card); border: 1px solid var(--border); border-radius: var(--r-card); box-shadow: var(--shadow-card); padding: 20px; }
+  .int .top { display: flex; align-items: center; gap: 12px; }
+  .int .logo { width: 42px; height: 42px; border-radius: 11px; display: grid; place-items: center; font-weight: 700; color: #fff; font-size: 14px; flex-shrink: 0; }
+  .int .nm { font-size: 14.5px; font-weight: 700; } .int .cat { font-size: 11.5px; color: var(--muted-2); }
+  .int .d { font-size: 12.5px; color: var(--muted); line-height: 1.5; margin: 12px 0 16px; min-height: 38px; }
+  .int .foot { display: flex; align-items: center; justify-content: space-between; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Admin · Integrations">
+        <div class="page-head">
+          <div><div class="eyebrow">Platform admin</div><h1>Integrations</h1><p class="sub">Third-party connections available to tenants</p></div>
+          <div class="head-actions"><button class="btn btn-primary btn-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>Add integration</button></div>
+        </div>
+        <div id="admin-nav" data-active="integrations"></div>
+
+        <div class="toolbar">
+          <div class="seg"><button class="on">All</button><button>Accounting</button><button>Payments</button><button>Comms</button><button>Calendar</button></div>
+        </div>
+
+        <div class="int-grid" id="grid"></div>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="admin" data-title="Admin · Integrations"></script>
+<script src="admin-nav.js"></script>
+<script>
+const I = [
+  { nm:'Xero', cat:'Accounting', logo:['#13B5EA','X'], on:true, d:'Two-way sync of invoices, contacts & payments.' },
+  { nm:'Stripe', cat:'Payments', logo:['#635BFF','S'], on:true, d:'Card payments, payouts & surcharging.' },
+  { nm:'Akahu', cat:'Banking', logo:['#0B1220','Ak'], on:true, d:'NZ open-banking feeds for reconciliation.' },
+  { nm:'Twilio', cat:'Comms', logo:['#F22F46','Tw'], on:true, d:'SMS reminders, MFA codes & alerts.' },
+  { nm:'Google Calendar', cat:'Calendar', logo:['#4285F4','G'], on:true, d:'Sync bookings to staff calendars.' },
+  { nm:'MYOB', cat:'Accounting', logo:['#6300A5','M'], on:false, d:'Alternative ledger sync for AU/NZ.' },
+  { nm:'POLi', cat:'Payments', logo:['#E4002B','Po'], on:false, d:'Bank-to-bank online payments.' },
+  { nm:'Mailchimp', cat:'Comms', logo:['#FFE01B','Mc',1], on:false, d:'Marketing campaigns to customer lists.' },
+  { nm:'Outlook Calendar', cat:'Calendar', logo:['#0078D4','O'], on:false, d:'Microsoft 365 calendar sync.' },
+];
+document.getElementById('grid').innerHTML = I.map(x=>`
+  <div class="int">
+    <div class="top"><div class="logo" style="background:${x.logo[0]}${x.logo[2]?';color:#1a1a1a':''}">${x.logo[1]}</div><div><div class="nm">${x.nm}</div><div class="cat">${x.cat}</div></div></div>
+    <div class="d">${x.d}</div>
+    <div class="foot">${x.on?'<span class="badge active"><span class="b-dot"></span>Connected</span>':'<span class="badge draft"><span class="b-dot"></span>Available</span>'}<button class="btn btn-ghost btn-sm">${x.on?'Configure':'Enable'}</button></div>
+  </div>`).join('');
+</script>
+</body>
+</html>

@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+.lib-grid { display: grid; gap: var(--gap); }
+.swatch-row { display: flex; gap: 12px; flex-wrap: wrap; }
+.swatch { width: 120px; }
+.swatch .sw { height: 56px; border-radius: var(--r-ctl); border: 1px solid var(--border); }
+.swatch .sn { font-size: 12px; font-weight: 600; margin-top: 7px; }
+.swatch .sv { font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
+.demo-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+.type-row { display: flex; align-items: baseline; gap: 16px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.type-row .tk { font-family: var(--mono); font-size: 11px; color: var(--muted-2); width: 130px; flex-shrink: 0; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Component library">
+        <div class="page-head">
+          <div><div class="eyebrow">Design System</div><h1>Component library</h1><p class="sub">Every building block the 60+ screens assemble from. One source of truth.</p></div>
+        </div>
+
+        <div class="lib-grid">
+          <!-- Colors -->
+          <section class="card"><div class="card-head"><h2>Color tokens</h2></div><div class="card-body">
+            <div class="section-label">Brand & neutrals</div>
+            <div class="swatch-row" style="margin-bottom:20px">
+              <div class="swatch"><div class="sw" style="background:#2F62F0"></div><div class="sn">Accent</div><div class="sv">#2F62F0</div></div>
+              <div class="swatch"><div class="sw" style="background:#0B1220"></div><div class="sn">Ink</div><div class="sv">#0B1220</div></div>
+              <div class="swatch"><div class="sw" style="background:#F5F6F8"></div><div class="sn">Canvas</div><div class="sv">#F5F6F8</div></div>
+              <div class="swatch"><div class="sw" style="background:#fff"></div><div class="sn">Card</div><div class="sv">#FFFFFF</div></div>
+              <div class="swatch"><div class="sw" style="background:#E8EBF0"></div><div class="sn">Border</div><div class="sv">#E8EBF0</div></div>
+            </div>
+            <div class="section-label">Semantic</div>
+            <div class="swatch-row">
+              <div class="swatch"><div class="sw" style="background:#1F8A5B"></div><div class="sn">Success</div><div class="sv">#1F8A5B</div></div>
+              <div class="swatch"><div class="sw" style="background:#B5740F"></div><div class="sn">Warning</div><div class="sv">#B5740F</div></div>
+              <div class="swatch"><div class="sw" style="background:#C8412F"></div><div class="sn">Danger</div><div class="sv">#C8412F</div></div>
+              <div class="swatch"><div class="sw" style="background:#6D5AE6"></div><div class="sn">Purple</div><div class="sv">#6D5AE6</div></div>
+            </div>
+          </div></section>
+
+          <!-- Type -->
+          <section class="card"><div class="card-head"><h2>Typography</h2></div><div class="card-body">
+            <div class="type-row"><span class="tk">H1 · 26/700</span><span style="font-size:26px;font-weight:700;letter-spacing:-.02em">Good morning, Arsh</span></div>
+            <div class="type-row"><span class="tk">Card title · 15/600</span><span style="font-size:15px;font-weight:600">Recent invoices</span></div>
+            <div class="type-row"><span class="tk">Body · 13.5/400</span><span style="font-size:13.5px">Full service incl. filters & fluids</span></div>
+            <div class="type-row"><span class="tk">Mono value · 27/600</span><span class="mono" style="font-size:27px;font-weight:600">$48,250</span></div>
+            <div class="type-row"><span class="tk">Mono label · 11/500</span><span class="mono" style="font-size:11px;font-weight:500;letter-spacing:.12em;text-transform:uppercase;color:var(--muted-2)">Sales · BR-01</span></div>
+          </div></section>
+
+          <!-- Buttons -->
+          <section class="card"><div class="card-head"><h2>Buttons</h2></div><div class="card-body">
+            <div class="demo-row" style="margin-bottom:14px">
+              <button class="btn btn-primary"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>Primary</button>
+              <button class="btn btn-ghost">Ghost</button>
+              <button class="btn btn-quiet">Quiet</button>
+              <button class="btn btn-danger">Danger</button>
+            </div>
+            <div class="demo-row">
+              <button class="btn btn-primary btn-sm">Small</button>
+              <button class="btn btn-ghost btn-sm">Small ghost</button>
+              <button class="icon-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="12" cy="19" r="1.4"/></svg></button>
+              <button class="toggle on" onclick="this.classList.toggle('on')"></button>
+              <button class="toggle" onclick="this.classList.toggle('on')"></button>
+            </div>
+          </div></section>
+
+          <!-- Badges + chips -->
+          <section class="card"><div class="card-head"><h2>Badges & chips</h2></div><div class="card-body">
+            <div class="demo-row" style="margin-bottom:14px">
+              <span class="badge paid"><span class="b-dot"></span>Paid</span>
+              <span class="badge sent"><span class="b-dot"></span>Sent</span>
+              <span class="badge overdue"><span class="b-dot"></span>Overdue</span>
+              <span class="badge pending"><span class="b-dot"></span>Pending</span>
+              <span class="badge draft"><span class="b-dot"></span>Draft</span>
+            </div>
+            <div class="demo-row">
+              <span class="chip on">Active filter <span class="x">×</span></span>
+              <span class="chip">Category</span>
+              <span class="chip">This month</span>
+            </div>
+          </div></section>
+
+          <!-- Inputs -->
+          <section class="card"><div class="card-head"><h2>Form controls</h2></div><div class="card-body">
+            <div class="form-grid">
+              <div class="field"><label>Text input</label><input class="input" value="Kerikeri Motors"></div>
+              <div class="field"><label>Select</label><select class="select"><option>NZD — New Zealand Dollar</option></select></div>
+              <div class="field"><label>Amount</label><div class="input-group"><span class="pre">$</span><input value="420.00"></div></div>
+              <div class="field"><label>Focused</label><input class="input" style="border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)" value="Editing…"></div>
+              <div class="field full"><label>Textarea</label><textarea class="textarea">Payment due within 14 days.</textarea></div>
+            </div>
+          </div></section>
+
+          <!-- KPI + table preview -->
+          <section class="card"><div class="card-head"><h2>Data display</h2></div><div class="card-body">
+            <div class="kpis" style="margin-bottom:20px">
+              <div class="kpi"><div class="top"><span class="label">Revenue</span><span class="ico green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1v22"/></svg></span></div><div class="val"><span class="c">$</span>48,250</div><div class="delta up">+12.4%</div></div>
+              <div class="kpi"><div class="top"><span class="label">Overdue</span><span class="ico red"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4"/></svg></span></div><div class="val"><span class="c">$</span>3,210</div><div class="delta down">4 invoices</div></div>
+            </div>
+            <div class="section-label">Progress & timeline</div>
+            <div class="progress" style="margin-bottom:18px"><i style="width:62%"></i></div>
+            <div class="timeline"><div class="tl-item accent"><div class="t">Payment received</div><div class="time">14 Nov, 9:42am</div></div><div class="tl-item"><div class="t">Invoice sent</div><div class="time">06 Nov, 4:30pm</div></div></div>
+          </div></section>
+
+          <!-- Empty state -->
+          <section class="card"><div class="card-head"><h2>Empty state</h2></div>
+            <div class="empty">
+              <div class="e-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h7l5 5v11a2 2 0 01-2 2z"/></svg></div>
+              <h3>No invoices yet</h3>
+              <p>Create your first invoice to start getting paid.</p>
+              <button class="btn btn-primary"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>New invoice</button>
+            </div>
+          </section>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="" data-title="Component library"></script>
+</body>
+</html>

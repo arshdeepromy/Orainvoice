@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+  .prov { display: flex; align-items: center; gap: 16px; padding: 18px 20px; border-bottom: 1px solid var(--border); }
+  .prov:last-child { border-bottom: none; }
+  .prov .logo { width: 44px; height: 44px; border-radius: 11px; display: grid; place-items: center; font-weight: 700; font-size: 14px; color: #fff; flex-shrink: 0; }
+  .prov .meta { flex: 1; min-width: 0; }
+  .prov .nm { font-size: 14.5px; font-weight: 600; display: flex; align-items: center; gap: 9px; }
+  .prov .d { font-size: 12.5px; color: var(--muted); margin-top: 3px; }
+  .prov .vol { text-align: right; } .prov .vol .v { font-family: var(--mono); font-weight: 600; font-size: 15px; } .prov .vol .l { font-size: 11px; color: var(--muted-2); }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Admin · SMS Providers">
+        <div class="page-head">
+          <div><div class="eyebrow">Platform admin</div><h1>SMS providers</h1><p class="sub">Booking reminders, MFA codes &amp; payment alerts</p></div>
+          <div class="head-actions"><button class="btn btn-ghost btn-sm">Send test SMS</button><button class="btn btn-primary btn-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>Add provider</button></div>
+        </div>
+        <div id="admin-nav" data-active="sms"></div>
+
+        <div class="kpis">
+          <div class="kpi"><div class="top"><span class="label">Sent (30d)</span><span class="ico blue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg></span></div><div class="val">42<span class="c">k</span></div><div class="delta up"><span>↗ 5%</span><span class="since">vs prev</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">Delivery rate</span><span class="ico green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></span></div><div class="val">98.4<span class="c">%</span></div><div class="delta"><span class="since">healthy</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">Avg cost / msg</span><span class="ico amber"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg></span></div><div class="val"><span class="c">$</span>0.09</div><div class="delta"><span class="since">NZ mobile</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">Spend (30d)</span><span class="ico purple"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/></svg></span></div><div class="val"><span class="c">$</span>3.8<span class="c">k</span></div><div class="delta"><span class="since">across tenants</span></div></div>
+        </div>
+
+        <section class="card">
+          <div class="card-head"><h2>Configured providers</h2><span class="chip" style="background:transparent;border:none;color:var(--muted)">Routing: least-cost</span></div>
+          <div class="prov">
+            <div class="logo" style="background:#F22F46">Tw</div>
+            <div class="meta"><div class="nm">Twilio <span class="badge sent"><span class="b-dot"></span>Primary</span></div><div class="d">Sender ID: OraInvoice · NZ long code +64 27 ···</div></div>
+            <div class="vol"><div class="v">31k</div><div class="l">30d volume</div></div>
+            <span class="badge active"><span class="b-dot"></span>Healthy</span>
+            <button class="btn btn-ghost btn-sm">Configure</button>
+          </div>
+          <div class="prov">
+            <div class="logo" style="background:#00B5A0">MM</div>
+            <div class="meta"><div class="nm">MessageMedia <span class="badge warn"><span class="b-dot"></span>Failover</span></div><div class="d">AU/NZ optimised · alphanumeric sender</div></div>
+            <div class="vol"><div class="v">11k</div><div class="l">30d volume</div></div>
+            <span class="badge active"><span class="b-dot"></span>Healthy</span>
+            <button class="btn btn-ghost btn-sm">Configure</button>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="admin" data-title="Admin · SMS Providers"></script>
+<script src="admin-nav.js"></script>
+</body>
+</html>

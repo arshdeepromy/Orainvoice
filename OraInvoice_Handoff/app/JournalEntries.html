@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+</head>
+<body>
+<div class="app"><div id="sidebar"></div><div class="main"><div id="topbar"></div>
+<main class="content"><div class="page page-wide" data-screen-label="Journal entries">
+<div class="page-head"><div><div class="eyebrow">Money</div><h1>Journal entries</h1><p class="sub">Manual & system journals</p></div><div class="head-actions"><button class="btn btn-primary btn-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>New journal</button></div></div>
+<section class="card"><div class="tbl-wrap"><table><thead><tr><th class="">Date</th><th class="">Reference</th><th class="">Narration</th><th class="r">Debit</th><th class="r">Credit</th></tr></thead><tbody><tr class="clickable" onclick="location.href='JournalEntryDetail.html'"><td class=""><span class="mono" style="color:var(--muted)">31 Oct</span></td><td class=""><span class="id">JNL-204</span></td><td class="">Depreciation — Oct</td><td class="r"><span class="amt">$1,200</span></td><td class="r"><span class="amt">$1,200</span></td></tr><tr class="clickable" onclick="location.href='JournalEntryDetail.html'"><td class=""><span class="mono" style="color:var(--muted)">31 Oct</span></td><td class=""><span class="id">JNL-203</span></td><td class="">Payroll accrual</td><td class="r"><span class="amt">$9,800</span></td><td class="r"><span class="amt">$9,800</span></td></tr><tr class="clickable" onclick="location.href='JournalEntryDetail.html'"><td class=""><span class="mono" style="color:var(--muted)">28 Oct</span></td><td class=""><span class="id">JNL-202</span></td><td class="">Bank fees</td><td class="r"><span class="amt">$42</span></td><td class="r"><span class="amt">$42</span></td></tr></tbody></table></div></section>
+</div></main></div></div>
+<script src="shell.js" data-active="accounting" data-title="Journal entries" data-primary="New journal"></script>
+<script>
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));t.classList.add('on');}));
+</script>
+</body></html>

@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+  .plan-cards { display: grid; grid-template-columns: repeat(3,1fr); gap: var(--gap); margin-bottom: var(--gap); }
+  @media (max-width:1080px){ .plan-cards { grid-template-columns: 1fr; } }
+  .pcard { background: var(--card); border: 1px solid var(--border); border-radius: var(--r-card); box-shadow: var(--shadow-card); overflow: hidden; }
+  .pcard.feat { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .pcard .ph { padding: 20px; border-bottom: 1px solid var(--border); display: flex; align-items: flex-start; justify-content: space-between; }
+  .pcard .pn { font-size: 16px; font-weight: 700; } .pcard .pmeta { font-size: 12px; color: var(--muted); margin-top: 3px; }
+  .pcard .pp { font-family: var(--mono); font-size: 28px; font-weight: 600; padding: 18px 20px 4px; letter-spacing: -.02em; } .pcard .pp small { font-size: 13px; color: var(--muted-2); }
+  .pcard .psub { font-size: 12px; color: var(--muted); padding: 0 20px 16px; }
+  .pcard .pf { padding: 0 20px 20px; display: flex; flex-direction: column; gap: 9px; }
+  .pcard .pf .r { display: flex; justify-content: space-between; font-size: 13px; } .pcard .pf .r .k { color: var(--muted); }
+  .pcard .pa { padding: 14px 20px; border-top: 1px solid var(--border); display: flex; gap: 8px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Admin · Plans">
+        <div class="page-head">
+          <div><div class="eyebrow">Platform admin</div><h1>Plans &amp; billing</h1><p class="sub">Subscription tiers, pricing &amp; promo coupons</p></div>
+          <div class="head-actions"><button class="btn btn-primary btn-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>New plan</button></div>
+        </div>
+        <div id="admin-nav" data-active="plans"></div>
+
+        <div class="plan-cards">
+          <div class="pcard">
+            <div class="ph"><div><div class="pn">Solo</div><div class="pmeta">plan_solo · 14-day trial</div></div><span class="badge active"><span class="b-dot"></span>Live</span></div>
+            <div class="pp">$39<small>/mo</small></div><div class="psub">$390/yr · save 17%</div>
+            <div class="pf"><div class="r"><span class="k">Active subs</span><span class="mono" style="font-weight:600">44</span></div><div class="r"><span class="k">Seat limit</span><span class="mono">1</span></div><div class="r"><span class="k">Branch limit</span><span class="mono">1</span></div></div>
+            <div class="pa"><button class="btn btn-ghost btn-sm" style="flex:1">Edit</button><button class="btn btn-ghost btn-sm">Archive</button></div>
+          </div>
+          <div class="pcard feat">
+            <div class="ph"><div><div class="pn">Pro</div><div class="pmeta">plan_pro · 14-day trial</div></div><span class="badge sent"><span class="b-dot"></span>Most popular</span></div>
+            <div class="pp">$79<small>/mo</small></div><div class="psub">$790/yr · save 17%</div>
+            <div class="pf"><div class="r"><span class="k">Active subs</span><span class="mono" style="font-weight:600">186</span></div><div class="r"><span class="k">Seat limit</span><span class="mono">12</span></div><div class="r"><span class="k">Branch limit</span><span class="mono">3</span></div></div>
+            <div class="pa"><button class="btn btn-ghost btn-sm" style="flex:1">Edit</button><button class="btn btn-ghost btn-sm">Archive</button></div>
+          </div>
+          <div class="pcard">
+            <div class="ph"><div><div class="pn">Multi-site</div><div class="pmeta">plan_multi · 14-day trial</div></div><span class="badge active"><span class="b-dot"></span>Live</span></div>
+            <div class="pp">$159<small>/mo</small></div><div class="psub">$1,590/yr · save 17%</div>
+            <div class="pf"><div class="r"><span class="k">Active subs</span><span class="mono" style="font-weight:600">56</span></div><div class="r"><span class="k">Seat limit</span><span class="mono">Unlimited</span></div><div class="r"><span class="k">Branch limit</span><span class="mono">Unlimited</span></div></div>
+            <div class="pa"><button class="btn btn-ghost btn-sm" style="flex:1">Edit</button><button class="btn btn-ghost btn-sm">Archive</button></div>
+          </div>
+        </div>
+
+        <section class="card">
+          <div class="card-head"><h2>Promo coupons</h2><button class="btn btn-ghost btn-sm" onclick="document.getElementById('cm').classList.add('open')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>New coupon</button></div>
+          <div class="tbl-wrap"><table>
+            <thead><tr><th>Code</th><th>Discount</th><th>Applies to</th><th>Redemptions</th><th>Expires</th><th>Status</th><th class="r"></th></tr></thead>
+            <tbody>
+              <tr><td><span class="id" style="font-weight:600;color:var(--text)">WINTER25</span></td><td class="mono">25% off</td><td>All plans · 3 mo</td><td class="mono">142 / 500</td><td class="mono" style="color:var(--muted)">31 Aug 2026</td><td><span class="badge active"><span class="b-dot"></span>Active</span></td><td class="r"><button class="btn btn-ghost btn-sm">Edit</button></td></tr>
+              <tr><td><span class="id" style="font-weight:600;color:var(--text)">TRADE50</span></td><td class="mono">$50 off</td><td>Pro · first month</td><td class="mono">38 / ∞</td><td class="mono" style="color:var(--muted)">No expiry</td><td><span class="badge active"><span class="b-dot"></span>Active</span></td><td class="r"><button class="btn btn-ghost btn-sm">Edit</button></td></tr>
+              <tr><td><span class="id" style="font-weight:600;color:var(--text)">LAUNCH2024</span></td><td class="mono">3 mo free</td><td>Multi-site</td><td class="mono">21 / 50</td><td class="mono" style="color:var(--muted)">01 Jan 2025</td><td><span class="badge draft"><span class="b-dot"></span>Expired</span></td><td class="r"><button class="btn btn-ghost btn-sm">Edit</button></td></tr>
+            </tbody>
+          </table></div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+
+<div class="modal-scrim" id="cm">
+  <div class="modal wide">
+    <div class="modal-head"><h3>New coupon</h3><button class="x" onclick="document.getElementById('cm').classList.remove('open')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 18L18 6M6 6l12 12"/></svg></button></div>
+    <div class="modal-body"><div class="form-grid">
+      <div class="field"><label>Code</label><input class="input mono" placeholder="SUMMER25" /></div>
+      <div class="field"><label>Discount type</label><select class="select"><option>Percentage</option><option>Fixed amount</option><option>Free months</option></select></div>
+      <div class="field"><label>Value</label><div class="input-group"><span class="pre">%</span><input type="number" placeholder="25" /></div></div>
+      <div class="field"><label>Max redemptions</label><input class="input mono" type="number" placeholder="500" /></div>
+      <div class="field"><label>Applies to</label><select class="select"><option>All plans</option><option>Solo</option><option>Pro</option><option>Multi-site</option></select></div>
+      <div class="field"><label>Expires</label><input class="input mono" type="date" /></div>
+    </div></div>
+    <div class="modal-foot"><button class="btn btn-ghost" onclick="document.getElementById('cm').classList.remove('open')">Cancel</button><button class="btn btn-primary" onclick="document.getElementById('cm').classList.remove('open')">Create coupon</button></div>
+  </div>
+</div>
+
+<script src="shell.js" data-active="admin" data-title="Admin · Plans"></script>
+<script src="admin-nav.js"></script>
+<script>document.getElementById('cm').addEventListener('click',e=>{if(e.target.id==='cm')e.target.classList.remove('open');});</script>
+</body>
+</html>

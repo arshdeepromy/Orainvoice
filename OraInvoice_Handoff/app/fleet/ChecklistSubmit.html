@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="../ds.css" />
+<link rel="stylesheet" href="fleet.css" />
+<style>
+.ci { display:flex; align-items:center; gap:14px; padding:13px 0; border-bottom:1px solid var(--border); }
+.ci:last-child { border-bottom:none; }
+.ci .lab { flex:1; font-size:13.5px; font-weight:500; }
+.ci .cat { font-family:var(--mono); font-size:10px; letter-spacing:.06em; text-transform:uppercase; color:var(--muted-2); }
+.pfn { display:inline-flex; border:1px solid var(--border); border-radius:var(--r-ctl); overflow:hidden; }
+.pfn button { border:none; background:var(--card); padding:7px 14px; font-size:12.5px; font-weight:600; color:var(--muted); border-right:1px solid var(--border); }
+.pfn button:last-child { border-right:none; }
+.pfn button.pass.on { background:var(--ok); color:#fff; }
+.pfn button.fail.on { background:var(--danger); color:#fff; }
+.pfn button.na.on { background:var(--muted-2); color:#fff; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page" data-screen-label="Fleet portal checklist submission">
+        <div class="crumbs"><a href="Checklists.html">Checklists</a><span class="sep">/</span><span style="color:var(--text)">NPR-447 · Today</span></div>
+        <div class="page-head">
+          <div><div class="eyebrow">Pre-trip · NZTA template</div><h1>NPR-447 inspection</h1><p class="sub">Driver: T. Edwards · started 6:42am</p></div>
+          <div class="head-actions"><button class="btn btn-primary btn-sm" onclick="toast('Checklist submitted.')">Submit checklist</button></div>
+        </div>
+
+        <div class="kpis" style="grid-template-columns:repeat(3,1fr)">
+          <div class="kpi"><div class="top"><span class="label">Passed</span></div><div class="val" style="color:var(--ok)" id="cP">18</div></div>
+          <div class="kpi"><div class="top"><span class="label">Failed</span></div><div class="val" style="color:var(--danger)" id="cF">3</div></div>
+          <div class="kpi"><div class="top"><span class="label">N/A</span></div><div class="val" style="color:var(--muted-2)" id="cN">1</div></div>
+        </div>
+
+        <section class="card"><div class="card-body" id="items"></div></section>
+      </div>
+    </main>
+  </div>
+</div>
+<div class="toast ok" id="toast"></div>
+<script src="fleet-shell.js" data-active="checklists" data-title="Checklist"></script>
+<script>
+const ITEMS=[
+  {cat:'Lights',lab:'Headlights & indicators',v:'pass'},
+  {cat:'Lights',lab:'Brake & tail lights',v:'pass'},
+  {cat:'Tyres',lab:'Tread depth ≥ 1.5mm',v:'pass'},
+  {cat:'Tyres',lab:'Tyre pressure',v:'fail'},
+  {cat:'Brakes',lab:'Service brake operation',v:'pass'},
+  {cat:'Brakes',lab:'Park brake holds',v:'pass'},
+  {cat:'Fluids',lab:'Engine oil level',v:'pass'},
+  {cat:'Fluids',lab:'Coolant level',v:'fail'},
+  {cat:'Body',lab:'Mirrors & windscreen',v:'pass'},
+  {cat:'Body',lab:'Load restraints secure',v:'fail'},
+  {cat:'Reefer',lab:'Refrigeration unit',v:'na'},
+];
+function render(){
+  document.getElementById('items').innerHTML=ITEMS.map((it,i)=>`<div class="ci">
+    <div><div class="cat">${it.cat}</div><div class="lab">${it.lab}</div></div>
+    <div class="pfn" style="margin-left:auto">
+      <button class="pass ${it.v==='pass'?'on':''}" onclick="setV(${i},'pass')">Pass</button>
+      <button class="fail ${it.v==='fail'?'on':''}" onclick="setV(${i},'fail')">Fail</button>
+      <button class="na ${it.v==='na'?'on':''}" onclick="setV(${i},'na')">N/A</button>
+    </div>
+  </div>`).join('');
+  count();
+}
+function setV(i,v){ITEMS[i].v=v;render();}
+function count(){const c={pass:0,fail:0,na:0};ITEMS.forEach(i=>c[i.v]++);document.getElementById('cP').textContent=c.pass;document.getElementById('cF').textContent=c.fail;document.getElementById('cN').textContent=c.na;}
+let tt;function toast(m){const t=document.getElementById('toast');t.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><span>'+m+'</span>';t.classList.add('show');clearTimeout(tt);tt=setTimeout(()=>t.classList.remove('show'),2400);}
+render();
+</script>
+</body>
+</html>

@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+.badge.editor { background:var(--purple-soft); color:var(--purple); } .badge.editor .b-dot{ background:var(--purple); }
+.badge.handcoded { background:var(--accent-soft); color:var(--accent); } .badge.handcoded .b-dot{ background:var(--accent); }
+.dirty { width:8px; height:8px; border-radius:50%; background:var(--warn); display:inline-block; flex-shrink:0; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Page editor">
+        <div class="page-head">
+          <div><div class="eyebrow">Platform admin</div><h1>Page editor</h1><p class="sub">Visually edit marketing &amp; help pages — published content overrides the hand-coded fallback</p></div>
+          <div class="head-actions">
+            <a class="btn btn-ghost btn-sm" href="PageEditorRedirects.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4v5h.6M20 20v-5h-.6M4.6 9A8 8 0 0119.9 11M19.4 15A8 8 0 014.1 13"/></svg>Redirects</a>
+            <a class="btn btn-primary btn-sm" href="PageEditorEdit.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>New page</a>
+          </div>
+        </div>
+
+        <div id="admin-nav" data-active="pageeditor"></div>
+
+        <div class="toolbar">
+          <div class="search-input" style="flex:1;max-width:300px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 21l-5-5m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg><input placeholder="Filter by title or slug" /></div>
+          <select class="select" style="width:auto"><option>All origins</option><option>Hand-coded</option><option>Editor-created</option></select>
+          <select class="select" style="width:auto"><option>All states</option><option>Published</option><option>Never published</option><option>Draft ahead</option></select>
+          <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted);margin-left:auto"><input type="checkbox" class="checkbox">Show deleted</label>
+        </div>
+
+        <section class="card">
+          <div class="tbl-wrap"><table>
+            <thead><tr><th>Title</th><th>Slug</th><th>Origin</th><th>State</th><th class="c">Noindex</th><th>Last published</th><th class="r">Actions</th></tr></thead>
+            <tbody id="rows"></tbody>
+          </table></div>
+          <div class="pagination"><div class="info">Showing page <span class="mono">1</span> of <span class="mono">2</span> (<span class="mono">28</span> total)</div><div class="pg-btns"><button disabled>‹</button><button class="on">1</button><button>2</button><button>›</button></div></div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="admin" data-title="Page editor"></script>
+<script src="admin-nav.js"></script>
+<script>
+const PAGES=[
+  {title:'Home / Landing',slug:'/',origin:'handcoded',state:'published',v:14,noindex:false,pub:'2d ago',dirty:false},
+  {title:'Workshops',slug:'/workshop',origin:'handcoded',state:'draft-ahead',v:6,noindex:false,pub:'9d ago',dirty:true},
+  {title:'Trades',slug:'/trades',origin:'handcoded',state:'published',v:4,noindex:false,pub:'9d ago',dirty:false},
+  {title:'Spring promo 2026',slug:'/spring-promo',origin:'editor',state:'published',v:2,noindex:false,pub:'5h ago',dirty:false},
+  {title:'Mobile mechanics Auckland',slug:'/mobile-mechanics-auckland',origin:'editor',state:'draft-ahead',v:1,noindex:false,pub:'3d ago',dirty:true},
+  {title:'Privacy policy',slug:'/privacy',origin:'handcoded',state:'published',v:3,noindex:false,pub:'1 Aug 2025',dirty:false},
+  {title:'Beta waitlist',slug:'/beta',origin:'editor',state:'never-published',v:null,noindex:true,pub:null,dirty:true},
+];
+const STATE={published:s=>`<span class="badge success"><span class="b-dot"></span>Published v${s.v}</span>`,'draft-ahead':()=>'<span class="badge pending"><span class="b-dot"></span>Draft ahead</span>','never-published':()=>'<span class="badge neutral"><span class="b-dot"></span>Never published</span>'};
+function svg(d,sw){return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${sw||2}" stroke-linecap="round" stroke-linejoin="round"><path d="${d}"/></svg>`;}
+document.getElementById('rows').innerHTML=PAGES.map(p=>`<tr>
+  <td><div style="display:flex;align-items:center;gap:8px">${p.dirty?'<span class="dirty" title="Draft ahead of published"></span>':''}<span class="cust">${p.title}</span></div></td>
+  <td><span class="id">${p.slug}</span></td>
+  <td>${p.origin==='handcoded'?'<span class="badge handcoded">Hand-coded</span>':'<span class="badge editor">Editor</span>'}</td>
+  <td>${STATE[p.state](p)}</td>
+  <td class="c">${p.noindex?'<span title="Excluded from search" style="color:var(--danger)">'+svg('M9.9 4.2A9 9 0 0121 12c-.3.6-.7 1.2-1.1 1.7M6.1 6.1A9 9 0 003 12a9 9 0 0013.9 4.9M1 1l22 22M9.9 9.9a3 3 0 004.2 4.2',1.8).replace('width="24" height="24"','')+'</span>':'<span style="color:var(--muted-2)">—</span>'}</td>
+  <td><span class="mono" style="color:var(--muted)">${p.pub||'—'}</span></td>
+  <td class="r"><div style="display:inline-flex;gap:6px;justify-content:flex-end;flex-wrap:wrap">
+    <a class="btn btn-ghost btn-sm" href="PageEditorEdit.html">Edit</a>
+    <button class="btn btn-ghost btn-sm" onclick="toast('Duplicated.')">Duplicate</button>
+    ${p.origin==='editor'?'<button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="toast(\'Page deleted.\')">Delete</button>':'<button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="toast(\'Reverted to fallback.\')">Revert</button>'}
+  </div></td>
+</tr>`).join('');
+let tt;function toast(m){const t=document.getElementById('toast');t.innerHTML=svg('M20 6L9 17l-5-5',2.5)+'<span>'+m+'</span>';t.classList.add('show');clearTimeout(tt);tt=setTimeout(()=>t.classList.remove('show'),2400);}
+</script>
+<div class="toast ok" id="toast"></div>
+</body>
+</html>

@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+  /* Staff-specific: work-schedule editor used in the add/edit modal */
+  .ws { display: flex; flex-direction: column; gap: 8px; }
+  .ws-row { display: grid; grid-template-columns: 116px 1fr 1fr; align-items: center; gap: 10px; }
+  .ws-day { display: flex; align-items: center; gap: 10px; }
+  .ws-day .dn { font-size: 13px; font-weight: 500; }
+  .ws-row.off .input { opacity: .45; pointer-events: none; }
+  .ws-row.off .ws-day .dn { color: var(--muted-2); }
+  .ws-time { display: flex; align-items: center; gap: 7px; }
+  .ws-time input { height: 38px; }
+  .skill-tag { display: inline-flex; align-items: center; font-size: 11.5px; font-weight: 500; padding: 3px 9px; border-radius: var(--r-chip); background: var(--accent-soft); color: var(--accent); }
+  .staff-name-link { font-weight: 600; color: var(--accent); cursor: pointer; }
+  .staff-name-link:hover { text-decoration: underline; }
+  .row-actions { display: flex; align-items: center; gap: 4px; }
+  .link-btn { border: none; background: none; font-family: inherit; font-size: 13px; font-weight: 500; padding: 4px 8px; border-radius: 7px; color: var(--muted); }
+  .link-btn:hover { background: var(--canvas); color: var(--text); }
+  .link-btn.danger:hover { color: var(--danger); background: var(--danger-soft); }
+  .link-btn.ok:hover { color: var(--ok); background: var(--ok-soft); }
+  .days-cell { display: flex; gap: 3px; }
+  .day-pip { width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center; font-family: var(--mono); font-size: 10px; font-weight: 600; background: var(--canvas); color: var(--muted-2); border: 1px solid var(--border); }
+  .day-pip.on { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Staff">
+        <div class="page-head">
+          <div>
+            <div class="eyebrow">People</div>
+            <h1>Staff</h1>
+            <p class="sub"><span id="sub-count">12</span> team members · <span id="sub-active">11</span> active</p>
+          </div>
+          <div class="head-actions">
+            <a class="btn btn-ghost btn-sm" href="LeaveApprovals.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 7V3m8 4V3M3 11h18M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>Leave <span class="mono" style="background:var(--warn);color:#fff;border-radius:20px;padding:0 6px;font-size:11px">4</span></a>
+            <button class="btn btn-ghost btn-sm" id="export-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14"/></svg>Export</button>
+            <button class="btn btn-primary btn-sm" id="add-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>Add staff</button>
+          </div>
+        </div>
+
+        <div class="kpis">
+          <div class="kpi"><div class="top"><span class="label">Total staff</span><span class="ico blue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 20h5v-2a3 3 0 00-5.4-1.9M17 20H7m10 0v-2c0-.7-.1-1.3-.4-1.9M7 20H2v-2a3 3 0 015.4-1.9M7 20v-2c0-.7.1-1.3.4-1.9m0 0a5 5 0 019.3 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg></span></div><div class="val">12</div><div class="delta up"><span>↗ 2</span><span class="since">new this quarter</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">Employees</span><span class="ico green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg></span></div><div class="val">9</div><div class="delta"><span class="since">3 contractors</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">With login access</span><span class="ico purple"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.7 5.7L13 17l-2 2-2 2H6v-3l5.3-5.3A6 6 0 1121 9z"/></svg></span></div><div class="val">7</div><div class="delta"><span class="since">5 without accounts</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">Avg hourly rate</span><span class="ico amber"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg></span></div><div class="val"><span class="c">$</span>38.50</div><div class="delta"><span class="since">across employees</span></div></div>
+        </div>
+
+        <div class="toolbar">
+          <label class="search-input" style="flex:1;max-width:320px">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 21l-5-5m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+            <input id="search" type="text" placeholder="Search by name, email or ID…" />
+          </label>
+          <div class="seg" id="role-seg">
+            <button class="on" data-role="">All roles</button>
+            <button data-role="employee">Employees</button>
+            <button data-role="contractor">Contractors</button>
+          </div>
+          <div class="seg" id="status-seg">
+            <button class="on" data-status="">All</button>
+            <button data-status="active">Active</button>
+            <button data-status="inactive">Inactive</button>
+          </div>
+          <div class="spacer"></div>
+          <span class="chip" id="result-count" style="background:transparent;border:none;color:var(--muted)"></span>
+        </div>
+
+        <section class="card">
+          <div class="tbl-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Employee&nbsp;ID</th>
+                  <th>Name</th>
+                  <th>Position</th>
+                  <th>Contact</th>
+                  <th>Work days</th>
+                  <th>Reports to</th>
+                  <th>Status</th>
+                  <th class="r">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="rows"></tbody>
+            </table>
+          </div>
+          <div class="empty" id="empty" style="display:none">
+            <div class="e-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M17 20h5v-2a3 3 0 00-5.4-1.9M17 20H7m10 0v-2c0-.7-.1-1.3-.4-1.9M7 20H2v-2a3 3 0 015.4-1.9M7 20v-2c0-.7.1-1.3.4-1.9m0 0a5 5 0 019.3 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg></div>
+            <h3>No staff members found</h3>
+            <p>Try adjusting your filters, or add your first staff member.</p>
+            <button class="btn btn-primary btn-sm" onclick="openAdd()" style="margin:0 auto"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>Add staff</button>
+          </div>
+          <div class="pagination" id="pager">
+            <div class="info">Showing <span class="mono" id="pg-range">1–12</span> of <span class="mono" id="pg-total">12</span></div>
+            <div class="pg-btns">
+              <button id="pg-prev" disabled>‹</button>
+              <button class="on">1</button>
+              <button id="pg-next" disabled>›</button>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- ============ ADD / EDIT MODAL ============ -->
+<div class="modal-scrim" id="staff-modal">
+  <div class="modal wide">
+    <div class="modal-head">
+      <h3 id="modal-title">Add staff member</h3>
+      <button class="x" onclick="closeModal()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 18L18 6M6 6l12 12"/></svg></button>
+    </div>
+    <div class="modal-body">
+      <div class="form-grid">
+        <div class="field"><label>First name *</label><input class="input" id="f-first" placeholder="e.g. Dave" /></div>
+        <div class="field"><label>Last name</label><input class="input" id="f-last" placeholder="e.g. Mceachern" /></div>
+        <div class="field"><label>Email</label><input class="input" id="f-email" type="email" placeholder="name@workshop.co.nz" /><span class="hint" id="dup-email" style="display:none;color:var(--danger)"></span></div>
+        <div class="field"><label>Phone</label><input class="input mono" id="f-phone" type="tel" placeholder="021 000 0000" /></div>
+        <div class="field"><label>Employee ID</label><input class="input mono" id="f-empid" placeholder="EMP-001" /></div>
+        <div class="field"><label>Position</label><input class="input" id="f-position" placeholder="e.g. Senior Technician" /></div>
+        <div class="field"><label>Role type</label>
+          <select class="select" id="f-role">
+            <option value="employee">Employee</option>
+            <option value="contractor">Contractor</option>
+          </select>
+        </div>
+        <div class="field"><label>Reports to</label>
+          <select class="select" id="f-reports"><option value="">— None —</option></select>
+        </div>
+        <div class="field"><label>Hourly rate <span class="opt">(optional)</span></label>
+          <div class="input-group"><span class="pre">$</span><input id="f-rate" type="number" step="0.01" min="0" placeholder="0.00" /></div>
+        </div>
+        <div class="field"><label>Overtime rate <span class="opt">(optional)</span></label>
+          <div class="input-group"><span class="pre">$</span><input id="f-otrate" type="number" step="0.01" min="0" placeholder="0.00" /></div>
+        </div>
+        <div class="field full"><label>Skills <span class="opt">(comma-separated)</span></label><input class="input" id="f-skills" placeholder="e.g. Brakes, Engine, Electrical, WoF" /></div>
+      </div>
+
+      <!-- Also create as user (new staff only) -->
+      <div id="create-user-block" style="margin-top:18px;border:1px solid var(--border);background:var(--canvas);border-radius:var(--r-ctl);padding:15px">
+        <label style="display:flex;align-items:center;gap:10px;cursor:pointer;font-size:13.5px;font-weight:500">
+          <input class="checkbox" type="checkbox" id="f-asuser" onchange="toggleUserFields()" />
+          Also create as a user (sends invite email)
+        </label>
+        <div id="user-fields" style="display:none;margin-top:14px">
+          <div class="form-grid">
+            <div class="field"><label>User role</label>
+              <select class="select" id="f-userrole">
+                <option value="salesperson">Salesperson</option>
+                <option value="org_admin">Org Admin</option>
+                <option value="branch_admin">Branch Admin</option>
+                <option value="location_manager">Location Manager</option>
+                <option value="staff_member">Staff Member</option>
+              </select>
+              <span class="hint" id="email-warn" style="display:none;color:var(--warn)">Email is required to send an invite</span>
+            </div>
+            <div class="field"><label>Assign to branch</label>
+              <select class="select" id="f-branch">
+                <option value="">— No branch —</option>
+                <option>Kerikeri</option>
+                <option>Whangarei</option>
+                <option>Kaitaia</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Work schedule -->
+      <div style="margin-top:20px">
+        <div class="section-label" style="margin-bottom:10px">Work schedule</div>
+        <div class="ws" id="ws-editor"></div>
+      </div>
+
+      <p id="form-error" style="display:none;color:var(--danger);font-size:13px;margin:14px 0 0"></p>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" id="save-btn" onclick="saveStaff()">Add staff</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ DELETE MODAL ============ -->
+<div class="modal-scrim" id="delete-modal">
+  <div class="modal">
+    <div class="modal-head">
+      <h3>Delete staff member</h3>
+      <button class="x" onclick="closeDelete()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 18L18 6M6 6l12 12"/></svg></button>
+    </div>
+    <div class="modal-body">
+      <div style="border:1px solid var(--danger-soft);background:var(--danger-soft);border-radius:var(--r-ctl);padding:14px">
+        <p style="margin:0;font-size:13.5px;color:var(--danger);font-weight:500">This will permanently delete <b id="del-name">this member</b>. This action cannot be undone.</p>
+        <p style="margin:8px 0 0;font-size:12.5px;color:var(--danger)">Any invoices, quotes, or other data they created will be preserved and remain accessible.</p>
+      </div>
+      <label id="del-user-row" style="display:flex;align-items:flex-start;gap:11px;margin-top:14px;border:1px solid var(--border);background:var(--canvas);border-radius:var(--r-ctl);padding:13px;cursor:pointer">
+        <input class="checkbox" type="checkbox" id="del-also-user" checked style="margin-top:1px" />
+        <div>
+          <div style="font-size:13.5px;font-weight:600">Also delete user account</div>
+          <div style="font-size:12px;color:var(--muted)" id="del-user-email">Remove the login account. They will no longer be able to sign in.</div>
+        </div>
+      </label>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" onclick="closeDelete()">Cancel</button>
+      <button class="btn btn-danger" onclick="confirmDelete()">Delete permanently</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M20 6L9 17l-5-5"/></svg><span id="toast-msg">Saved</span></div>
+
+<script src="shell.js" data-active="staff" data-title="Staff"></script>
+<script>
+const DAYS = [['monday','Mon'],['tuesday','Tue'],['wednesday','Wed'],['thursday','Thu'],['friday','Fri'],['saturday','Sat'],['sunday','Sun']];
+const DEFAULT_SCHED = { monday:{start:'09:00',end:'17:00'}, tuesday:{start:'09:00',end:'17:00'}, wednesday:{start:'09:00',end:'17:00'}, thursday:{start:'09:00',end:'17:00'}, friday:{start:'09:00',end:'17:00'} };
+
+const wk = (d) => Object.fromEntries(d.map(x => [x, {start:'08:00',end:'17:00'}]));
+const STAFF = [
+  { id:'s1', first:'Arsh', last:'Randhawa', email:'arsh@kerikerimotors.co.nz', phone:'021 553 110', empid:'EMP-001', position:'Owner / Admin', role:'employee', reports:'', rate:'—', ot:'—', skills:['Management'], sched:wk(['monday','tuesday','wednesday','thursday','friday']), user:true, active:true },
+  { id:'s2', first:'Dave', last:'Mceachern', email:'dave@kerikerimotors.co.nz', phone:'027 441 8820', empid:'EMP-002', position:'Senior Technician', role:'employee', reports:'s1', rate:'46.00', ot:'69.00', skills:['Engine','Diagnostics','WoF'], sched:wk(['monday','tuesday','wednesday','thursday','friday']), user:true, active:true },
+  { id:'s3', first:'Sina', last:'Faleolo', email:'sina@kerikerimotors.co.nz', phone:'022 109 4471', empid:'EMP-003', position:'Technician', role:'employee', reports:'s2', rate:'38.00', ot:'57.00', skills:['Brakes','Suspension'], sched:wk(['monday','tuesday','wednesday','thursday','friday']), user:true, active:true },
+  { id:'s4', first:'Mere', last:'Wiki', email:'mere@kerikerimotors.co.nz', phone:'021 884 220', empid:'EMP-004', position:'Service Advisor', role:'employee', reports:'s1', rate:'34.00', ot:'51.00', skills:['Customer service','Scheduling'], sched:wk(['monday','tuesday','wednesday','thursday','friday']), user:true, active:true },
+  { id:'s5', first:'Tom', last:'Cole', email:'tom@kerikerimotors.co.nz', phone:'027 220 9981', empid:'EMP-005', position:'Apprentice', role:'employee', reports:'s2', rate:'24.50', ot:'36.75', skills:['Servicing','Tyres'], sched:wk(['monday','tuesday','wednesday','thursday','friday','saturday']), user:false, active:true },
+  { id:'s6', first:'Hemi', last:'Ngata', email:'hemi@kerikerimotors.co.nz', phone:'021 660 1142', empid:'EMP-006', position:'Technician', role:'employee', reports:'s2', rate:'37.00', ot:'55.50', skills:['Auto electrical','Diagnostics'], sched:wk(['tuesday','wednesday','thursday','friday','saturday']), user:true, active:true },
+  { id:'s7', first:'Anika', last:'Sharma', email:'anika@kerikerimotors.co.nz', phone:'022 770 3318', empid:'EMP-007', position:'Bookkeeper', role:'employee', reports:'s1', rate:'40.00', ot:'—', skills:['Accounts','Payroll'], sched:wk(['monday','wednesday','friday']), user:true, active:true },
+  { id:'s8', first:'Jess', last:'O\u2019Connor', email:'jess@kerikerimotors.co.nz', phone:'027 119 4420', empid:'EMP-008', position:'Service Advisor', role:'employee', reports:'s4', rate:'33.00', ot:'49.50', skills:['Customer service'], sched:wk(['monday','tuesday','thursday','friday']), user:false, active:true },
+  { id:'s9', first:'Wiremu', last:'Tana', email:'wiremu@kerikerimotors.co.nz', phone:'021 445 7780', empid:'EMP-009', position:'Technician', role:'employee', reports:'s2', rate:'38.50', ot:'57.75', skills:['Transmission','Engine'], sched:wk(['monday','tuesday','wednesday','thursday','friday']), user:true, active:true },
+  { id:'s10', first:'Greg', last:'Patel', email:'greg@northpaint.co.nz', phone:'027 884 1190', empid:'CON-001', position:'Panel & Paint (contract)', role:'contractor', reports:'s1', rate:'55.00', ot:'—', skills:['Panel','Paint'], sched:wk(['monday','wednesday','friday']), user:false, active:true },
+  { id:'s11', first:'Liam', last:'Foster', email:'liam@autosparkynz.co.nz', phone:'021 330 9921', empid:'CON-002', position:'Auto Electrician (contract)', role:'contractor', reports:'s2', rate:'58.00', ot:'—', skills:['Auto electrical','EV'], sched:wk(['tuesday','thursday']), user:false, active:true },
+  { id:'s12', first:'Karen', last:'Bishop', email:'karen@kerikerimotors.co.nz', phone:'027 551 2204', empid:'EMP-010', position:'Service Advisor', role:'employee', reports:'s4', rate:'32.00', ot:'48.00', skills:['Customer service'], sched:{}, user:false, active:false },
+];
+
+const nameOf = (s) => `${s.first} ${s.last || ''}`.trim();
+const AVCOL = ['#2F62F0','#6D5AE6','#1F8A5B','#B5740F','#C8412F'];
+const avColor = (s) => AVCOL[(s.first.charCodeAt(0) + (s.last||' ').charCodeAt(0)) % AVCOL.length];
+
+let state = { search:'', role:'', status:'' };
+
+function dayPips(s) {
+  return `<div class="days-cell">${DAYS.map(([k,l]) => `<span class="day-pip ${s.sched && s.sched[k] ? 'on':''}" title="${l}">${l[0]}</span>`).join('')}</div>`;
+}
+
+function filtered() {
+  return STAFF.filter(s => {
+    if (state.role && s.role !== state.role) return false;
+    if (state.status === 'active' && !s.active) return false;
+    if (state.status === 'inactive' && s.active) return false;
+    if (state.search) {
+      const q = state.search.toLowerCase();
+      if (!(nameOf(s).toLowerCase().includes(q) || (s.email||'').toLowerCase().includes(q) || (s.empid||'').toLowerCase().includes(q))) return false;
+    }
+    return true;
+  });
+}
+
+function render() {
+  const list = filtered();
+  const rows = document.getElementById('rows');
+  document.getElementById('empty').style.display = list.length ? 'none' : 'block';
+  document.getElementById('pager').style.display = list.length ? 'flex' : 'none';
+  rows.innerHTML = list.map(s => `
+    <tr>
+      <td><span class="id">${s.empid || '—'}</span></td>
+      <td>
+        <div class="row-flex">
+          <span class="avatar-sm" style="background:${avColor(s)}">${(s.first[0]||'')}${(s.last&&s.last[0])||''}</span>
+          <div class="cell-2"><span class="staff-name-link" onclick="location.href='StaffDetail.html'">${nameOf(s)}</span><span class="s">${s.role==='contractor'?'Contractor':'Employee'}</span></div>
+        </div>
+      </td>
+      <td>${s.position || '—'}</td>
+      <td><div class="cell-2"><span>${s.email || '—'}</span><span class="s mono">${s.phone || ''}</span></div></td>
+      <td>${dayPips(s)}</td>
+      <td><span style="color:var(--muted)">${s.reports ? nameOf(STAFF.find(x=>x.id===s.reports)) : '—'}</span></td>
+      <td><span class="badge ${s.active?'active':'draft'}"><span class="b-dot"></span>${s.active?'Active':'Inactive'}</span></td>
+      <td class="r">
+        <div class="row-actions" style="justify-content:flex-end">
+          <button class="link-btn" onclick="openEdit('${s.id}')">Edit</button>
+          ${s.active
+            ? `<button class="link-btn danger" onclick="deactivate('${s.id}')">Deactivate</button>`
+            : `<button class="link-btn ok" onclick="activate('${s.id}')">Activate</button>`}
+          <button class="link-btn danger" onclick="openDelete('${s.id}')">Delete</button>
+        </div>
+      </td>
+    </tr>`).join('');
+
+  document.getElementById('pg-range').textContent = list.length ? `1–${list.length}` : '0';
+  document.getElementById('pg-total').textContent = list.length;
+  document.getElementById('result-count').textContent = `${list.length} of ${STAFF.length} shown`;
+  const active = STAFF.filter(s=>s.active).length;
+  document.getElementById('sub-count').textContent = STAFF.length;
+  document.getElementById('sub-active').textContent = active;
+}
+
+/* ---- filters ---- */
+document.getElementById('search').addEventListener('input', e => { state.search = e.target.value; render(); });
+function segWire(id, key) {
+  document.querySelectorAll(`#${id} button`).forEach(b => b.addEventListener('click', () => {
+    document.querySelectorAll(`#${id} button`).forEach(x => x.classList.remove('on'));
+    b.classList.add('on');
+    state[key] = b.dataset[key];
+    render();
+  }));
+}
+segWire('role-seg', 'role');
+segWire('status-seg', 'status');
+
+/* ---- work schedule editor ---- */
+function buildWS(sched) {
+  document.getElementById('ws-editor').innerHTML = DAYS.map(([k,l]) => {
+    const on = sched && sched[k];
+    return `<div class="ws-row ${on?'':'off'}" data-day="${k}">
+      <label class="ws-day">
+        <button type="button" class="toggle ${on?'on':''}" onclick="toggleDay(this,'${k}')"></button>
+        <span class="dn">${l}</span>
+      </label>
+      <div class="ws-time"><input class="input mono" type="time" value="${on?on.start:'09:00'}" data-f="start" /></div>
+      <div class="ws-time"><input class="input mono" type="time" value="${on?on.end:'17:00'}" data-f="end" /></div>
+    </div>`;
+  }).join('');
+}
+function toggleDay(btn, day) {
+  const row = btn.closest('.ws-row');
+  const on = !btn.classList.contains('on');
+  btn.classList.toggle('on', on);
+  row.classList.toggle('off', !on);
+}
+function readWS() {
+  const out = {};
+  document.querySelectorAll('#ws-editor .ws-row').forEach(r => {
+    if (!r.classList.contains('off')) {
+      out[r.dataset.day] = { start: r.querySelector('[data-f=start]').value, end: r.querySelector('[data-f=end]').value };
+    }
+  });
+  return out;
+}
+
+/* ---- modal ---- */
+let editingId = null;
+function fillReports(excludeId) {
+  const sel = document.getElementById('f-reports');
+  sel.innerHTML = '<option value="">— None —</option>' + STAFF.filter(s => s.id !== excludeId && s.active)
+    .map(s => `<option value="${s.id}">${nameOf(s)}${s.position?` (${s.position})`:''}</option>`).join('');
+}
+function openAdd() {
+  editingId = null;
+  document.getElementById('modal-title').textContent = 'Add staff member';
+  document.getElementById('save-btn').textContent = 'Add staff';
+  ['f-first','f-last','f-email','f-phone','f-empid','f-position','f-rate','f-otrate','f-skills'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('f-role').value = 'employee';
+  document.getElementById('f-asuser').checked = false;
+  document.getElementById('user-fields').style.display = 'none';
+  document.getElementById('create-user-block').style.display = 'block';
+  document.getElementById('form-error').style.display = 'none';
+  fillReports(null);
+  buildWS(DEFAULT_SCHED);
+  document.getElementById('staff-modal').classList.add('open');
+}
+function openEdit(id) {
+  const s = STAFF.find(x => x.id === id);
+  editingId = id;
+  document.getElementById('modal-title').textContent = 'Edit staff member';
+  document.getElementById('save-btn').textContent = 'Save changes';
+  document.getElementById('f-first').value = s.first;
+  document.getElementById('f-last').value = s.last || '';
+  document.getElementById('f-email').value = s.email || '';
+  document.getElementById('f-phone').value = s.phone || '';
+  document.getElementById('f-empid').value = s.empid || '';
+  document.getElementById('f-position').value = s.position || '';
+  document.getElementById('f-role').value = s.role;
+  document.getElementById('f-rate').value = s.rate === '—' ? '' : s.rate;
+  document.getElementById('f-otrate').value = s.ot === '—' ? '' : s.ot;
+  document.getElementById('f-skills').value = (s.skills||[]).join(', ');
+  document.getElementById('create-user-block').style.display = 'none';
+  document.getElementById('form-error').style.display = 'none';
+  fillReports(id);
+  document.getElementById('f-reports').value = s.reports || '';
+  buildWS(Object.keys(s.sched||{}).length ? s.sched : DEFAULT_SCHED);
+  document.getElementById('staff-modal').classList.add('open');
+}
+function closeModal() { document.getElementById('staff-modal').classList.remove('open'); }
+function toggleUserFields() {
+  const on = document.getElementById('f-asuser').checked;
+  document.getElementById('user-fields').style.display = on ? 'block' : 'none';
+  document.getElementById('email-warn').style.display = (on && !document.getElementById('f-email').value.trim()) ? 'block' : 'none';
+}
+function saveStaff() {
+  const first = document.getElementById('f-first').value.trim();
+  if (!first) { const e = document.getElementById('form-error'); e.textContent = 'First name is required'; e.style.display = 'block'; return; }
+  closeModal();
+  toast(editingId ? 'Staff member updated' : 'Staff member added');
+}
+
+/* ---- delete ---- */
+let deleteId = null;
+function openDelete(id) {
+  const s = STAFF.find(x => x.id === id);
+  deleteId = id;
+  document.getElementById('del-name').textContent = nameOf(s);
+  const row = document.getElementById('del-user-row');
+  if (s.email && s.user) { row.style.display = 'flex'; document.getElementById('del-user-email').textContent = `Remove the login account for ${s.email}. They will no longer be able to sign in.`; }
+  else { row.style.display = 'none'; }
+  document.getElementById('delete-modal').classList.add('open');
+}
+function closeDelete() { document.getElementById('delete-modal').classList.remove('open'); }
+function confirmDelete() { closeDelete(); toast('Staff member deleted'); }
+
+function deactivate(id) { toast('Staff member deactivated'); }
+function activate(id) { toast('Staff member activated'); }
+
+/* ---- toast ---- */
+let toastTimer;
+function toast(msg) {
+  const t = document.getElementById('toast');
+  document.getElementById('toast-msg').textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
+}
+
+document.getElementById('add-btn').addEventListener('click', openAdd);
+document.getElementById('export-btn').addEventListener('click', () => toast('Exporting staff list…'));
+[document.getElementById('staff-modal'), document.getElementById('delete-modal')].forEach(m =>
+  m.addEventListener('click', e => { if (e.target === m) m.classList.remove('open'); }));
+document.getElementById('f-email')?.addEventListener('input', () => { if (document.getElementById('f-asuser').checked) toggleUserFields(); });
+
+render();
+</script>
+</body>
+</html>

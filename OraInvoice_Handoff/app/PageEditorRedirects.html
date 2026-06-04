@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Page editor redirects">
+        <div class="page-head">
+          <div><div class="eyebrow">Platform admin · Page editor</div><h1>Page redirects</h1><p class="sub">Forward old slugs to new pages or external URLs — evaluated before page resolution</p></div>
+          <div class="head-actions"><a class="btn btn-ghost btn-sm" href="PageEditorList.html">← Back to pages</a></div>
+        </div>
+
+        <div id="admin-nav" data-active="pageeditor"></div>
+
+        <section class="card" style="margin-bottom:var(--gap)">
+          <div class="card-head"><h2>Create redirect</h2></div>
+          <div class="card-body">
+            <div style="display:grid;grid-template-columns:1fr 1fr 160px auto;gap:14px;align-items:end">
+              <div class="field"><label>From slug</label><input class="input mono" placeholder="/old-pricing"><div class="hint">Must start with “/”.</div></div>
+              <div class="field"><label>To slug or URL</label><input class="input mono" placeholder="/new-path or https://…"><div class="hint">Internal path or absolute https:// URL.</div></div>
+              <div class="field"><label>Status</label><select class="select"><option>301 (permanent)</option><option>302 (temporary)</option></select></div>
+              <button class="btn btn-primary" onclick="toast('Redirect created.')">Create</button>
+            </div>
+          </div>
+        </section>
+
+        <div class="toolbar"><label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)"><input type="checkbox" class="checkbox">Show deleted</label></div>
+
+        <section class="card">
+          <div class="tbl-wrap"><table>
+            <thead><tr><th>From</th><th>To</th><th>Status</th><th>Created</th><th class="r">Actions</th></tr></thead>
+            <tbody id="rows"></tbody>
+          </table></div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="admin" data-title="Page redirects"></script>
+<script src="admin-nav.js"></script>
+<script>
+const R=[
+  {from:'/old-pricing',to:'/pricing',code:301,at:'12 Oct 2025, 9:14am'},
+  {from:'/mechanics',to:'/workshop',code:301,at:'28 Sep 2025, 2:40pm'},
+  {from:'/garage',to:'/workshop',code:301,at:'28 Sep 2025, 2:41pm'},
+  {from:'/promo',to:'https://blog.orainvoice.app/spring',code:302,at:'01 Nov 2025, 8:05am'},
+  {from:'/signup-trial',to:'/signup',code:301,at:'04 Aug 2025, 11:22am'},
+];
+function svg(d,sw){return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${sw||2}" stroke-linecap="round" stroke-linejoin="round"><path d="${d}"/></svg>`;}
+document.getElementById('rows').innerHTML=R.map(r=>`<tr>
+  <td><span class="id">${r.from}</span></td>
+  <td><span class="id" style="color:var(--text)">${r.to}</span></td>
+  <td>${r.code===301?'<span class="badge success">301</span>':'<span class="badge pending">302</span>'}</td>
+  <td><span class="mono" style="color:var(--muted)">${r.at}</span></td>
+  <td class="r"><button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="toast('Redirect deleted.')">Delete</button></td>
+</tr>`).join('');
+let tt;function toast(m){const t=document.getElementById('toast');t.innerHTML=svg('M20 6L9 17l-5-5',2.5)+'<span>'+m+'</span>';t.classList.add('show');clearTimeout(tt);tt=setTimeout(()=>t.classList.remove('show'),2400);}
+</script>
+<div class="toast ok" id="toast"></div>
+</body>
+</html>

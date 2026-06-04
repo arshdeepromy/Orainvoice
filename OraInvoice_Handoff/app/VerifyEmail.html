@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Verify email · OraInvoice</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<link rel="stylesheet" href="auth.css" />
+</head>
+<body>
+<div class="auth">
+  <div class="auth-brand">
+    <div class="logo-row">
+      <div class="logo-mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h7l5 5v11a2 2 0 01-2 2z"/></svg></div>
+      <div class="logo-name"><b>Ora</b><span class="dim">Invoice</span></div>
+    </div>
+    <div class="pitch">
+      <div class="eyebrow">You've been invited</div>
+      <h2>One step left to join Kerikeri Motors.</h2>
+      <p>Confirm your email and set a password to activate your account and start using OraInvoice.</p>
+      <div class="auth-feat">
+        <div class="f"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg></span>Invited by Arsh Randhawa as Salesperson</div>
+        <div class="f"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg></span>Kerikeri branch · BR-01</div>
+      </div>
+    </div>
+    <div class="foot"><span class="pin"></span>Secure invite · expires in 7 days</div>
+  </div>
+
+  <div class="auth-form-wrap">
+    <div class="auth-card">
+      <div id="state-set">
+        <div class="auth-head">
+          <div class="mobile-logo"><div class="logo-mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h7l5 5v11a2 2 0 01-2 2z"/></svg></div><div class="logo-name" style="color:var(--text)"><b>Ora</b><span style="color:var(--muted-2)">Invoice</span></div></div>
+          <h1>Activate your account</h1>
+          <p>Set a password for <b style="color:var(--text)">jess@kerikerimotors.co.nz</b></p>
+        </div>
+        <form class="auth-form" onsubmit="event.preventDefault();activate()">
+          <div class="field">
+            <label>Create password</label>
+            <div class="field-pw">
+              <input class="input" id="np" type="password" placeholder="At least 8 characters" oninput="strength(this.value)" />
+              <button type="button" class="peek" onclick="togglePw('np',this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg></button>
+            </div>
+            <div class="pw-meter" id="meter"><i></i><i></i><i></i><i></i></div>
+          </div>
+          <div class="field"><label>Confirm password</label><input class="input" type="password" placeholder="Re-enter password" /></div>
+          <button class="btn btn-primary btn-lg btn-block" type="submit">Verify &amp; activate</button>
+        </form>
+        <p class="auth-foot-link">Wrong account? <a href="Login.html">Sign in instead</a></p>
+      </div>
+
+      <div id="state-done" style="display:none;text-align:center">
+        <div style="width:60px;height:60px;border-radius:50%;background:var(--ok-soft);display:grid;place-items:center;margin:0 auto 20px"><svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="var(--ok)" stroke-width="2.2"><path d="M20 6L9 17l-5-5"/></svg></div>
+        <h1 style="font-size:23px;font-weight:700">You're all set</h1>
+        <p style="color:var(--muted);font-size:14px;margin:8px 0 0">Your email is verified and your account is active. Welcome to the team.</p>
+        <a class="btn btn-primary btn-lg btn-block" href="Dashboard.html" style="margin-top:24px">Go to dashboard</a>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function activate() { document.getElementById('state-set').style.display='none'; document.getElementById('state-done').style.display='block'; }
+function togglePw(id, btn) { const el = document.getElementById(id); el.type = el.type === 'password' ? 'text' : 'password'; btn.style.color = el.type === 'text' ? 'var(--accent)' : ''; }
+function strength(v) { let s = 0; if (v.length >= 8) s++; if (v.length >= 12) s++; if (/[0-9]/.test(v)) s++; if (/[^A-Za-z0-9]/.test(v)) s++; document.getElementById('meter').className = 'pw-meter s' + Math.min(4, s); }
+</script>
+</body>
+</html>

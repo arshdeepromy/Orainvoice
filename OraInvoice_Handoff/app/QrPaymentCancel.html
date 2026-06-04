@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<title>Payment cancelled</title>
+</head>
+<body style="background:var(--canvas)">
+<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px" data-screen-label="QR payment cancelled">
+  <div style="max-width:380px;width:100%;background:var(--card);border:1px solid var(--border);border-radius:20px;box-shadow:var(--shadow-card);padding:40px;text-align:center">
+    <div style="width:80px;height:80px;border-radius:50%;background:var(--warn-soft);display:grid;place-items:center;margin:0 auto 22px"><svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="var(--warn)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18M6 6l12 12"/></svg></div>
+    <h1 style="font-size:24px">Payment cancelled</h1>
+    <p style="font-size:15px;color:var(--muted);margin:10px 0 0">You can close this page or try again.</p>
+    <a class="btn btn-primary" href="InvoicePayment.html" style="margin-top:24px">Try again</a>
+    <p class="mono" style="font-size:11.5px;color:var(--muted-2);margin-top:18px">Invoice INV-2039</p>
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+.clock-grid{display:grid;grid-template-columns:1.1fr 1fr;gap:var(--gap);align-items:start}
+@media(max-width:920px){.clock-grid{grid-template-columns:1fr}}
+.clock-hero{background:var(--ink);border-radius:var(--r-card);padding:38px 32px;color:#fff;text-align:center;position:relative;overflow:hidden}
+.clock-hero::before{content:"";position:absolute;top:-40%;right:-10%;width:340px;height:340px;border-radius:50%;background:radial-gradient(circle,rgba(47,98,240,.35),transparent 70%)}
+.clock-hero .eb{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:rgba(255,255,255,.5);position:relative}
+.clock-time{font-family:var(--mono);font-size:64px;font-weight:600;letter-spacing:-0.02em;line-height:1;margin:10px 0 4px;position:relative}
+.clock-date{font-size:14px;color:rgba(255,255,255,.6);position:relative}
+.clock-status{display:inline-flex;align-items:center;gap:9px;margin-top:22px;padding:8px 16px;border-radius:30px;background:rgba(255,255,255,.08);font-size:13.5px;font-weight:500;position:relative}
+.clock-status .pulse{width:9px;height:9px;border-radius:50%;background:#34D399;box-shadow:0 0 0 0 rgba(52,211,153,.6);animation:pulse 2s infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(52,211,153,.5)}70%{box-shadow:0 0 0 9px rgba(52,211,153,0)}100%{box-shadow:0 0 0 0 rgba(52,211,153,0)}}
+.clock-btns{display:flex;gap:12px;margin-top:26px;position:relative}
+.clock-btns .btn{flex:1;height:54px;font-size:15px}
+.big-out{background:var(--danger);color:#fff;border:none}
+.big-out:hover{background:#a8341f}
+.big-break{background:rgba(255,255,255,.1);color:#fff;border:none}
+.big-break:hover{background:rgba(255,255,255,.18)}
+.tt-line{display:flex;align-items:center;gap:14px;padding:14px 0;border-bottom:1px solid var(--border)}
+.tt-line:last-child{border-bottom:none}
+.tt-line .tm{font-family:var(--mono);font-size:13px;font-weight:600;width:54px}
+.tt-line .ar{color:var(--muted-2);font-family:var(--mono);font-size:13px}
+.tt-line .lab{flex:1;font-size:13.5px}
+.tt-line .dur{font-family:var(--mono);font-size:12.5px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page" data-screen-label="Clock in / out">
+        <div class="page-head">
+          <div><div class="eyebrow">My account · Time</div><h1>Clock in / out</h1><p class="sub">Dave Mceachern · Kerikeri · BR-01</p></div>
+        </div>
+
+        <div class="clock-grid">
+          <div class="clock-hero">
+            <div class="eb">Tuesday shift</div>
+            <div class="clock-time" id="clk">08:42:17</div>
+            <div class="clock-date">2 June 2026</div>
+            <div class="clock-status"><span class="pulse"></span>Clocked in since <span class="mono">08:05</span> · 37 min ago</div>
+            <div class="clock-btns">
+              <button class="btn big-break"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8h1a4 4 0 010 8h-1M2 8h16v9a4 4 0 01-4 4H6a4 4 0 01-4-4V8zM6 1v3M10 1v3M14 1v3"/></svg>Start break</button>
+              <button class="btn big-out"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"/></svg>Clock out</button>
+            </div>
+          </div>
+
+          <div class="stack">
+            <section class="card">
+              <div class="card-head"><h2>Assign to job</h2><span class="id">optional</span></div>
+              <div class="card-body">
+                <div class="field"><select class="select"><option>JC-1187 — Northland Freight · brake service</option><option>JC-1186 — Coastal Builders · WOF</option><option>General workshop time</option></select></div>
+              </div>
+            </section>
+            <section class="card">
+              <div class="card-head"><h2>Today's timeline</h2><span class="amt" style="color:var(--text)">3h 42m</span></div>
+              <div class="card-body" style="padding-top:8px;padding-bottom:8px">
+                <div class="tt-line"><span class="tm">08:05</span><span class="ar">→</span><span class="lab">Clocked in <span class="id">JC-1187</span></span><span class="badge active"><span class="b-dot"></span>Active</span></div>
+                <div class="tt-line"><span class="tm">09:30</span><span class="ar">→</span><span class="lab">Switched to <span class="id">JC-1186</span></span><span class="dur">1h 25m</span></div>
+                <div class="tt-line"><span class="tm">—</span><span class="ar"></span><span class="lab" style="color:var(--muted)">Morning break not taken</span><span class="dur"></span></div>
+              </div>
+            </section>
+          </div>
+        </div>
+
+        <section class="card" style="margin-top:var(--gap)">
+          <div class="card-head"><h2>This week</h2><a class="link" href="MyPayslips.html">View payslips</a></div>
+          <div class="card-body">
+            <div class="kpis" style="margin-bottom:0">
+              <div class="kpi" style="box-shadow:none;border:none;padding:0"><div class="top"><span class="label">Hours logged</span></div><div class="val">28.5<span class="c">h</span></div></div>
+              <div class="kpi" style="box-shadow:none;border:none;padding:0"><div class="top"><span class="label">Overtime</span></div><div class="val">2.0<span class="c">h</span></div></div>
+              <div class="kpi" style="box-shadow:none;border:none;padding:0"><div class="top"><span class="label">Days worked</span></div><div class="val">4</div></div>
+              <div class="kpi" style="box-shadow:none;border:none;padding:0"><div class="top"><span class="label">Est. gross</span></div><div class="val"><span class="c">$</span>1,260</div></div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="time" data-title="Clock in / out"></script>
+<script>
+function tick(){const d=new Date();document.getElementById('clk').textContent=[d.getHours(),d.getMinutes(),d.getSeconds()].map(n=>String(n).padStart(2,'0')).join(':');}
+tick();setInterval(tick,1000);
+</script>
+</body>
+</html>

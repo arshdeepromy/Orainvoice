@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+</head>
+<body>
+<div class="app"><div id="sidebar"></div><div class="main"><div id="topbar"></div>
+<main class="content"><div class="page page-wide" data-screen-label="Aged Receivables">
+<div class="page-head"><div><div class="eyebrow">Reports</div><h1>Aged Receivables</h1><p class="sub">Outstanding by age · $12,840 total</p></div></div>
+<section class="card"><div class="tbl-wrap"><table><thead><tr><th class="">Customer</th><th class="r">Current</th><th class="r">1–30</th><th class="r">31–60</th><th class="r">60+</th><th class="r">Total</th></tr></thead><tbody><tr class="" ><td class=""><span class="cust">Bay Plumbing Ltd</span></td><td class="r"><span class="amt">$0</span></td><td class="r"><span class="amt">$0</span></td><td class="r"><span class="amt">$2,480</span></td><td class="r"><span class="amt">$0</span></td><td class="r"><span class="amt">$2,480</span></td></tr><tr class="" ><td class=""><span class="cust">Coastal Builders</span></td><td class="r"><span class="amt">$8,900</span></td><td class="r"><span class="amt">$0</span></td><td class="r"><span class="amt">$0</span></td><td class="r"><span class="amt">$0</span></td><td class="r"><span class="amt">$8,900</span></td></tr><tr class="" ><td class=""><span class="cust">Whangarei Auto</span></td><td class="r"><span class="amt">$0</span></td><td class="r"><span class="amt">$520</span></td><td class="r"><span class="amt">$0</span></td><td class="r"><span class="amt">$0</span></td><td class="r"><span class="amt">$520</span></td></tr><tr class="" ><td class=""><span class="cust">M. Taufa</span></td><td class="r"><span class="amt">$640</span></td><td class="r"><span class="amt">$0</span></td><td class="r"><span class="amt">$0</span></td><td class="r"><span class="amt">$0</span></td><td class="r"><span class="amt">$640</span></td></tr></tbody></table></div></section>
+</div></main></div></div>
+<script src="shell.js" data-active="reports" data-title="Aged Receivables"></script>
+<script>
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));t.classList.add('on');}));
+</script>
+</body></html>

@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+.li-edit { width: 100%; border-collapse: collapse; }
+.li-edit th { text-align: left; font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted-2); padding: 0 10px 10px; }
+.li-edit th.r { text-align: right; } .li-edit th:first-child { padding-left: 0; }
+.li-edit td { padding: 6px 10px 6px 0; vertical-align: middle; }
+.li-edit td:first-child { padding-left: 0; }
+.li-edit .cell-input { height: 40px; padding: 0 11px; border: 1px solid var(--border); border-radius: var(--r-ctl); background: var(--card); font-family: inherit; font-size: 13.5px; outline: none; width: 100%; transition: border-color .14s, box-shadow .14s; }
+.li-edit .cell-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.li-edit .cell-input.mono { font-family: var(--mono); text-align: right; }
+.li-edit .amt-cell { font-family: var(--mono); font-weight: 600; font-size: 13.5px; text-align: right; white-space: nowrap; }
+.li-edit .del { width: 32px; height: 32px; border-radius: 8px; border: none; background: transparent; color: var(--muted-2); display: grid; place-items: center; }
+.li-edit .del:hover { background: var(--danger-soft); color: var(--danger); }
+.li-edit .del svg { width: 16px; height: 16px; }
+.add-line { display: inline-flex; align-items: center; gap: 7px; margin-top: 12px; font-size: 13px; font-weight: 600; color: var(--accent); }
+.add-line svg { width: 16px; height: 16px; }
+.totbar { display: flex; justify-content: flex-end; }
+.totbar .box { width: 300px; }
+.totbar .tr { display: flex; justify-content: space-between; padding: 7px 0; font-size: 13.5px; }
+.totbar .tr .k { color: var(--muted); }
+.totbar .tr .v { font-family: var(--mono); font-weight: 500; }
+.totbar .tr.grand { border-top: 1.5px solid var(--border-strong); margin-top: 6px; padding-top: 12px; font-size: 18px; font-weight: 700; }
+.totbar .tr.grand .v { font-size: 18px; }
+.save-bar { position: sticky; bottom: 0; background: var(--card); border-top: 1px solid var(--border); padding: 14px var(--pad); display: flex; align-items: center; gap: 10px; margin: 0 calc(-1 * var(--pad)) calc(-1 * var(--pad)); }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page" data-screen-label="Invoice create">
+        <div class="crumbs"><a href="Invoices.html">Invoices</a><span class="sep">/</span><span style="color:var(--text)">New invoice</span></div>
+        <div class="page-head">
+          <div><div class="eyebrow">Draft · auto-saved 2s ago</div><h1>New invoice</h1></div>
+          <div class="head-actions">
+            <span class="badge draft"><span class="b-dot"></span>Draft</span>
+          </div>
+        </div>
+
+        <div class="detail-grid">
+          <div class="stack">
+            <!-- Customer + meta -->
+            <section class="card"><div class="card-body">
+              <div class="section-label">Customer & dates</div>
+              <div class="form-grid">
+                <div class="field full"><label>Customer</label>
+                  <select class="select"><option>Northland Freight Ltd</option><option>Bay Plumbing Ltd</option><option>Coastal Builders</option><option>+ Add new customer</option></select>
+                </div>
+                <div class="field"><label>Invoice number</label><input class="input mono" value="INV-2042" /></div>
+                <div class="field"><label>Linked job <span class="opt">(optional)</span></label><input class="input" placeholder="Search job…" value="JC-1188" /></div>
+                <div class="field"><label>Issue date</label><input class="input mono" value="12 / 11 / 2025" /></div>
+                <div class="field"><label>Due date</label><input class="input mono" value="26 / 11 / 2025" /></div>
+              </div>
+            </div></section>
+
+            <!-- Line items -->
+            <section class="card"><div class="card-body">
+              <div class="section-label">Line items</div>
+              <table class="li-edit">
+                <thead><tr><th style="width:42%">Description</th><th class="r" style="width:70px">Qty</th><th class="r" style="width:110px">Unit price</th><th class="r" style="width:80px">GST</th><th class="r" style="width:110px">Amount</th><th style="width:32px"></th></tr></thead>
+                <tbody id="lines"></tbody>
+              </table>
+              <a class="add-line" href="javascript:addLine()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>Add line item</a>
+            </div></section>
+
+            <!-- Notes -->
+            <section class="card"><div class="card-body">
+              <div class="section-label">Notes & terms</div>
+              <div class="field"><textarea class="textarea" placeholder="Payment terms, bank details, thank-you note…">Payment due within 14 days. Direct credit to 12-3145-0098712-00 (Kerikeri Motors), ref invoice number.</textarea></div>
+            </div></section>
+          </div>
+
+          <!-- Totals + settings -->
+          <div class="stack">
+            <section class="card"><div class="card-body">
+              <div class="section-label">Totals</div>
+              <div class="totbar"><div class="box" style="width:100%">
+                <div class="tr"><span class="k">Subtotal</span><span class="v" id="t-sub">$0.00</span></div>
+                <div class="tr"><span class="k">GST 15%</span><span class="v" id="t-gst">$0.00</span></div>
+                <div class="tr grand"><span class="k">Total</span><span class="v" id="t-grand">$0.00</span></div>
+              </div></div>
+            </div></section>
+            <section class="card"><div class="card-body">
+              <div class="section-label">Options</div>
+              <div style="display:flex;flex-direction:column;gap:14px">
+                <div style="display:flex;align-items:center;justify-content:space-between"><div><div style="font-size:13.5px;font-weight:500">Prices include GST</div></div><button class="toggle" onclick="this.classList.toggle('on')"></button></div>
+                <div style="display:flex;align-items:center;justify-content:space-between"><div><div style="font-size:13.5px;font-weight:500">Send copy to me</div></div><button class="toggle on" onclick="this.classList.toggle('on')"></button></div>
+                <div style="display:flex;align-items:center;justify-content:space-between"><div><div style="font-size:13.5px;font-weight:500">Attach PDF</div></div><button class="toggle on" onclick="this.classList.toggle('on')"></button></div>
+              </div>
+            </div></section>
+          </div>
+        </div>
+
+        <div class="save-bar">
+          <button class="btn btn-quiet">Cancel</button>
+          <div class="spacer" style="flex:1"></div>
+          <button class="btn btn-ghost">Save draft</button>
+          <button class="btn btn-primary"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>Save & send</button>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="invoices" data-title="New invoice"></script>
+<script>
+let LINES=[
+  {d:'Fleet service — Isuzu NPR',q:3,u:420,g:15},
+  {d:'Brake pads (front)',q:3,u:185,g:15},
+  {d:'Labour',q:8,u:95,g:15},
+];
+function money(n){return '$'+n.toLocaleString('en-NZ',{minimumFractionDigits:2,maximumFractionDigits:2});}
+function render(){
+  document.getElementById('lines').innerHTML=LINES.map((l,i)=>`<tr>
+    <td><input class="cell-input" value="${l.d}" oninput="LINES[${i}].d=this.value"/></td>
+    <td><input class="cell-input mono" value="${l.q}" oninput="LINES[${i}].q=parseFloat(this.value)||0;calc()"/></td>
+    <td><input class="cell-input mono" value="${l.u.toFixed(2)}" oninput="LINES[${i}].u=parseFloat(this.value)||0;calc()"/></td>
+    <td><input class="cell-input mono" value="${l.g}%" oninput="LINES[${i}].g=parseFloat(this.value)||0;calc()"/></td>
+    <td class="amt-cell" id="amt-${i}">${money(l.q*l.u)}</td>
+    <td><button class="del" onclick="LINES.splice(${i},1);render()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6"/></svg></button></td>
+  </tr>`).join('');
+  calc();
+}
+function calc(){
+  let sub=0,gst=0;
+  LINES.forEach((l,i)=>{const a=l.q*l.u;sub+=a;gst+=a*(l.g/100);const el=document.getElementById('amt-'+i);if(el)el.textContent=money(a);});
+  document.getElementById('t-sub').textContent=money(sub);
+  document.getElementById('t-gst').textContent=money(gst);
+  document.getElementById('t-grand').textContent=money(sub+gst);
+}
+function addLine(){LINES.push({d:'',q:1,u:0,g:15});render();}
+render();
+</script>
+</body>
+</html>

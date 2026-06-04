@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Catalogue">
+        <div class="page-head"><div><div class="eyebrow">Stock</div><h1>Catalogue</h1><p class="sub">Public-facing product catalogue</p></div><div class="head-actions"><button class="btn btn-primary btn-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>Publish</button></div></div>
+        <div class="toolbar"><div class="search-input" style="flex:1;max-width:320px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 21l-5-5m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg><input placeholder="Search…"></div><button class="filter-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 4h18M6 12h12M10 20h4"/></svg>Filters</button></div>
+<section class="card"><div class="tbl-wrap"><table><thead><tr><th class="">Product</th><th class="">SKU</th><th class="">Category</th><th class="r">Price</th><th class="">Visibility</th></tr></thead><tbody><tr class="" ><td class=""><span class="cust">Engine Oil 5W-30</span></td><td class=""><span class="id">OIL-530</span></td><td class=""><span class="mono" style="color:var(--muted)">Oils</span></td><td class="r"><span class="amt">$62.00</span></td><td class=""><span class="badge active"><span class="b-dot"></span>Public</span></td></tr><tr class="" ><td class=""><span class="cust">WOF check</span></td><td class=""><span class="id">SVC-WOF</span></td><td class=""><span class="mono" style="color:var(--muted)">Services</span></td><td class="r"><span class="amt">$70.00</span></td><td class=""><span class="badge active"><span class="b-dot"></span>Public</span></td></tr><tr class="" ><td class=""><span class="cust">Brake Pads Front</span></td><td class=""><span class="id">BRK-F22</span></td><td class=""><span class="mono" style="color:var(--muted)">Brakes</span></td><td class="r"><span class="amt">$185.00</span></td><td class=""><span class="badge neutral"><span class="b-dot"></span>Hidden</span></td></tr></tbody></table></div></section>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="" data-title="Catalogue" data-primary="Publish"></script>
+<script>
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));t.classList.add('on');}));
+</script>
+</body>
+</html>

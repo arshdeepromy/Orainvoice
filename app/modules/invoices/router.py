@@ -239,6 +239,10 @@ async def create_invoice_endpoint(
         _paid_total = result.get("total") or result.get("total_incl_gst") or _Decimal("0")
         _mark_paid_total = _Decimal(str(_paid_total))
         _paid_method = payload.payment_method or "cash"
+        # Capture the request origin for the background email so the paid-invoice
+        # receipt's invoice-view link uses the public domain the staff member is
+        # on, not settings.frontend_base_url (a LAN IP on some deploys) — ISSUE-170.
+        _paid_origin = request.headers.get("origin") or None
 
         async def _record_payment_and_email_bg():
             try:
@@ -261,7 +265,12 @@ async def create_invoice_endpoint(
                 async with async_session_factory() as email_db:
                     async with email_db.begin():
                         await _set_rls_org_id(email_db, str(org_uuid))
-                        await email_invoice(email_db, org_id=org_uuid, invoice_id=_paid_invoice_id)
+                        await email_invoice(
+                            email_db,
+                            org_id=org_uuid,
+                            invoice_id=_paid_invoice_id,
+                            base_url=_paid_origin,
+                        )
             except Exception as exc:
                 import logging
                 logging.getLogger(__name__).exception(

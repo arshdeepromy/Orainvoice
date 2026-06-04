@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Purchase orders">
+        <div class="page-head">
+          <div><div class="eyebrow">Stock</div><h1>Purchase orders</h1><p class="sub">5 open · $14,800 on order</p></div>
+          <div class="head-actions"><a class="btn btn-primary btn-sm" href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>New PO</a></div>
+        </div>
+
+        <div class="tabs"><div class="tab on">All <span class="n">86</span></div><div class="tab ">Draft <span class="n">2</span></div><div class="tab ">Sent <span class="n">5</span></div><div class="tab ">Received <span class="n">79</span></div></div>
+
+        <section class="card">
+          <div class="tbl-wrap"><table><thead><tr><th class="">PO</th><th class="">Supplier</th><th class="">Raised</th><th class="">Expected</th><th class="">Status</th><th class="r">Total</th></tr></thead><tbody><tr class="clickable" onclick="location.href='PODetail.html'"><td class=" "><span class="id">PO-441</span></td><td class=" "><span class="cust">Repco NZ</span></td><td class=" "><span class="mono" style="color:var(--muted)">06 Nov</span></td><td class=" "><span class="mono" style="color:var(--muted)">14 Nov</span></td><td class=" "><span class="badge sent"><span class="b-dot"></span>Sent</span></td><td class="r "><span class="amt">$4,820.00</span></td></tr><tr class="clickable" onclick="location.href='PODetail.html'"><td class=" "><span class="id">PO-440</span></td><td class=" "><span class="cust">BNT Automotive</span></td><td class=" "><span class="mono" style="color:var(--muted)">04 Nov</span></td><td class=" "><span class="mono" style="color:var(--muted)">12 Nov</span></td><td class=" "><span class="badge sent"><span class="b-dot"></span>Sent</span></td><td class="r "><span class="amt">$2,310.00</span></td></tr><tr class="clickable" onclick="location.href='PODetail.html'"><td class=" "><span class="id">PO-439</span></td><td class=" "><span class="cust">Castrol Direct</span></td><td class=" "><span class="mono" style="color:var(--muted)">02 Nov</span></td><td class=" "><span class="mono" style="color:var(--muted)">10 Nov</span></td><td class=" "><span class="badge accepted"><span class="b-dot"></span>Received</span></td><td class="r "><span class="amt">$3,640.00</span></td></tr><tr class="clickable" onclick="location.href='PODetail.html'"><td class=" "><span class="id">PO-438</span></td><td class=" "><span class="cust">Tyre Wholesale</span></td><td class=" ">—</td><td class=" "><span class="mono" style="color:var(--muted)">—</span></td><td class=" "><span class="badge draft"><span class="b-dot"></span>Draft</span></td><td class="r "><span class="amt">$3,030.00</span></td></tr></tbody></table></div>
+          <div class="pagination"><div class="info">Showing <span class="mono">1–4</span> of <span class="mono">86</span></div><div class="pg-btns"><button disabled>‹</button><button class="on">1</button><button>2</button><button>3</button><button>›</button></div></div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="po" data-title="Purchase orders" data-primary="New PO"></script>
+<script>
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));t.classList.add('on');}));
+</script>
+</body>
+</html>

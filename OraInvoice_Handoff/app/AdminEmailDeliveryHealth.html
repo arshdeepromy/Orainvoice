@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+  .bars { display: flex; align-items: flex-end; gap: 6px; height: 160px; }
+  .bars .b { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 6px; height: 100%; justify-content: flex-end; }
+  .bars .b .col { width: 100%; border-radius: 5px 5px 0 0; background: linear-gradient(var(--ok), color-mix(in oklab, var(--ok) 35%, white)); }
+  .bars .b .x { font-family: var(--mono); font-size: 9.5px; color: var(--muted-2); }
+  .funnel .fr { display: flex; align-items: center; gap: 14px; padding: 11px 0; }
+  .funnel .fr .lbl { width: 110px; font-size: 13px; color: var(--muted); }
+  .funnel .fr .track { flex: 1; height: 26px; border-radius: 7px; background: var(--canvas); overflow: hidden; }
+  .funnel .fr .track > i { display: block; height: 100%; border-radius: 7px; }
+  .funnel .fr .v { width: 90px; text-align: right; font-family: var(--mono); font-weight: 600; font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Admin · Email Health">
+        <div class="page-head">
+          <div><div class="eyebrow">Platform admin</div><h1>Email delivery health</h1><p class="sub">Deliverability, bounces &amp; reputation across all senders</p></div>
+          <div class="head-actions"><div class="seg"><button data-r>7D</button><button class="on">30D</button><button>90D</button></div></div>
+        </div>
+        <div id="admin-nav" data-active="delivery"></div>
+
+        <div class="kpis">
+          <div class="kpi"><div class="top"><span class="label">Delivered</span><span class="ico green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 12l2 2 4-4"/></svg></span></div><div class="val">99.2<span class="c">%</span></div><div class="delta up"><span>↗ 0.3pt</span><span class="since">improving</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">Open rate</span><span class="ico blue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg></span></div><div class="val">41<span class="c">%</span></div><div class="delta"><span class="since">invoices & receipts</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">Bounce rate</span><span class="ico amber"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></span></div><div class="val">0.6<span class="c">%</span></div><div class="delta"><span class="since">0.8% threshold</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">Spam complaints</span><span class="ico red"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4m0 4h.01M10.3 3.9l-8 14A2 2 0 004 21h16a2 2 0 001.7-3l-8-14a2 2 0 00-3.4 0z"/></svg></span></div><div class="val">0.02<span class="c">%</span></div><div class="delta"><span class="since">well below 0.1%</span></div></div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 380px;gap:var(--gap);align-items:start">
+          <section class="card"><div class="card-body">
+            <div class="section-label">Daily delivered volume</div>
+            <div class="bars" id="bars"></div>
+          </div></section>
+          <section class="card"><div class="card-body">
+            <div class="section-label">Delivery funnel (30d)</div>
+            <div class="funnel">
+              <div class="fr"><span class="lbl">Sent</span><span class="track"><i style="width:100%;background:var(--accent)"></i></span><span class="v">184,210</span></div>
+              <div class="fr"><span class="lbl">Delivered</span><span class="track"><i style="width:99%;background:var(--ok)"></i></span><span class="v">182,740</span></div>
+              <div class="fr"><span class="lbl">Opened</span><span class="track"><i style="width:41%;background:var(--accent)"></i></span><span class="v">74,923</span></div>
+              <div class="fr"><span class="lbl">Bounced</span><span class="track"><i style="width:6%;background:var(--warn)"></i></span><span class="v">1,105</span></div>
+              <div class="fr"><span class="lbl">Complaints</span><span class="track"><i style="width:2%;background:var(--danger)"></i></span><span class="v">37</span></div>
+            </div>
+          </div></section>
+        </div>
+
+        <section class="card" style="margin-top:var(--gap)">
+          <div class="card-head"><h2>Suppression list</h2><a class="link" href="#">Manage</a></div>
+          <div class="tbl-wrap"><table>
+            <thead><tr><th>Email</th><th>Reason</th><th>Org</th><th>Date</th><th class="r"></th></tr></thead>
+            <tbody>
+              <tr><td class="mono">accounts@deadmail.co.nz</td><td><span class="badge overdue"><span class="b-dot"></span>Hard bounce</span></td><td>FixIt NZ Ltd</td><td class="mono" style="color:var(--muted)">28 Oct</td><td class="r"><button class="btn btn-ghost btn-sm">Remove</button></td></tr>
+              <tr><td class="mono">old@northpaint.co.nz</td><td><span class="badge warn"><span class="b-dot"></span>Complaint</span></td><td>North Panel & Paint</td><td class="mono" style="color:var(--muted)">24 Oct</td><td class="r"><button class="btn btn-ghost btn-sm">Remove</button></td></tr>
+              <tr><td class="mono">noreply@invalid</td><td><span class="badge overdue"><span class="b-dot"></span>Invalid</span></td><td>Apex Tyres</td><td class="mono" style="color:var(--muted)">19 Oct</td><td class="r"><button class="btn btn-ghost btn-sm">Remove</button></td></tr>
+            </tbody>
+          </table></div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="admin" data-title="Admin · Email Health"></script>
+<script src="admin-nav.js"></script>
+<script>
+const V=[60,72,68,80,75,84,90,82,88,94,86,92,98,90,96,88,93,99,91,97,85,89,95,100,92,96,90,94,98,93];
+document.getElementById('bars').innerHTML = V.map((v,i)=>`<div class="b"><div class="col" style="height:${v}%"></div>${i%5===0?`<div class="x">${i+1}</div>`:'<div class="x"></div>'}</div>`).join('');
+document.querySelectorAll('.seg button').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('.seg button').forEach(x=>x.classList.remove('on'));b.classList.add('on');}));
+</script>
+</body>
+</html>

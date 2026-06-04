@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+  .matrix th.ch, .matrix td.ch { text-align: center; width: 90px; }
+  .matrix .evt { font-weight: 600; } .matrix .evt .k { font-family: var(--mono); font-size: 11px; color: var(--muted-2); font-weight: 400; }
+  .ck { width: 22px; height: 22px; border-radius: 6px; display: inline-grid; place-items: center; cursor: pointer; }
+  .ck.on { background: var(--accent-soft); color: var(--accent); } .ck.off { background: var(--canvas); color: var(--muted-2); }
+  .ck svg { width: 13px; height: 13px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Admin · Notifications">
+        <div class="page-head">
+          <div><div class="eyebrow">Platform admin</div><h1>Notification manager</h1><p class="sub">Default channels &amp; templates for system events</p></div>
+          <div class="head-actions"><button class="btn btn-ghost btn-sm">Preview templates</button><button class="btn btn-primary btn-sm">Save defaults</button></div>
+        </div>
+        <div id="admin-nav" data-active="notif"></div>
+
+        <section class="card">
+          <div class="card-head"><h2>Event → channel matrix</h2><span class="chip" style="background:transparent;border:none;color:var(--muted)">Tenant admins can override</span></div>
+          <div class="tbl-wrap"><table class="matrix">
+            <thead><tr><th>Event</th><th class="ch">Email</th><th class="ch">SMS</th><th class="ch">In-app</th><th class="ch">Push</th></tr></thead>
+            <tbody id="rows"></tbody>
+          </table></div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="admin" data-title="Admin · Notifications"></script>
+<script src="admin-nav.js"></script>
+<script>
+const EV = [
+  { nm:'Invoice sent', k:'invoice.sent', ch:[1,0,1,0] },
+  { nm:'Invoice paid', k:'invoice.paid', ch:[1,0,1,1] },
+  { nm:'Invoice overdue', k:'invoice.overdue', ch:[1,1,1,0] },
+  { nm:'Quote accepted', k:'quote.accepted', ch:[1,0,1,1] },
+  { nm:'Booking confirmed', k:'booking.confirmed', ch:[1,1,1,0] },
+  { nm:'Booking reminder', k:'booking.reminder', ch:[0,1,1,1] },
+  { nm:'Job ready for pickup', k:'job.ready', ch:[1,1,1,1] },
+  { nm:'Payment failed', k:'payment.failed', ch:[1,1,1,0] },
+  { nm:'New user invited', k:'user.invited', ch:[1,0,0,0] },
+  { nm:'Low stock alert', k:'inventory.low', ch:[1,0,1,0] },
+];
+const tick = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg>';
+const dash = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14"/></svg>';
+document.getElementById('rows').innerHTML = EV.map(e=>`
+  <tr>
+    <td><div class="evt">${e.nm} <span class="k">${e.k}</span></div></td>
+    ${e.ch.map(c=>`<td class="ch"><span class="ck ${c?'on':'off'}" onclick="this.classList.toggle('on');this.classList.toggle('off');this.innerHTML=this.classList.contains('on')?\`${tick}\`:\`${dash}\`">${c?tick:dash}</span></td>`).join('')}
+  </tr>`).join('');
+</script>
+</body>
+</html>

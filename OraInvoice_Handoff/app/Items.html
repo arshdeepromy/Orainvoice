@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Items & services">
+        <div class="page-head">
+          <div><div class="eyebrow">Stock</div><h1>Items & services</h1><p class="sub">480 items · 12 services</p></div>
+          <div class="head-actions"><a class="btn btn-primary btn-sm" href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>New item</a></div>
+        </div>
+
+        <div class="tabs"><div class="tab on">All <span class="n">492</span></div><div class="tab ">Products <span class="n">480</span></div><div class="tab ">Services <span class="n">12</span></div></div>
+        <div class="toolbar">
+          <div class="search-input" style="flex:1;max-width:320px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 21l-5-5m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg><input placeholder="Search name or SKU…" /></div>
+          <button class="filter-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 4h18M6 12h12M10 20h4"/></svg>Filters</button>
+          <div class="spacer"></div>
+          
+        </div>
+        <section class="card">
+          <div class="tbl-wrap"><table><thead><tr><th class="">Item</th><th class="">SKU</th><th class="">Category</th><th class="r">Cost</th><th class="r">Sell</th><th class="r">Margin</th></tr></thead><tbody><tr class="" ><td class=" "><span class="cust">Engine Oil 5W-30</span></td><td class=" "><span class="id">OIL-530</span></td><td class=" "><span class="mono" style="color:var(--muted)">Oils & Fluids</span></td><td class="r "><span class="amt" style="color:var(--muted)">$38.00</span></td><td class="r "><span class="amt">$62.00</span></td><td class="r "><span class="amt" style="color:var(--ok)">39%</span></td></tr><tr class="" ><td class=" "><span class="cust">Oil Filter — Toyota</span></td><td class=" "><span class="id">FLT-TY01</span></td><td class=" "><span class="mono" style="color:var(--muted)">Filters</span></td><td class="r "><span class="amt" style="color:var(--muted)">$9.20</span></td><td class="r "><span class="amt">$18.50</span></td><td class="r "><span class="amt" style="color:var(--ok)">50%</span></td></tr><tr class="" ><td class=" "><span class="cust">Brake Pads Front</span></td><td class=" "><span class="id">BRK-F22</span></td><td class=" "><span class="mono" style="color:var(--muted)">Brakes</span></td><td class="r "><span class="amt" style="color:var(--muted)">$96.00</span></td><td class="r "><span class="amt">$185.00</span></td><td class="r "><span class="amt" style="color:var(--ok)">48%</span></td></tr><tr class="" ><td class=" "><span class="cust">Tyre 205/55 R16</span></td><td class=" "><span class="id">TYR-2055</span></td><td class=" "><span class="mono" style="color:var(--muted)">Tyres</span></td><td class="r "><span class="amt" style="color:var(--muted)">$92.00</span></td><td class="r "><span class="amt">$149.00</span></td><td class="r "><span class="amt" style="color:var(--ok)">38%</span></td></tr><tr class="" ><td class=" "><span class="cust">Labour — workshop</span></td><td class=" "><span class="id">LAB-HR</span></td><td class=" "><span class="mono" style="color:var(--muted)">Services</span></td><td class="r "><span class="amt" style="color:var(--muted)">—</span></td><td class="r "><span class="amt">$95.00/hr</span></td><td class="r "><span class="amt" style="color:var(--muted-2)">—</span></td></tr></tbody></table></div>
+          <div class="pagination"><div class="info">Showing <span class="mono">1–5</span> of <span class="mono">492</span></div><div class="pg-btns"><button disabled>‹</button><button class="on">1</button><button>2</button><button>3</button><button>›</button></div></div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="items" data-title="Items & services" data-primary="New item"></script>
+<script>
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));t.classList.add('on');}));
+</script>
+</body>
+</html>

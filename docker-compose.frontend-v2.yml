@@ -1,0 +1,73 @@
+# =============================================================================
+# docker-compose.frontend-v2.yml  —  Frontend Redesign (frontend-v2) — Task 75
+# -----------------------------------------------------------------------------
+# ADDITIVE side-car compose file for the in-progress redesigned SPA that lives
+# in ./frontend-v2 and is served under the /new/ path prefix.
+#
+# This file is intentionally SELF-CONTAINED and NON-INTRUSIVE:
+#   * It does NOT redefine or override any existing service (postgres, redis,
+#     app, frontend, mobile, nginx) from docker-compose.yml / .dev.yml.
+#   * It adds ONE new service, `frontend-v2`, running the Vite dev server on
+#     port 5174 with the project source bind-mounted for hot-reload.
+#   * The original `frontend/` build pipeline, the existing nginx gateway, and
+#     all production services are completely untouched.
+#
+# USAGE (side-by-side with the running dev stack — does not disturb it):
+#
+#   # Start ONLY the redesign dev server (standalone, proxies /api to the
+#   # backend via the API_PROXY env var below):
+#   docker compose -f docker-compose.frontend-v2.yml up -d frontend-v2
+#
+#   # Or layer it on top of the normal dev stack so it shares the same network
+#   # (lets nginx reach it as http://frontend-v2:5174 — see Task 76 snippet):
+#   docker compose \
+#     -f docker-compose.yml \
+#     -f docker-compose.dev.yml \
+#     -f docker-compose.frontend-v2.yml \
+#     up -d
+#
+# The Vite config (frontend-v2/vite.config.ts) already sets `base: '/new/'`,
+# binds host 0.0.0.0, uses strictPort 5174, allowedHosts true, polling watch,
+# and honours HMR_HOST / HMR_CLIENT_PORT / HMR_PROTOCOL env vars so the HMR
+# websocket works behind the nginx /new/ reverse proxy (Task 76).
+# =============================================================================
+
+services:
+  # --- Redesigned SPA (frontend-v2) — Vite dev server on :5174 -------------
+  frontend-v2:
+    image: node:22-alpine
+    working_dir: /app
+    restart: unless-stopped
+    # Install deps on first boot (node_modules lives in an anonymous volume so
+    # it is NOT clobbered by the source bind-mount) then start the Vite dev
+    # server. `npm ci` falls back to `npm install` when there is no lockfile.
+    command: >
+      sh -c "if [ ! -d node_modules/vite ]; then (npm ci || npm install); fi &&
+             npm run dev -- --host 0.0.0.0 --port 5174"
+    environment:
+      # Standalone dev: proxy /api straight to the backend container. When
+      # layered with the main stack the `app` service resolves on the shared
+      # network; for fully standalone use, override with your host backend.
+      - API_PROXY=${FRONTEND_V2_API_PROXY:-http://app:8000}
+      # HMR over the nginx /new/ reverse proxy: point the browser's websocket
+      # at the gateway host/port. Defaults keep `npm run dev`-style direct
+      # access on :5174 working when these are unset.
+      - HMR_HOST=${FRONTEND_V2_HMR_HOST:-}
+      - HMR_CLIENT_PORT=${FRONTEND_V2_HMR_CLIENT_PORT:-}
+      - HMR_PROTOCOL=${FRONTEND_V2_HMR_PROTOCOL:-}
+      - CHOKIDAR_USEPOLLING=true
+    volumes:
+      # Bind-mount the project source for hot-reload. node_modules is masked by
+      # a named volume so the container's install survives host overlays and a
+      # host-side node_modules (if any) never leaks in.
+      - ./frontend-v2:/app:delegated
+      - frontend_v2_node_modules:/app/node_modules
+    ports:
+      # Exposed for direct access at http://localhost:5174/new/ during
+      # standalone development. Behind the gateway, nginx proxies /new/ here.
+      - "${FRONTEND_V2_PORT:-5174}:5174"
+
+volumes:
+  # Container-owned node_modules — keeps the bind-mounted source clean and
+  # avoids host/container arch mismatches for native deps.
+  frontend_v2_node_modules:

@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+.board { display:flex; gap:14px; overflow-x:auto; padding-bottom:8px; }
+.col { min-width:248px; flex:1 0 248px; background:var(--canvas); border:1px solid var(--border); border-radius:var(--r-card); padding:12px; }
+.col.drop { outline:2px dashed var(--accent); outline-offset:-2px; }
+.col-head { display:flex; align-items:center; gap:8px; font-size:12.5px; font-weight:600; margin-bottom:11px; padding:0 2px; }
+.col-head .ct { font-family:var(--mono); font-size:11px; color:var(--muted-2); margin-left:auto; }
+.col-head .sw { width:9px; height:9px; border-radius:50%; }
+.jcard { display:block; background:var(--card); border:1px solid var(--border); border-left:3px solid var(--border-strong); border-radius:var(--r-ctl); padding:11px 12px; margin-bottom:9px; cursor:grab; box-shadow:var(--shadow-card); }
+.jcard:active { cursor:grabbing; }
+.jcard .jn { font-family:var(--mono); font-size:11px; color:var(--muted); }
+.jcard .jt { font-size:13px; font-weight:600; margin:3px 0 5px; }
+.jcard .jm { font-size:11.5px; color:var(--muted); }
+.jcard .pri { display:inline-block; font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:.05em; color:var(--danger); margin-top:6px; }
+.col-empty { text-align:center; color:var(--muted-2); font-size:12px; padding:16px 0; }
+.hier-grp { border:1px solid var(--border); border-radius:var(--r-card); overflow:hidden; margin-bottom:14px; background:var(--card); }
+.hier-head { display:flex; align-items:center; gap:10px; width:100%; text-align:left; padding:14px 18px; background:var(--card); border:none; font-size:14px; font-weight:600; cursor:pointer; }
+.hier-head .ch { transition:transform .16s; color:var(--muted); }
+.hier-head.open .ch { transform:rotate(90deg); }
+.hier-body { display:none; } .hier-grp.open .hier-body { display:block; }
+.view { display:none; } .view.on { display:block; }
+.conflict td { background:var(--danger-soft) !important; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Job board">
+        <div class="crumbs"><a href="Jobs.html">Jobs</a><span class="sep">/</span><span style="color:var(--text)">Board</span></div>
+        <div class="page-head">
+          <div><div class="eyebrow">Work</div><h1>Job board</h1><p class="sub">Drag cards between columns to update status</p></div>
+          <div class="head-actions">
+            <div class="seg" id="viewseg"><button class="on" data-v="kanban">Kanban</button><button data-v="hier">Projects</button><button data-v="time">Resource timeline</button></div>
+            <a class="btn btn-primary btn-sm" href="JobDetail.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>New job</a>
+          </div>
+        </div>
+
+        <div class="view on" id="v-kanban"><div class="board" id="board"></div></div>
+
+        <div class="view" id="v-hier"></div>
+
+        <div class="view" id="v-time">
+          <section class="card"><div class="tbl-wrap"><table>
+            <thead><tr><th>Staff</th><th>Job</th><th>Start</th><th>End</th><th>Conflict</th></tr></thead>
+            <tbody id="timerows"></tbody>
+          </table></div></section>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+<div class="toast ok" id="toast"></div>
+<script src="shell.js" data-active="" data-title="Job board"></script>
+<script>
+const COLS=[
+  {k:'draft',l:'Draft',c:'#97A0AE'},{k:'quoted',l:'Quoted',c:'#2F62F0'},{k:'accepted',l:'Accepted',c:'#06B6D4'},
+  {k:'in_progress',l:'In progress',c:'#B5740F'},{k:'completed',l:'Completed',c:'#1F8A5B'},{k:'invoiced',l:'Invoiced',c:'#6D5AE6'},{k:'cancelled',l:'Cancelled',c:'#C8412F'}
+];
+let JOBS=[
+  {id:'1',n:'JOB-1142',t:'Fleet brake overhaul',proj:'Fleet overhaul',pri:'high',s:'in_progress',staff:'Dave M.',start:'2025-11-04',end:'2025-11-06'},
+  {id:'2',n:'JOB-1141',t:'WOF + service — Corolla',proj:'Unassigned',pri:'normal',s:'completed',staff:'Sam T.',start:'2025-11-03',end:'2025-11-03'},
+  {id:'3',n:'JOB-1140',t:'Cambelt replacement',proj:'Unassigned',pri:'normal',s:'quoted',staff:'Dave M.',start:'2025-11-05',end:'2025-11-05'},
+  {id:'4',n:'JOB-1139',t:'Coolant leak diagnostic',proj:'Fleet overhaul',pri:'high',s:'accepted',staff:'Sam T.',start:'2025-11-05',end:'2025-11-05'},
+  {id:'5',n:'JOB-1138',t:'Tyre fitment ×4',proj:'Unassigned',pri:'normal',s:'draft',staff:'',start:'',end:''},
+  {id:'6',n:'JOB-1137',t:'Annual fleet service',proj:'Fleet overhaul',pri:'normal',s:'invoiced',staff:'Dave M.',start:'2025-10-28',end:'2025-10-30'},
+  {id:'7',n:'JOB-1136',t:'Clutch replacement',proj:'Unassigned',pri:'high',s:'in_progress',staff:'Dave M.',start:'2025-11-04',end:'2025-11-05'},
+];
+function svg(d,sw){return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${sw||2}" stroke-linecap="round" stroke-linejoin="round"><path d="${d}"/></svg>`;}
+let dragId=null;
+function renderBoard(){
+  document.getElementById('board').innerHTML=COLS.map(col=>{
+    const items=JOBS.filter(j=>j.s===col.k);
+    return `<div class="col" data-col="${col.k}">
+      <div class="col-head"><span class="sw" style="background:${col.c}"></span><span style="color:${col.c}">${col.l}</span><span class="ct">${items.length}</span></div>
+      ${items.map(j=>`<div class="jcard" onclick="if(!dragId)location.href='JobDetail.html'" draggable="true" data-id="${j.id}" style="border-left-color:${col.c}">
+        <div class="jn">${j.n}</div><div class="jt">${j.t}</div>
+        <div class="jm">${j.proj}${j.staff?' · '+j.staff:''}</div>
+        ${j.pri==='high'?'<span class="pri">High priority</span>':''}
+      </div>`).join('')||'<div class="col-empty">No jobs</div>'}
+    </div>`;
+  }).join('');
+  bindDnD();
+}
+function bindDnD(){
+  document.querySelectorAll('.jcard').forEach(c=>{
+    c.addEventListener('dragstart',e=>{dragId=c.dataset.id;e.dataTransfer.effectAllowed='move';});
+    c.addEventListener('dragend',()=>{setTimeout(()=>dragId=null,50);});
+  });
+  document.querySelectorAll('.col').forEach(col=>{
+    col.addEventListener('dragover',e=>{e.preventDefault();col.classList.add('drop');});
+    col.addEventListener('dragleave',()=>col.classList.remove('drop'));
+    col.addEventListener('drop',e=>{e.preventDefault();col.classList.remove('drop');
+      const j=JOBS.find(x=>x.id===dragId); if(j){const old=j.s;j.s=col.dataset.col;renderBoard();if(old!==j.s)toast(j.n+' → '+COLS.find(c=>c.k===j.s).l);}dragId=null;});
+  });
+}
+function renderHier(){
+  const groups={};
+  JOBS.forEach(j=>{(groups[j.proj]=groups[j.proj]||[]).push(j);});
+  document.getElementById('v-hier').innerHTML=Object.entries(groups).map(([p,js],i)=>`
+    <div class="hier-grp ${i===0?'open':''}">
+      <button class="hier-head ${i===0?'open':''}" onclick="this.classList.toggle('open');this.closest('.hier-grp').classList.toggle('open')">
+        <span class="ch" style="display:inline-flex">${svg('M9 5l7 7-7 7',2.2)}</span>${p}<span style="color:var(--muted-2);font-weight:400;font-size:13px">${js.length} jobs</span>
+      </button>
+      <div class="hier-body"><div class="tbl-wrap"><table>
+        <thead><tr><th>Job</th><th>Title</th><th>Status</th><th>Priority</th></tr></thead>
+        <tbody>${js.map(j=>`<tr class="clickable" onclick="location.href='JobDetail.html'"><td><span class="id">${j.n}</span></td><td><span class="cust">${j.t}</span></td><td><span class="badge ${badge(j.s)}"><span class="b-dot"></span>${COLS.find(c=>c.k===j.s).l}</span></td><td style="text-transform:capitalize">${j.pri}</td></tr>`).join('')}</tbody>
+      </table></div></div>
+    </div>`).join('');
+}
+function badge(s){return {draft:'draft',quoted:'sent',accepted:'info',in_progress:'inprogress',completed:'completed',invoiced:'neutral',cancelled:'overdue'}[s]||'neutral';}
+function renderTime(){
+  const rows=JOBS.filter(j=>j.staff&&j.start);
+  const byStaff={};rows.forEach(j=>{(byStaff[j.staff]=byStaff[j.staff]||[]).push(j);});
+  let html='';
+  Object.entries(byStaff).forEach(([staff,js])=>{
+    js.sort((a,b)=>a.start.localeCompare(b.start));
+    js.forEach((j,i)=>{
+      const conflict=js.some((o,k)=>k!==i && j.start<=o.end && o.start<=j.end);
+      html+=`<tr class="${conflict?'conflict':''}">${i===0?`<td rowspan="${js.length}" style="font-weight:600;vertical-align:top">${staff}</td>`:''}<td>${j.n}: ${j.t}</td><td class="mono" style="color:var(--muted)">${j.start}</td><td class="mono" style="color:var(--muted)">${j.end}</td><td>${conflict?'<span style="color:var(--danger);font-weight:600;font-size:12px">⚠ Conflict</span>':'—'}</td></tr>`;
+    });
+  });
+  document.getElementById('timerows').innerHTML=html;
+}
+document.querySelectorAll('#viewseg button').forEach(b=>b.addEventListener('click',()=>{
+  document.querySelectorAll('#viewseg button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
+  document.querySelectorAll('.view').forEach(v=>v.classList.remove('on'));
+  document.getElementById('v-'+b.dataset.v).classList.add('on');
+}));
+let tt;function toast(m){const t=document.getElementById('toast');t.innerHTML=svg('M20 6L9 17l-5-5',2.5)+'<span>'+m+'</span>';t.classList.add('show');clearTimeout(tt);tt=setTimeout(()=>t.classList.remove('show'),2200);}
+renderBoard();renderHier();renderTime();
+</script>
+</body>
+</html>

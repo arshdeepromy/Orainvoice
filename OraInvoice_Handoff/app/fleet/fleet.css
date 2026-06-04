@@ -1,0 +1,57 @@
+/* ============================================================
+   OraInvoice — Fleet Portal (B2B customer SPA)
+   Standalone chrome. Reuses ds.css tokens + components, adds a
+   light portal sidebar and an auth/kiosk surface.
+   Load AFTER ../ds.css.
+   ============================================================ */
+
+/* ---- Light portal sidebar (override ds.css ink sidebar) ---- */
+.portal .sidebar { background:#fff; border-right:1px solid var(--border); }
+.portal .sb-head { border-bottom:1px solid var(--border); }
+.portal .logo-name, .portal .logo-name b { color:var(--text); }
+.portal .logo-name .dim { color:var(--muted); }
+.portal .logo-mark { background:var(--accent); }
+.portal .nav-label { color:var(--muted-2); }
+.portal .nav-item { color:#4A5363; }
+.portal .nav-item svg { opacity:.7; }
+.portal .nav-item:hover { background:var(--canvas); color:var(--text); }
+.portal .nav-item.active { background:var(--accent-soft); color:var(--accent); }
+.portal .nav-item.active svg { color:var(--accent); opacity:1; }
+.portal .nav-item.active::before { background:var(--accent); }
+.portal .nav-item .count { background:var(--canvas); color:var(--muted); }
+.portal .sb-foot { border-top:1px solid var(--border); }
+.portal .acct { padding:8px 10px; }
+.portal .acct .n { font-size:13px; font-weight:600; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.portal .acct .e { font-size:11.5px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.portal .signout { display:flex; align-items:center; gap:9px; width:100%; margin-top:8px; padding:9px 10px; border:none; background:none; border-radius:var(--r-ctl); color:var(--danger); font-size:13px; font-weight:500; }
+.portal .signout:hover { background:var(--danger-soft); }
+.portal .signout svg { width:16px; height:16px; }
+
+/* portal topbar keeps ds .topbar; add a context title */
+.portal .tb-title { font-size:15px; font-weight:600; }
+.portal .tb-acct { display:inline-flex; align-items:center; gap:8px; height:36px; padding:0 12px; border:1px solid var(--border); border-radius:20px; font-size:12.5px; font-weight:500; }
+.portal .tb-acct .pin { width:7px; height:7px; border-radius:50%; background:var(--accent); }
+
+/* expiry badges */
+.exp { display:inline-flex; align-items:center; gap:6px; font-size:11.5px; font-weight:500; padding:3px 10px; border-radius:20px; white-space:nowrap; }
+.exp .d { width:6px; height:6px; border-radius:50%; }
+.exp.green { background:var(--ok-soft); color:var(--ok); } .exp.green .d{ background:var(--ok); }
+.exp.amber { background:var(--warn-soft); color:var(--warn); } .exp.amber .d{ background:var(--warn); }
+.exp.red { background:var(--danger-soft); color:var(--danger); } .exp.red .d{ background:var(--danger); }
+.exp.grey { background:#EEF0F4; color:var(--muted); } .exp.grey .d{ background:var(--muted-2); }
+
+/* ---- Auth / standalone surface ---- */
+.fauth { min-height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center; background:var(--canvas); padding:24px; }
+.fauth-card { width:100%; max-width:420px; background:var(--card); border:1px solid var(--border); border-radius:var(--r-card); box-shadow:var(--shadow-card); padding:32px; }
+.fauth-brand { display:flex; align-items:center; gap:10px; margin-bottom:22px; }
+.fauth-brand .m { width:34px; height:34px; border-radius:9px; background:var(--accent); display:grid; place-items:center; color:#fff; }
+.fauth-brand .t { font-size:16px; font-weight:700; } .fauth-brand .t span { font-weight:500; color:var(--muted); }
+.fauth h1 { font-size:20px; }
+.fauth .sub { font-size:13.5px; color:var(--muted); margin:6px 0 22px; }
+.fauth .field { margin-bottom:16px; }
+.fauth-foot { margin-top:22px; text-align:center; font-size:12.5px; color:var(--muted-2); }
+.otp { display:flex; gap:9px; justify-content:center; }
+.otp input { width:46px; height:54px; text-align:center; font-family:var(--mono); font-size:20px; border:1px solid var(--border); border-radius:var(--r-ctl); outline:none; }
+.otp input:focus { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
+
+.btn-block { width:100%; }

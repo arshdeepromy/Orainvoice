@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Banking">
+        <div class="page-head">
+          <div><div class="eyebrow">Money</div><h1>Banking</h1><p class="sub">ASB Business · 2 accounts · 14 to reconcile</p></div>
+          <div class="head-actions"><button class="btn btn-ghost btn-sm">Import statement</button><button class="btn btn-primary btn-sm">Reconcile</button></div>
+        </div>
+        <div class="kpis"><div class="kpi"><div class="top"><span class="label">Cleared balance</span></div><div class="val" ><span class="c">$</span>62,140</div></div><div class="kpi"><div class="top"><span class="label">To reconcile</span></div><div class="val" style="color:var(--warn)">14</div></div><div class="kpi"><div class="top"><span class="label">Money in (30d)</span></div><div class="val" ><span class="c">$</span>48,250</div></div><div class="kpi"><div class="top"><span class="label">Money out (30d)</span></div><div class="val" ><span class="c">$</span>31,180</div></div></div>
+
+
+        <section class="card">
+          <div class="tbl-wrap"><table><thead><tr><th class="">Date</th><th class="">Description</th><th class="">Reference</th><th class="">Status</th><th class="r">Amount</th></tr></thead><tbody><tr class="" ><td class=" "><span class="mono" style="color:var(--muted)">14 Nov</span></td><td class=" "><span class="cust">Northland Freight</span></td><td class=" "><span class="id">INV-2039</span></td><td class=" "><span class="badge paid"><span class="b-dot"></span>Matched</span></td><td class="r "><span class="amt" style="color:var(--ok)">+$4,011.50</span></td></tr><tr class="" ><td class=" "><span class="mono" style="color:var(--muted)">12 Nov</span></td><td class=" "><span class="cust">Repco NZ</span></td><td class=" "><span class="id">PO-439</span></td><td class=" "><span class="badge paid"><span class="b-dot"></span>Matched</span></td><td class="r "><span class="amt" style="color:var(--danger)">−$3,640.00</span></td></tr><tr class="" ><td class=" "><span class="mono" style="color:var(--muted)">11 Nov</span></td><td class=" "><span class="cust">EFTPOS settlement</span></td><td class=" "><span class="id">POS batch</span></td><td class=" "><span class="badge pending"><span class="b-dot"></span>Unmatched</span></td><td class="r "><span class="amt" style="color:var(--ok)">+$1,284.00</span></td></tr><tr class="" ><td class=" "><span class="mono" style="color:var(--muted)">10 Nov</span></td><td class=" "><span class="cust">Mercury Energy</span></td><td class=" "><span class="mono" style="color:var(--muted)">Direct debit</span></td><td class=" "><span class="badge pending"><span class="b-dot"></span>Unmatched</span></td><td class="r "><span class="amt" style="color:var(--danger)">−$338.10</span></td></tr></tbody></table></div>
+          <div class="pagination"><div class="info">Showing <span class="mono">1–4</span> of <span class="mono">214</span></div><div class="pg-btns"><button disabled>‹</button><button class="on">1</button><button>2</button><button>3</button><button>›</button></div></div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="banking" data-title="Banking"></script>
+<script>
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));t.classList.add('on');}));
+</script>
+</body>
+</html>

@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+.set-layout{display:grid;grid-template-columns:200px 1fr;gap:var(--gap);align-items:start}@media(max-width:760px){.set-layout{grid-template-columns:1fr}}
+.set-nav a{display:block;padding:9px 12px;border-radius:var(--r-ctl);font-size:13.5px;font-weight:500;color:var(--muted);margin-bottom:2px}
+.set-nav a.on{background:var(--accent-soft);color:var(--accent)}.set-nav a:hover:not(.on){background:var(--canvas);color:var(--text)}
+.set-row{display:flex;align-items:center;justify-content:space-between;padding:16px 0;border-bottom:1px solid var(--border);gap:20px}.set-row:last-child{border-bottom:none}
+.set-row .sl{font-size:13.5px;font-weight:600}.set-row .sd{font-size:12.5px;color:var(--muted);margin-top:2px}
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page " data-screen-label="Settings">
+        <div class="page-head">
+          <div><div class="eyebrow"></div><h1>Settings</h1><p class="sub">Organisation, billing, team & integrations</p></div>
+          
+        </div>
+        <div class="set-layout">
+          <nav class="set-nav">
+            <a class="on">Organisation</a><a>Branches</a><a>Team & roles</a><a>Invoice templates</a><a>Tax & GST</a><a>Payments</a><a>Integrations</a><a>Notifications</a><a>Billing & plan</a>
+          </nav>
+          <div class="stack">
+            <section class="card"><div class="card-body">
+              <div class="section-label">Business details</div>
+              <div class="form-grid">
+                <div class="field"><label>Trading name</label><input class="input" value="Kerikeri Motors"></div>
+                <div class="field"><label>Legal name</label><input class="input" value="Kerikeri Motors Ltd"></div>
+                <div class="field"><label>GST number</label><input class="input mono" value="102-845-771"></div>
+                <div class="field"><label>NZBN</label><input class="input mono" value="9429041820012"></div>
+                <div class="field full"><label>Address</label><input class="input" value="14 Hone Heke Rd, Kerikeri 0230"></div>
+              </div>
+            </div></section>
+            <section class="card"><div class="card-body">
+              <div class="section-label">Preferences</div>
+              <div class="set-row"><div><div class="sl">Prices include GST by default</div><div class="sd">Applied to new invoices & quotes</div></div><button class="toggle on" onclick="this.classList.toggle('on')"></button></div>
+              <div class="set-row"><div><div class="sl">Auto-send payment reminders</div><div class="sd">3 days before & after due date</div></div><button class="toggle on" onclick="this.classList.toggle('on')"></button></div>
+              <div class="set-row"><div><div class="sl">Round invoice totals</div><div class="sd">To nearest 5 cents</div></div><button class="toggle" onclick="this.classList.toggle('on')"></button></div>
+              <div class="set-row"><div><div class="sl">Require job card before invoicing</div><div class="sd">Workshop jobs only</div></div><button class="toggle on" onclick="this.classList.toggle('on')"></button></div>
+            </div></section>
+            <section class="card"><div class="card-body">
+              <div class="section-label">Default currency & format</div>
+              <div class="form-grid">
+                <div class="field"><label>Currency</label><select class="select"><option>NZD — New Zealand Dollar</option><option>AUD — Australian Dollar</option></select></div>
+                <div class="field"><label>Date format</label><select class="select"><option>DD / MM / YYYY</option><option>YYYY-MM-DD</option></select></div>
+              </div>
+            </div></section>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="settings" data-title="Settings"></script>
+<script>
+document.querySelectorAll('.set-nav a').forEach(a=>a.addEventListener('click',e=>{e.preventDefault();document.querySelectorAll('.set-nav a').forEach(x=>x.classList.remove('on'));a.classList.add('on');}));
+</script>
+</body>
+</html>

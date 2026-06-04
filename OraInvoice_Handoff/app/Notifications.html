@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+.nrow{display:flex;gap:13px;padding:14px 0;border-bottom:1px solid var(--border)}.nrow:last-child{border-bottom:none}.nrow .ni{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;flex-shrink:0}.nrow .ni svg{width:16px;height:16px}.nrow .unread{width:8px;height:8px;border-radius:50%;background:var(--accent);margin-top:6px}
+</style>
+</head>
+<body>
+<div class="app"><div id="sidebar"></div><div class="main"><div id="topbar"></div>
+<main class="content"><div class="page " data-screen-label="Notifications">
+<div class="page-head"><div><div class="eyebrow"></div><h1>Notifications</h1><p class="sub">Recent alerts & system messages</p></div><div class="head-actions"><a class="btn btn-ghost btn-sm" href="SmsChat.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>SMS</a><button class="btn btn-ghost btn-sm">Mark all read</button></div></div>
+  <section class="card"><div class="card-body">
+  <div class="nrow"><div class="ni red"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4m0 4h.01M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z"/></svg></div><div style="flex:1"><div style="font-size:13.5px;font-weight:600">Invoice overdue</div><div style="font-size:12.5px;color:var(--muted);margin-top:1px">INV-2041 · Bay Plumbing is 5 days overdue</div></div><div style="text-align:right"><div class="mono" style="font-size:11px;color:var(--muted-2)">5h</div><div class="unread" style="margin-left:auto"></div></div></div><div class="nrow"><div class="ni green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12l2 2 4-4"/></svg></div><div style="flex:1"><div style="font-size:13.5px;font-weight:600">Payment received</div><div style="font-size:12.5px;color:var(--muted);margin-top:1px">$4,011.50 from Northland Freight</div></div><div style="text-align:right"><div class="mono" style="font-size:11px;color:var(--muted-2)">12m</div><div class="unread" style="margin-left:auto"></div></div></div><div class="nrow"><div class="ni amber"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 7V3m8 4V3M3 11h18"/></svg></div><div style="flex:1"><div style="font-size:13.5px;font-weight:600">Booking confirmed</div><div style="font-size:12.5px;color:var(--muted);margin-top:1px">M. Taufa · WOF tomorrow 9:00am</div></div><div style="text-align:right"><div class="mono" style="font-size:11px;color:var(--muted-2)">1h</div></div></div><div class="nrow"><div class="ni blue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10"/></svg></div><div style="flex:1"><div style="font-size:13.5px;font-weight:600">Quote accepted</div><div style="font-size:12.5px;color:var(--muted);margin-top:1px">Coastal Builders accepted QT-318</div></div><div style="text-align:right"><div class="mono" style="font-size:11px;color:var(--muted-2)">2h</div></div></div>
+  </div></section>
+</div></main></div></div>
+<script src="shell.js" data-active="" data-title="Notifications"></script>
+</body></html>

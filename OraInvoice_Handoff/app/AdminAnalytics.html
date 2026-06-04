@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+  .chart-card { padding: 22px 24px; }
+  .chart-head { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 20px; }
+  .chart-head .big { font-family: var(--mono); font-size: 30px; font-weight: 600; letter-spacing: -.02em; line-height: 1; }
+  .chart-head .lbl { font-size: 12.5px; color: var(--muted); margin-bottom: 8px; }
+  .chart-head .dl { font-family: var(--mono); font-size: 12px; font-weight: 500; }
+  .bars { display: flex; align-items: flex-end; gap: 8px; height: 180px; }
+  .bars .b { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 8px; height: 100%; justify-content: flex-end; }
+  .bars .b .col { width: 100%; border-radius: 6px 6px 0 0; background: linear-gradient(var(--accent), color-mix(in oklab, var(--accent) 35%, white)); transition: height .4s; }
+  .bars .b .x { font-family: var(--mono); font-size: 10px; color: var(--muted-2); }
+  .line-wrap { position: relative; height: 200px; }
+  .donut { width: 150px; height: 150px; border-radius: 50%; flex-shrink: 0; }
+  .legend { display: flex; flex-direction: column; gap: 11px; }
+  .legend .lr { display: flex; align-items: center; gap: 9px; font-size: 13px; }
+  .legend .sw { width: 11px; height: 11px; border-radius: 3px; flex-shrink: 0; }
+  .legend .lr .v { margin-left: auto; font-family: var(--mono); font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Admin · Analytics">
+        <div class="page-head">
+          <div><div class="eyebrow">Platform admin</div><h1>Analytics</h1><p class="sub">Growth, revenue &amp; engagement across all tenants</p></div>
+          <div class="head-actions">
+            <div class="seg" id="range-seg">
+              <button data-r="30">30D</button>
+              <button class="on" data-r="qtr">QTR</button>
+              <button data-r="yr">YR</button>
+            </div>
+            <button class="btn btn-ghost btn-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14"/></svg>Export</button>
+          </div>
+        </div>
+
+        <div id="admin-nav" data-active="analytics"></div>
+
+        <div class="kpis">
+          <div class="kpi"><div class="top"><span class="label">MRR</span><span class="ico green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg></span></div><div class="val"><span class="c">$</span>41.2<span class="c">k</span></div><div class="delta up"><span>↗ 6.4%</span><span class="since">vs last qtr</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">Active orgs</span><span class="ico blue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21h18M5 21V7l8-4v18M19 21V11l-6-3"/></svg></span></div><div class="val">286</div><div class="delta up"><span>↗ 9</span><span class="since">net new</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">Trial → paid</span><span class="ico purple"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9z"/></svg></span></div><div class="val">62<span class="c">%</span></div><div class="delta up"><span>↗ 4pt</span><span class="since">conversion</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">Net churn</span><span class="ico amber"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></span></div><div class="val">1.0<span class="c">%</span></div><div class="delta up"><span>↘ 0.3pt</span><span class="since">improving</span></div></div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 360px;gap:var(--gap);align-items:start;margin-bottom:var(--gap)">
+          <section class="card chart-card">
+            <div class="chart-head">
+              <div><div class="lbl">Monthly recurring revenue</div><div class="big">$41,240</div></div>
+              <span class="badge active"><span class="b-dot"></span>+6.4% QoQ</span>
+            </div>
+            <div class="bars" id="bars"></div>
+          </section>
+          <section class="card chart-card">
+            <div class="chart-head"><div><div class="lbl">Revenue by plan</div><div class="big" style="font-size:22px">318 orgs</div></div></div>
+            <div style="display:flex;align-items:center;gap:22px">
+              <div class="donut" style="background:conic-gradient(var(--accent) 0 52%, var(--purple) 52% 78%, var(--muted-2) 78% 92%, var(--warn) 92% 100%)"></div>
+              <div class="legend" style="flex:1">
+                <div class="lr"><span class="sw" style="background:var(--accent)"></span>Pro<span class="v">52%</span></div>
+                <div class="lr"><span class="sw" style="background:var(--purple)"></span>Multi-site<span class="v">26%</span></div>
+                <div class="lr"><span class="sw" style="background:var(--muted-2)"></span>Solo<span class="v">14%</span></div>
+                <div class="lr"><span class="sw" style="background:var(--warn)"></span>Trial<span class="v">8%</span></div>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--gap)">
+          <section class="card chart-card">
+            <div class="chart-head"><div><div class="lbl">New signups</div><div class="big" style="font-size:22px">+47 this quarter</div></div></div>
+            <div class="bars" id="bars2"></div>
+          </section>
+          <section class="card">
+            <div class="card-head"><h2>Top organisations by MRR</h2></div>
+            <div class="tbl-wrap"><table>
+              <thead><tr><th>Organisation</th><th>Plan</th><th class="r">MRR</th></tr></thead>
+              <tbody>
+                <tr><td><span class="cust">North Panel &amp; Paint</span></td><td><span style="color:var(--muted)">Multi-site</span></td><td class="r amt">$159</td></tr>
+                <tr><td><span class="cust">Coastline Marine</span></td><td><span style="color:var(--muted)">Multi-site</span></td><td class="r amt">$159</td></tr>
+                <tr><td><span class="cust">Kerikeri Motors</span></td><td><span style="color:var(--muted)">Pro</span></td><td class="r amt">$79</td></tr>
+                <tr><td><span class="cust">FixIt NZ Ltd</span></td><td><span style="color:var(--muted)">Pro</span></td><td class="r amt">$79</td></tr>
+                <tr><td><span class="cust">Westside Smash Repairs</span></td><td><span style="color:var(--muted)">Pro</span></td><td class="r amt">$79</td></tr>
+              </tbody>
+            </table></div>
+          </section>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script src="shell.js" data-active="admin" data-title="Admin · Analytics"></script>
+<script src="admin-nav.js"></script>
+<script>
+const MRR = [{x:'Aug',v:62},{x:'Sep',v:70},{x:'Oct',v:75},{x:'Nov',v:82},{x:'Dec',v:78},{x:'Jan',v:88},{x:'Feb',v:92},{x:'Mar',v:100}];
+const SIGN = [{x:'Aug',v:40},{x:'Sep',v:55},{x:'Oct',v:48},{x:'Nov',v:70},{x:'Dec',v:60},{x:'Jan',v:82},{x:'Feb',v:75},{x:'Mar',v:95}];
+function bars(id, data) {
+  document.getElementById(id).innerHTML = data.map(d => `<div class="b"><div class="col" style="height:${d.v}%"></div><div class="x">${d.x}</div></div>`).join('');
+}
+bars('bars', MRR); bars('bars2', SIGN);
+document.querySelectorAll('#range-seg button').forEach(b => b.addEventListener('click', () => {
+  document.querySelectorAll('#range-seg button').forEach(x => x.classList.remove('on')); b.classList.add('on');
+}));
+</script>
+</body>
+</html>

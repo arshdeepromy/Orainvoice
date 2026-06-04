@@ -1,0 +1,224 @@
+/* ============================================================
+   OraInvoice frontend-v2 — App Shell responsive drawer (Task 9)
+   ------------------------------------------------------------
+   Structural off-canvas drawer mechanics for OrgLayout, ported
+   1:1 from the prototype's responsive shell rules in
+   OraInvoice_Handoff/app/ds.css (the `@media (max-width: 860px)`
+   block: .sidebar / .app.nav-open .sidebar / .scrim) and the
+   drawer wiring in OraInvoice_Handoff/app/shell.js.
+
+   WHY a stylesheet (not Tailwind utilities) for these rules:
+   the drawer is a *cross-element* state machine — the root's
+   `data-nav-open` flag drives the sibling sidebar's transform and
+   the scrim's opacity at once. Expressing that purely as stacked
+   `group-data-[...]:max-[860px]:` utilities is verbose and brittle,
+   so the structural mechanics live here, keyed off the existing
+   `data-nav-open` hook + scoped marker classes (`.app-shell` /
+   `.shell-sidebar` / `.shell-scrim` / `.shell-main`). Per-element
+   show/hide (hamburger, close button, search collapse, branch chip,
+   "New" button) stays as inline Tailwind `max-mobile:` variants in
+   the components, co-located with the markup.
+
+   BREAKPOINT: 860px max-width — the design.md "Responsive Behavior"
+   drawer breakpoint, identical to the prototype. The component-level
+   collapse uses the custom `max-mobile:` Tailwind variant (defined in
+   tokens.css) which compiles to the *same* `@media (max-width: 860px)`
+   query as the rules below, so the cross-element mechanics and the
+   per-element show/hide flip at exactly the same width. (We avoid
+   Tailwind's built-in `max-[860px]:` arbitrary variant because it
+   compiles to `width < 860px`, off-by-one from the prototype's
+   inclusive `max-width: 860px` semantics.)
+
+   These rules are intentionally unlayered so they take precedence
+   over Tailwind's layered utilities for the few properties they
+   override (scrim `display`, sidebar `position`/`transform`, main
+   `overflow`) without needing `!important`.
+   ============================================================ */
+
+/* Scrim is absent at desktop widths; the drawer is statically docked. */
+.shell-scrim {
+  display: none;
+}
+
+@media (max-width: 860px) {
+  /* ── Sidebar → off-canvas drawer ──
+     Pulled out of the flex row, pinned to the left edge, and slid
+     off-screen by default. z-index 40 keeps it above the content
+     and the scrim (z-index 35). Transition matches the prototype's
+     .26s cubic-bezier ease so the slide-in feels identical. */
+  .app-shell .shell-sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    transform: translateX(-100%);
+    transition: transform 0.26s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: var(--shadow-pop);
+    z-index: 40;
+  }
+
+  /* Open: slide the drawer in. Driven by the root `data-nav-open`
+     hook set by OrgLayout (mirrors the prototype's `.app.nav-open`). */
+  .app-shell[data-nav-open='true'] .shell-sidebar {
+    transform: translateX(0);
+  }
+
+  /* ── Scrim overlay ──
+     Covers the content behind the drawer; fades in with the drawer
+     and only becomes interactive (click-to-close) once open. */
+  .shell-scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(11, 18, 32, 0.5);
+    z-index: 35;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.26s;
+  }
+  .app-shell[data-nav-open='true'] .shell-scrim {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  /* ── Body scroll lock ──
+     While the drawer is open on mobile, freeze the content region so
+     the page behind the scrim can't scroll. Simple, declarative, and
+     scoped to the breakpoint — no JS needed. (Kept off the root,
+     which is already `overflow:hidden`; the scrollable region is the
+     <main>.) */
+  .app-shell[data-nav-open='true'] .shell-main {
+    overflow: hidden;
+  }
+}
+
+/* ============================================================
+   Page layout primitives — `.page` / `.page-wide` / `.page-head`
+   ------------------------------------------------------------
+   Ported 1:1 from the prototype's content/page-header rules in
+   OraInvoice_Handoff/app/ds.css. The OrgLayout `<main>` is flush
+   (`.content`); every ported page supplies its own `.page` wrapper for
+   padding + max-width + centering (see OrgLayout's Outlet comment).
+
+   MainDashboard (Task 16) and the role-variant dashboards (Task 17) all
+   open with `<div className="page">` and a `<div className="page-head">`
+   header row, so these classes must exist globally. They were referenced
+   but not yet defined in frontend-v2 — added here (unlayered, so they win
+   over Tailwind's layered utilities for the few properties they set)
+   alongside the shell mechanics that already ship from this file.
+
+   `.page-head` + `.eyebrow` + `.sub` mirror ds.css exactly; pages that
+   also stack Tailwind utilities on the same element (MainDashboard does)
+   keep working — the class only fills in the base flex/padding values.
+   ============================================================ */
+
+.page {
+  padding: var(--pad);
+  max-width: 1320px;
+  margin: 0 auto;
+}
+
+.page-wide {
+  max-width: 1480px;
+}
+
+.page-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: var(--gap);
+  flex-wrap: wrap;
+}
+
+.page-head h1 {
+  font-size: 26px;
+  font-weight: 700;
+}
+
+.page-head .sub {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.eyebrow {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted-2);
+  margin-bottom: 6px;
+}
+
+.head-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* ============================================================
+   Global scrollbars — thin + subtle, app-wide.
+   ------------------------------------------------------------
+   The prototype (OraInvoice_Handoff/app/ds.css) styles its scroll
+   areas with a slim 6px channel and a low-contrast thumb
+   (`.sb-scroll::-webkit-scrollbar { width: 6px }`,
+    `.admin-tabs::-webkit-scrollbar { height: 6px }`). The browser
+   default is a chunky high-contrast grey bar that clashes with the
+   redesign. These rules generalise the prototype treatment to EVERY
+   scroll container so the scrollbar is hardly visible at rest and
+   only gains contrast on hover.
+
+   Unlayered (this file is @imported after Tailwind in tokens.css),
+   so they win over Tailwind's utility layer without `!important`.
+   ============================================================ */
+
+/* Firefox — thin track, low-contrast thumb. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+/* WebKit / Blink (Chrome, Edge, Safari). The transparent border +
+   `background-clip: padding-box` insets the thumb so the visible
+   bar reads as ~4px inside an 8px channel — slim and unobtrusive. */
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background-color: var(--border-strong);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--muted-2);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Dark sidebar — the ink rail needs a translucent-white thumb
+   (the prototype's `--sb-hover`) instead of the light-surface grey,
+   otherwise the thumb would be invisible/odd on the dark background.
+   Higher specificity than the `*` rules above, so it wins. */
+.shell-sidebar,
+.shell-sidebar * {
+  scrollbar-color: var(--sb-hover) transparent;
+}
+.shell-sidebar *::-webkit-scrollbar-thumb {
+  background-color: var(--sb-hover);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.shell-sidebar *::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(255, 255, 255, 0.18);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}

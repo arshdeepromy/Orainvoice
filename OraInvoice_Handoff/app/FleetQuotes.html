@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Fleet quote requests">
+        <div class="page-head">
+          <div><div class="eyebrow">B2B · Fleet portal</div><h1>Fleet quote requests</h1><p class="sub">Requests submitted by fleet drivers — link an existing quote or create a new one</p></div>
+        </div>
+
+        <div class="tabs">
+          <a class="tab" href="FleetPortalAdmin.html">Overview</a>
+          <a class="tab" href="FleetBookings.html">Bookings</a>
+          <a class="tab on" href="FleetQuotes.html">Quotes</a>
+          <a class="tab" href="FleetAccounts.html">Accounts</a>
+          <a class="tab" href="FleetChecklistFailures.html">Checklist fails</a>
+          <a class="tab" href="FleetPortalSettings.html">Settings</a>
+        </div>
+
+        <div class="toolbar">
+          <div class="search-input" style="flex:1;max-width:320px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 21l-5-5m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg><input placeholder="Search requests…" /></div>
+          <div class="seg"><button class="on">All</button><button>Pending</button><button>Quoted</button><button>Closed</button></div>
+        </div>
+
+        <section class="card">
+          <div class="tbl-wrap"><table>
+            <thead><tr><th>Customer</th><th>Vehicle</th><th>Service requested</th><th>Date</th><th>Status</th><th class="r">Action</th></tr></thead>
+            <tbody id="rows"></tbody>
+          </table></div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- Link quote modal -->
+<div class="modal-scrim" id="m-link">
+  <div class="modal wide">
+    <div class="modal-head"><div><h3>Link a quote to this request</h3><p class="mono" id="link-ctx" style="font-size:11.5px;color:var(--muted);margin:4px 0 0;text-transform:none;letter-spacing:0"></p></div><button class="x" onclick="closeModal('m-link')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button></div>
+    <div class="modal-body">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px">
+        <div class="search-input" style="flex:1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 21l-5-5m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg><input placeholder="Search by number, customer, or rego" /></div>
+        <a class="btn btn-ghost btn-sm" href="Quotes.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>Create new quote</a>
+      </div>
+      <div class="card" style="box-shadow:none">
+        <div id="org-quotes"></div>
+      </div>
+    </div>
+    <div class="modal-foot"><button class="btn btn-quiet" onclick="closeModal('m-link')">Cancel</button></div>
+  </div>
+</div>
+
+<div class="toast ok" id="toast"></div>
+
+<script src="shell.js" data-active="" data-title="Fleet quote requests"></script>
+<script>
+const REQS=[
+  {cust:'Northland Freight',rego:'NPR-447',svc:'Full service + brake inspection on Isuzu NPR',date:'04 Nov',status:'pending',quote:null},
+  {cust:'Coastal Builders',rego:'JDC-991',svc:'WOF + tyre replacement ×4',date:'03 Nov',status:'quoted',quote:'QT-318'},
+  {cust:'Northland Freight',rego:'NPR-220',svc:'Coolant leak diagnostic',date:'01 Nov',status:'pending',quote:null},
+  {cust:'Harbour Logistics',rego:'HBR-012',svc:'Cambelt replacement',date:'29 Oct',status:'accepted',quote:'QT-309'},
+  {cust:'Coastal Builders',rego:'JDC-118',svc:'Annual service',date:'24 Oct',status:'declined',quote:'QT-301'},
+];
+const SL={pending:'Pending',quoted:'Quoted',accepted:'Accepted',declined:'Declined'};
+const SCLS={pending:'pending',quoted:'sent',accepted:'paid',declined:'overdue'};
+const ORG_QUOTES=[
+  {n:'QT-320',cust:'Northland Freight',rego:'NPR-447',status:'Draft'},
+  {n:'QT-319',cust:'Northland Freight',rego:'NPR-220',status:'Sent'},
+  {n:'QT-317',cust:'Te Awa Joinery',rego:'—',status:'Sent'},
+];
+function svg(d,sw){return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${sw||2}" stroke-linecap="round" stroke-linejoin="round"><path d="${d}"/></svg>`;}
+function render(){
+  document.getElementById('rows').innerHTML=REQS.map((r,i)=>`<tr>
+    <td><span class="cust">${r.cust}</span></td>
+    <td><span class="mono" style="color:var(--muted)">${r.rego}</span></td>
+    <td style="max-width:280px"><span style="color:var(--muted)">${r.svc}</span></td>
+    <td><span class="mono" style="color:var(--muted)">${r.date}</span></td>
+    <td><span class="badge ${SCLS[r.status]}"><span class="b-dot"></span>${SL[r.status]}</span></td>
+    <td class="r">${r.status==='pending'
+      ? `<button class="btn btn-ghost btn-sm" onclick="openLink(${i})">Link / create</button>`
+      : r.quote ? `<a class="btn btn-quiet btn-sm" href="Quotes.html">View ${r.quote}</a>` : '—'}</td>
+  </tr>`).join('');
+}
+function openLink(i){
+  const r=REQS[i];
+  document.getElementById('link-ctx').textContent=`${r.rego} — ${r.svc}`;
+  document.getElementById('org-quotes').innerHTML=ORG_QUOTES.map(q=>`<div class="meta-row" style="padding:13px 16px">
+    <div><div style="font-weight:600;font-size:13.5px">${q.n}</div><div style="font-size:12px;color:var(--muted);margin-top:2px">${q.cust} · ${q.rego} · ${q.status}</div></div>
+    <button class="btn btn-ghost btn-sm" onclick="closeModal('m-link');toast('Quote ${q.n} linked to request.')">Link</button>
+  </div>`).join('');
+  openModal('m-link');
+}
+function openModal(id){document.getElementById(id).classList.add('open');}
+function closeModal(id){document.getElementById(id).classList.remove('open');}
+document.querySelectorAll('.modal-scrim').forEach(s=>s.addEventListener('click',e=>{if(e.target===s)s.classList.remove('open');}));
+let tt;function toast(m){const t=document.getElementById('toast');t.innerHTML=svg('M20 6L9 17l-5-5',2.5)+'<span>'+m+'</span>';t.classList.add('show');clearTimeout(tt);tt=setTimeout(()=>t.classList.remove('show'),2600);}
+document.querySelectorAll('.seg button').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('.seg button').forEach(x=>x.classList.remove('on'));b.classList.add('on');}));
+render();
+</script>
+</body>
+</html>

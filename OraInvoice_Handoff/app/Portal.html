@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Your account · Kerikeri Motors</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+  body { background: var(--canvas); }
+  :root { --portal-accent: #2F62F0; }
+  .pt-top { background: var(--card); border-bottom: 1px solid var(--border); }
+  .pt-top .in { max-width: 960px; margin: 0 auto; padding: 18px 24px; display: flex; align-items: center; justify-content: space-between; }
+  .pt-brand { display: flex; align-items: center; gap: 13px; }
+  .pt-brand .m { width: 42px; height: 42px; border-radius: 11px; background: var(--portal-accent); display: grid; place-items: center; color: #fff; font-weight: 700; font-size: 17px; }
+  .pt-brand h1 { font-size: 20px; font-weight: 700; } .pt-brand p { font-size: 13px; color: var(--muted); margin-top: 1px; }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 28px 24px 64px; }
+  .sum-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 16px; margin-bottom: 24px; }
+  @media (max-width:680px){ .sum-grid { grid-template-columns: 1fr; } }
+  .sum { background: var(--card); border: 1px solid var(--border); border-left: 4px solid var(--portal-accent); border-radius: var(--r-card); padding: 18px; }
+  .sum .l { font-size: 13px; color: var(--muted); } .sum .v { font-size: 24px; font-weight: 700; font-family: var(--mono); margin-top: 5px; letter-spacing: -.01em; }
+  .sum.warn .v { color: var(--warn); } .sum.ok .v { color: var(--ok); }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--r-card); box-shadow: var(--shadow-card); margin-bottom: 18px; }
+  .card .hd { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+  .card .hd h2 { font-size: 15px; font-weight: 700; }
+  .pt-tabs { display: flex; gap: 4px; overflow-x: auto; border-bottom: 1px solid var(--border); margin-bottom: 20px; scrollbar-width: thin; }
+  .pt-tabs button { padding: 11px 15px; font-size: 13.5px; font-weight: 600; color: var(--muted); border: none; background: none; border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap; cursor: pointer; }
+  .pt-tabs button.on { color: var(--portal-accent); border-bottom-color: var(--portal-accent); }
+  .tab-pane { display: none; } .tab-pane.on { display: block; }
+  .det-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 18px 20px; } @media (max-width:680px){ .det-grid { grid-template-columns: 1fr; } }
+  .det .l { font-size: 12px; color: var(--muted-2); } .det .v { font-size: 14px; font-weight: 500; margin-top: 3px; }
+  .pay-btn { background: var(--portal-accent); color: #fff; border: none; height: 38px; padding: 0 16px; border-radius: 9px; font-size: 13px; font-weight: 600; font-family: inherit; cursor: pointer; }
+  .pt-foot { text-align: center; font-size: 12px; color: var(--muted-2); margin-top: 32px; }
+  .pt-foot b { color: var(--muted); }
+  .loy { display: flex; align-items: center; gap: 20px; padding: 22px 20px; }
+  .loy .ring { width: 92px; height: 92px; border-radius: 50%; background: conic-gradient(var(--portal-accent) 0 72%, var(--border) 72% 100%); display: grid; place-items: center; flex-shrink: 0; }
+  .loy .ring .in2 { width: 70px; height: 70px; border-radius: 50%; background: var(--card); display: grid; place-items: center; font-family: var(--mono); font-weight: 700; font-size: 20px; }
+</style>
+</head>
+<body>
+<div class="pt-top"><div class="in">
+  <div class="pt-brand"><div class="m">KM</div><div><h1>Kerikeri Motors</h1><p>Your account &amp; service history</p></div></div>
+  <button class="btn btn-ghost btn-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>Sign out</button>
+</div></div>
+
+<div class="wrap">
+  <div style="margin-bottom:22px"><h2 style="font-size:24px;font-weight:700">Welcome, Sarah Whitmore</h2><p style="font-size:14px;color:var(--muted);margin-top:4px">Manage your invoices and vehicle service history with Kerikeri Motors.</p></div>
+
+  <div class="sum-grid">
+    <div class="sum warn"><div class="l">Outstanding balance</div><div class="v">$533.00</div></div>
+    <div class="sum"><div class="l">Total invoices</div><div class="v">14</div></div>
+    <div class="sum ok"><div class="l">Total paid</div><div class="v">$6,284</div></div>
+  </div>
+
+  <div class="card">
+    <div class="hd"><h2>My details</h2><button class="btn btn-ghost btn-sm">Edit</button></div>
+    <div class="det-grid">
+      <div class="det"><div class="l">Email</div><div class="v">sarah.w@gmail.com</div></div>
+      <div class="det"><div class="l">Mobile</div><div class="v mono">021 884 220</div></div>
+      <div class="det"><div class="l">Address</div><div class="v">22 Cobham Rd, Kerikeri 0230</div></div>
+      <div class="det"><div class="l">Marketing</div><div class="v">Opted out</div></div>
+    </div>
+  </div>
+
+  <div class="pt-tabs" id="tabs">
+    <button class="on" data-t="invoices">Invoices</button>
+    <button data-t="vehicles">Vehicles</button>
+    <button data-t="quotes">Quotes</button>
+    <button data-t="bookings">Bookings</button>
+    <button data-t="loyalty">Loyalty</button>
+    <button data-t="documents">Documents</button>
+    <button data-t="messages">Messages</button>
+  </div>
+
+  <!-- Invoices -->
+  <div class="tab-pane on" id="t-invoices">
+    <div class="card">
+      <div class="tbl-wrap"><table>
+        <thead><tr><th>Invoice</th><th>Date</th><th>Amount</th><th>Status</th><th class="r"></th></tr></thead>
+        <tbody>
+          <tr><td><span class="id" style="font-weight:600;color:var(--text)">INV-2041</span></td><td class="mono" style="color:var(--muted)">18 Nov 2025</td><td class="amt">$533.00</td><td><span class="badge overdue"><span class="b-dot"></span>Due</span></td><td class="r"><button class="pay-btn" onclick="location.href='InvoicePayment.html'">Pay now</button></td></tr>
+          <tr><td><span class="id" style="font-weight:600;color:var(--text)">INV-1980</span></td><td class="mono" style="color:var(--muted)">02 Sep 2025</td><td class="amt">$295.00</td><td><span class="badge paid"><span class="b-dot"></span>Paid</span></td><td class="r"><button class="btn btn-ghost btn-sm">Receipt</button></td></tr>
+          <tr><td><span class="id" style="font-weight:600;color:var(--text)">INV-1842</span></td><td class="mono" style="color:var(--muted)">11 Jun 2025</td><td class="amt">$1,120.00</td><td><span class="badge paid"><span class="b-dot"></span>Paid</span></td><td class="r"><button class="btn btn-ghost btn-sm">Receipt</button></td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </div>
+
+  <!-- Vehicles -->
+  <div class="tab-pane" id="t-vehicles">
+    <div class="card">
+      <div class="hd"><h2>2019 Toyota Hilux · ABC123</h2><span class="badge active"><span class="b-dot"></span>WoF current</span></div>
+      <div class="det-grid">
+        <div class="det"><div class="l">WoF expiry</div><div class="v">14 Mar 2026</div></div>
+        <div class="det"><div class="l">Rego expiry</div><div class="v">30 Jun 2026</div></div>
+        <div class="det"><div class="l">Last service</div><div class="v">18 Nov 2025 · 84,210 km</div></div>
+        <div class="det"><div class="l">Next service due</div><div class="v">18 May 2026 or 94,000 km</div></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="hd"><h2>Service history</h2></div>
+      <div class="tbl-wrap"><table>
+        <thead><tr><th>Date</th><th>Service</th><th>Odometer</th><th class="r">Cost</th></tr></thead>
+        <tbody>
+          <tr><td class="mono" style="color:var(--muted)">18 Nov 2025</td><td>Full service + WoF + brakes</td><td class="mono">84,210</td><td class="r amt">$533.00</td></tr>
+          <tr><td class="mono" style="color:var(--muted)">02 Sep 2025</td><td>WoF inspection</td><td class="mono">81,940</td><td class="r amt">$70.00</td></tr>
+          <tr><td class="mono" style="color:var(--muted)">11 Jun 2025</td><td>Cambelt + water pump</td><td class="mono">78,520</td><td class="r amt">$1,120.00</td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </div>
+
+  <!-- Quotes -->
+  <div class="tab-pane" id="t-quotes">
+    <div class="card">
+      <div class="hd"><h2>Quote QUO-318 · Tyres &amp; alignment</h2><span class="badge sent"><span class="b-dot"></span>Awaiting your approval</span></div>
+      <div class="det-grid">
+        <div class="det"><div class="l">Total</div><div class="v mono" style="font-size:18px">$840.00</div></div>
+        <div class="det"><div class="l">Valid until</div><div class="v">30 Nov 2025</div></div>
+      </div>
+      <div style="display:flex;gap:10px;padding:0 20px 20px"><button class="pay-btn">Accept quote</button><button class="btn btn-ghost btn-sm">Decline</button><button class="btn btn-ghost btn-sm">Download PDF</button></div>
+    </div>
+  </div>
+
+  <!-- Bookings -->
+  <div class="tab-pane" id="t-bookings">
+    <div class="card">
+      <div class="hd"><h2>Upcoming bookings</h2><button class="pay-btn">Book a service</button></div>
+      <div class="det-grid">
+        <div class="det"><div class="l">Service</div><div class="v">6-month service</div></div>
+        <div class="det"><div class="l">When</div><div class="v">12 Dec 2025 · 9:00am</div></div>
+        <div class="det"><div class="l">Vehicle</div><div class="v">Toyota Hilux · ABC123</div></div>
+        <div class="det"><div class="l">Status</div><div class="v"><span class="badge active"><span class="b-dot"></span>Confirmed</span></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Loyalty -->
+  <div class="tab-pane" id="t-loyalty">
+    <div class="card">
+      <div class="loy">
+        <div class="ring"><div class="in2">720</div></div>
+        <div>
+          <div style="font-size:16px;font-weight:700">Gold member</div>
+          <p style="font-size:13px;color:var(--muted);margin:5px 0 0;max-width:40ch">You have <b style="color:var(--text)">720 points</b> — 280 more to a $50 service credit. Earn 1 point per $1 spent.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Documents -->
+  <div class="tab-pane" id="t-documents">
+    <div class="card"><div class="tbl-wrap"><table>
+      <thead><tr><th>Document</th><th>Date</th><th class="r"></th></tr></thead>
+      <tbody>
+        <tr><td>WoF certificate — ABC123</td><td class="mono" style="color:var(--muted)">18 Nov 2025</td><td class="r"><button class="btn btn-ghost btn-sm">Download</button></td></tr>
+        <tr><td>Service report — full service</td><td class="mono" style="color:var(--muted)">18 Nov 2025</td><td class="r"><button class="btn btn-ghost btn-sm">Download</button></td></tr>
+        <tr><td>Tax invoice INV-2041</td><td class="mono" style="color:var(--muted)">18 Nov 2025</td><td class="r"><button class="btn btn-ghost btn-sm">Download</button></td></tr>
+      </tbody>
+    </table></div></div>
+  </div>
+
+  <!-- Messages -->
+  <div class="tab-pane" id="t-messages">
+    <div class="card"><div style="padding:20px;display:flex;flex-direction:column;gap:14px">
+      <div style="background:var(--canvas);border-radius:12px;padding:14px 16px"><div style="font-size:13px;font-weight:600">Kerikeri Motors</div><p style="font-size:13.5px;color:var(--text);margin:5px 0 0">Hi Sarah, your Hilux is ready for pickup — all work completed and WoF passed. See you soon!</p><div style="font-size:11.5px;color:var(--muted-2);margin-top:6px" class="mono">18 Nov, 3:42pm</div></div>
+      <div style="background:var(--accent-soft);border-radius:12px;padding:14px 16px;margin-left:40px"><p style="font-size:13.5px;color:var(--accent);margin:0">Great, thanks team! I'll come by after 4.</p><div style="font-size:11.5px;color:var(--accent);opacity:.7;margin-top:6px" class="mono">18 Nov, 3:48pm</div></div>
+    </div></div>
+  </div>
+
+  <div class="pt-foot">Powered by <b>OraInvoice</b> · Your data is private and secure</div>
+</div>
+
+<script>
+document.querySelectorAll('#tabs button').forEach(b=>b.addEventListener('click',()=>{
+  document.querySelectorAll('#tabs button').forEach(x=>x.classList.remove('on'));
+  b.classList.add('on');
+  document.querySelectorAll('.tab-pane').forEach(p=>p.classList.remove('on'));
+  document.getElementById('t-'+b.dataset.t).classList.add('on');
+}));
+</script>
+</body>
+</html>

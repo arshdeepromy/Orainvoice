@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Fleet accounts">
+        <div class="page-head">
+          <div><div class="eyebrow">B2B · Fleet portal</div><h1>Fleet accounts</h1><p class="sub">Customers with fleet portal access — drill in to manage individual portal logins</p></div>
+          <div class="head-actions"><button class="btn btn-primary btn-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>Invite fleet</button></div>
+        </div>
+
+        <div class="tabs">
+          <a class="tab" href="FleetPortalAdmin.html">Overview</a>
+          <a class="tab" href="FleetBookings.html">Bookings</a>
+          <a class="tab" href="FleetQuotes.html">Quotes</a>
+          <a class="tab on" href="FleetAccounts.html">Accounts</a>
+          <a class="tab" href="FleetChecklistFailures.html">Checklist fails</a>
+          <a class="tab" href="FleetPortalSettings.html">Settings</a>
+        </div>
+
+        <div class="toolbar">
+          <div class="search-input" style="flex:1;max-width:320px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 21l-5-5m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg><input placeholder="Search fleets…" /></div>
+          <div class="seg"><button class="on">All</button><button>Active</button><button>Disabled</button></div>
+        </div>
+
+        <section class="card">
+          <div class="tbl-wrap"><table>
+            <thead><tr><th>Fleet</th><th>Status</th><th class="r">Vehicles</th><th class="r">Portal accounts</th><th>Last activity</th><th class="r"></th></tr></thead>
+            <tbody id="rows"></tbody>
+          </table></div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="" data-title="Fleet accounts"></script>
+<script>
+const FLEETS=[
+  {name:'Northland Freight',active:true,vehicles:38,accounts:4,last:'2h ago'},
+  {name:'Coastal Builders',active:true,vehicles:12,accounts:2,last:'Yesterday'},
+  {name:'Harbour Logistics',active:true,vehicles:21,accounts:3,last:'3 days ago'},
+  {name:'Te Awa Joinery',active:false,vehicles:5,accounts:1,last:'2 weeks ago'},
+];
+function av(n){return n.split(' ').map(w=>w[0]).slice(0,2).join('');}
+document.getElementById('rows').innerHTML=FLEETS.map(f=>`<tr class="clickable" onclick="location.href='FleetAccountDetail.html'">
+  <td><div class="row-flex"><span class="row-av">${av(f.name)}</span><span class="cust">${f.name}</span></div></td>
+  <td>${f.active?'<span class="badge active"><span class="b-dot"></span>Active</span>':'<span class="badge draft"><span class="b-dot"></span>Disabled</span>'}</td>
+  <td class="r"><span class="amt">${f.vehicles}</span></td>
+  <td class="r"><span class="amt">${f.accounts}</span></td>
+  <td><span class="mono" style="color:var(--muted)">${f.last}</span></td>
+  <td class="r"><span style="color:var(--muted-2)">›</span></td>
+</tr>`).join('');
+document.querySelectorAll('.seg button').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('.seg button').forEach(x=>x.classList.remove('on'));b.classList.add('on');}));
+</script>
+</body>
+</html>

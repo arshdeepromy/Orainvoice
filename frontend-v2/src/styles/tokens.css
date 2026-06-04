@@ -1,0 +1,231 @@
+/* ============================================================
+   OraInvoice frontend-v2 — Design Tokens
+   ------------------------------------------------------------
+   Single source of truth: OraInvoice_Handoff/app/ds.css
+   ------------------------------------------------------------
+   Tailwind v4 uses a CSS-first config: tokens declared inside
+   the @theme block below auto-generate utility classes, e.g.
+     --color-accent       -> bg-accent / text-accent / border-accent
+     --color-sb-bg        -> bg-sb-bg / text-sb-bg ...
+     --radius-card        -> rounded-card
+     --shadow-card        -> shadow-card
+     --spacing-pad        -> p-pad / px-pad / gap-pad / m-pad
+     --spacing-rail       -> w-rail / min-w-rail / max-w-rail
+     --font-sans / mono   -> font-sans / font-mono
+   Tailwind also emits every @theme token as a native CSS var on
+   :root, so var(--color-accent) etc. are available too.
+
+   The original ds.css token names (var(--accent), var(--rail),
+   the sidebar var(--sb-*) palette, ...) are mirrored verbatim in
+   the :root block at the bottom so any ported component markup or
+   pasted ds.css rules that reference them keep resolving.
+
+   This file is the global stylesheet entry for frontend-v2: it
+   imports Tailwind, then the font loader + base typography
+   (fonts.css). The app entry (main.tsx, Task 4) imports this one
+   file so tokens, Tailwind and fonts all load app-wide from a single
+   import chain (main.tsx → tokens.css → {tailwindcss, fonts.css}).
+   ============================================================ */
+
+@import "tailwindcss";
+/* Font loading (Google Fonts) + base typography + `.mono` utility.
+   Imported here so the whole design layer ships from one entry. The
+   remote Google Fonts @import inside fonts.css is hoisted above all
+   rules by the Tailwind v4 bundler, satisfying CSS @import ordering. */
+@import "./fonts.css";
+/* App-shell responsive drawer mechanics (Task 9) — the cross-element
+   off-canvas drawer / scrim / scroll-lock state machine, keyed off the
+   root `data-nav-open` hook. Imported after Tailwind so its unlayered
+   rules take precedence over layered utilities where they overlap. */
+@import "./shell.css";
+/* Global print stylesheet (Task 46) — @media print rules powering the
+   `no-print` / `data-print-content` hooks used by the reports pages
+   (and any future printable view). Ported verbatim from the original
+   frontend/src/styles/print.css, with the Tailwind utility hooks remapped
+   to v2's design-token class names (bg-card/bg-canvas/rounded-card/etc.). */
+@import "./print.css";
+
+/* ------------------------------------------------------------
+   Responsive shell breakpoint — `max-mobile:` variant (Task 9)
+   ------------------------------------------------------------
+   Single source of truth for the ≤860px drawer breakpoint on the
+   component side. design.md "Responsive Behavior" + the prototype
+   (OraInvoice_Handoff/app/ds.css) switch the shell to drawer mode at
+   `@media (max-width: 860px)` — note: INCLUSIVE of exactly 860px.
+
+   Tailwind v4's built-in `max-[860px]:` arbitrary variant compiles to
+   `@media not all and (min-width:860px)`, i.e. `width < 860px`
+   (EXCLUSIVE). That disagrees with the prototype + shell.css by one
+   pixel at exactly 860px, which would leave a broken in-between state
+   (drawer mode on, but the hamburger/search-collapse off). Defining
+   our own variant pins the component-level collapse to the *same*
+   `@media (max-width: 860px)` query shell.css uses, so every
+   responsive change flips at exactly the same width and matches the
+   prototype precisely. Used in TopBar/Sidebar as `max-mobile:hidden`,
+   `max-mobile:grid`, etc. */
+@custom-variant max-mobile (@media (max-width: 860px));
+
+/* ------------------------------------------------------------
+   Auth split-screen breakpoint — `max-auth:` variant (Task 12)
+   ------------------------------------------------------------
+   The auth pages (AuthLayout) collapse the split-screen at a DIFFERENT
+   width than the org shell drawer. OraInvoice_Handoff/app/auth.css does
+   all three of its responsive flips at `@media (max-width: 900px)`
+   (INCLUSIVE of exactly 900px):
+     • `.auth` grid 1fr 1fr  → single column
+     • `.auth-brand`         → display:none (brand panel hidden)
+     • `.auth-head .mobile-logo` → display:flex (mobile logo shown)
+
+   Defining a dedicated variant (rather than Tailwind's built-in
+   `max-[900px]:`) for the SAME reason as `max-mobile` above: the
+   built-in `max-[900px]:` compiles to `@media not all and
+   (min-width:900px)` = `width < 900` (EXCLUSIVE), which disagrees with
+   auth.css by one pixel at exactly 900px and would briefly show the
+   brand panel + the desktop two-column grid + the mobile logo all at
+   once. Pinning `max-auth` to `@media (max-width: 900px)` makes the
+   grid collapse, the brand hide, and the mobile logo appear all flip at
+   precisely the same width auth.css uses. Used in AuthLayout as
+   `max-auth:grid-cols-1`, `max-auth:hidden`, `max-auth:flex`. */
+@custom-variant max-auth (@media (max-width: 900px));
+
+@theme {
+  /* ---------- Brand / accent ---------- */
+  --color-accent: #2F62F0;
+  --color-accent-press: #2450d0;
+  --color-accent-soft: rgba(47, 98, 240, 0.12);
+  --color-accent-fg: #7FA0FF;
+
+  /* ---------- Neutral / surfaces ---------- */
+  --color-ink: #0B1220;
+  --color-canvas: #F5F6F8;
+  --color-card: #ffffff;
+  --color-border: #E8EBF0;
+  --color-border-strong: #D7DCE3;
+  --color-text: #111722;
+  --color-muted: #687283;
+  --color-muted-2: #97A0AE;
+
+  /* ---------- Semantic status ---------- */
+  --color-ok: #1F8A5B;
+  --color-ok-soft: #E4F4EC;
+  --color-warn: #B5740F;
+  --color-warn-soft: #FBEFD9;
+  --color-danger: #C8412F;
+  --color-danger-soft: #FBE7E3;
+  --color-info: #2F62F0;
+  --color-info-soft: rgba(47, 98, 240, 0.12);
+  --color-purple: #6D5AE6;
+  --color-purple-soft: #ECE9FB;
+
+  /* ---------- Sidebar (ink) palette ---------- */
+  --color-sb-bg: #0B1220;
+  --color-sb-bg-2: #0E1626;
+  --color-sb-text: rgba(255, 255, 255, 0.66);
+  --color-sb-text-strong: #ffffff;
+  --color-sb-muted: rgba(255, 255, 255, 0.34);
+  --color-sb-hover: rgba(255, 255, 255, 0.06);
+  --color-sb-active-bg: rgba(255, 255, 255, 0.07);
+  --color-sb-border: rgba(255, 255, 255, 0.08);
+
+  /* ---------- Typography ---------- */
+  --font-sans: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+
+  /* ---------- Radii ---------- */
+  --radius-card: 14px;
+  --radius-ctl: 10px;
+  --radius-chip: 8px;
+
+  /* ---------- Shadows ---------- */
+  --shadow-card: 0 1px 2px rgba(16, 24, 40, 0.04), 0 1px 3px rgba(16, 24, 40, 0.04);
+  --shadow-pop: 0 12px 32px -8px rgba(11, 18, 32, 0.22), 0 2px 6px rgba(11, 18, 32, 0.08);
+
+  /* ---------- Spacing / layout ----------
+     Mapped to the --spacing-* namespace so they generate padding,
+     margin, gap and sizing utilities. NOTE: design.md's example
+     used --width-rail, but that is not a real Tailwind v4 theme
+     namespace (it would not emit utilities); --spacing-rail gives
+     functional w-rail / min-w-rail / max-w-rail. Value unchanged. */
+  --spacing-pad: 26px;
+  --spacing-gap: 22px;
+  --spacing-rail: 264px;
+}
+
+/* ------------------------------------------------------------
+   Raw ds.css token names — preserved verbatim so component CSS
+   and ported markup referencing var(--accent), var(--rail), the
+   sidebar var(--sb-*) palette, var(--r-card), etc. resolve. Values
+   are identical to the @theme block above; ds.css is authoritative.
+   ------------------------------------------------------------ */
+:root {
+  --accent: #2F62F0;
+  --accent-press: #2450d0;
+  --accent-soft: rgba(47, 98, 240, 0.12);
+  --accent-fg: #7FA0FF;
+
+  --ink: #0B1220;
+  --canvas: #F5F6F8;
+  --card: #ffffff;
+  --border: #E8EBF0;
+  --border-strong: #D7DCE3;
+  --text: #111722;
+  --muted: #687283;
+  --muted-2: #97A0AE;
+
+  --ok: #1F8A5B;        --ok-soft: #E4F4EC;
+  --warn: #B5740F;      --warn-soft: #FBEFD9;
+  --danger: #C8412F;    --danger-soft: #FBE7E3;
+  --info: #2F62F0;      --info-soft: rgba(47, 98, 240, 0.12);
+  --purple: #6D5AE6;    --purple-soft: #ECE9FB;
+
+  --sans: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
+  --mono: 'IBM Plex Mono', ui-monospace, monospace;
+
+  --r-card: 14px;
+  --r-ctl: 10px;
+  --r-chip: 8px;
+
+  --shadow-card: 0 1px 2px rgba(16, 24, 40, 0.04), 0 1px 3px rgba(16, 24, 40, 0.04);
+  --shadow-pop: 0 12px 32px -8px rgba(11, 18, 32, 0.22), 0 2px 6px rgba(11, 18, 32, 0.08);
+
+  --rail: 264px;
+  --gap: 22px;
+  --pad: 26px;
+
+  --sb-bg: #0B1220; --sb-bg-2: #0E1626;
+  --sb-text: rgba(255, 255, 255, 0.66); --sb-text-strong: #fff;
+  --sb-muted: rgba(255, 255, 255, 0.34); --sb-hover: rgba(255, 255, 255, 0.06);
+  --sb-active-bg: rgba(255, 255, 255, 0.07); --sb-border: rgba(255, 255, 255, 0.08);
+
+  /* ------------------------------------------------------------
+     Admin Console sidebar aliases (Task 42)
+     ------------------------------------------------------------
+     The ported AdminLayout (frontend/src/layouts/AdminLayout.tsx) styles its
+     sidebar with the original frontend's `--sidebar-*` / `--content-bg` /
+     `--color-primary` / `--transition-speed` theme variables (defined in the
+     old frontend's styles/themes.css). v2's design tokens use the ink `--sb-*`
+     palette + `--accent` instead, so these aliases map the AdminLayout's
+     variable names onto the existing v2 tokens 1:1 — the ink sidebar bg, the
+     accent primary, and the canvas content bg — keeping the Admin Console
+     visually consistent with the v2 OrgLayout sidebar without duplicating
+     colour values. */
+  --sidebar-bg: var(--sb-bg);
+  --sidebar-text: var(--sb-text);
+  --sidebar-text-muted: var(--sb-muted);
+  --sidebar-hover: var(--sb-hover);
+  --sidebar-active-bg: var(--sb-active-bg);
+  --sidebar-active-text: var(--sb-text-strong);
+  --sidebar-border: var(--sb-border);
+  --content-bg: var(--canvas);
+  --color-primary: var(--accent);
+  --transition-speed: 150ms;
+}
+
+/* ── Admin Console sidebar nav hover (Task 42) ──
+   Ported from the old frontend's styles/themes.css. The nav links can't use a
+   CSS-var-backed Tailwind `hover:` utility for the sidebar hover tint, so the
+   hover background is applied via this class hook (the active link gets its
+   colours from inline styles in AdminLayout). */
+.sidebar-nav-item:hover {
+  background-color: var(--sidebar-hover);
+}

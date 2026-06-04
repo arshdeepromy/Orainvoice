@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="../ds.css" />
+<link rel="stylesheet" href="fleet.css" />
+<title>Accept invite · Fleet Portal</title>
+</head>
+<body>
+<div class="fauth" data-screen-label="Fleet portal accept invite">
+  <form class="fauth-card" onsubmit="event.preventDefault();location.href='Dashboard.html'">
+    <div class="fauth-brand"><div class="m"><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 11l1.5-4.5A2 2 0 018.4 5h7.2a2 2 0 011.9 1.5L19 11m-14 0h14"/></svg></div><div class="t">Fleet<span> Portal</span></div></div>
+    <h1>You're invited</h1>
+    <p class="sub"><b style="color:var(--text)">Northland Freight</b> has invited you to manage their fleet. Set a password to activate your account.</p>
+    <div class="field"><label>Email</label><input class="input" type="email" value="sara@northlandfreight.co.nz" disabled style="color:var(--muted)"></div>
+    <div class="field"><label>Full name</label><input class="input" value="Sara Te Kani"></div>
+    <div class="field"><label>Create password</label><input class="input" type="password" placeholder="••••••••"></div>
+    <button class="btn btn-primary btn-block" type="submit" style="margin-top:6px">Activate account</button>
+    <div class="fauth-foot">By continuing you agree to the <a href="#" style="color:var(--accent)" onclick="event.preventDefault()">terms</a>.</div>
+  </form>
+  <div class="fauth-foot" style="margin-top:18px">Powered by <b style="color:var(--muted)">OraInvoice</b></div>
+</div>
+</body>
+</html>

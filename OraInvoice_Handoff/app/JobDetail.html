@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+.tabpanel { display:none; }
+.tabpanel.on { display:block; }
+.chk { display:flex; align-items:center; gap:11px; padding:11px 0; border-bottom:1px solid var(--border); font-size:13.5px; }
+.chk:last-child { border-bottom:none; }
+.chk.done { color:var(--muted); text-decoration:line-through; }
+.profit { display:grid; grid-template-columns:repeat(2,1fr); gap:14px; }
+.profit .row { display:flex; justify-content:space-between; padding:12px 0; border-bottom:1px solid var(--border); font-size:13.5px; }
+.att { display:flex; align-items:center; gap:12px; padding:12px 0; border-bottom:1px solid var(--border); }
+.att:last-child { border-bottom:none; }
+.att .fi { width:34px; height:34px; border-radius:9px; background:var(--canvas); display:grid; place-items:center; color:var(--muted); }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Job detail">
+        <div class="crumbs"><a href="Jobs.html">Jobs</a><span class="sep">/</span><span style="color:var(--text)">JOB-1142</span></div>
+        <div class="page-head">
+          <div>
+            <h1>JOB-1142 · Fleet brake overhaul</h1>
+            <div class="row-flex" style="gap:8px;margin-top:9px">
+              <span class="badge inprogress"><span class="b-dot"></span>In progress</span>
+              <span class="badge warn"><span class="b-dot"></span>High priority</span>
+              <span style="font-size:13px;color:var(--muted)">Project: <a href="ProjectDetail.html" style="color:var(--accent)">Fleet overhaul — 8 trucks</a></span>
+            </div>
+          </div>
+          <div class="head-actions">
+            <button class="btn btn-ghost btn-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7m-1.5-9.5a2.1 2.1 0 113 3L12 19l-4 1 1-4 11.5-11.5z"/></svg>Edit</button>
+            <button class="btn btn-primary btn-sm" onclick="toast('Converted to invoice INV-2043.')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>Convert to invoice</button>
+          </div>
+        </div>
+
+        <div class="detail-grid">
+          <div class="stack">
+            <div class="tabs" style="margin-bottom:0">
+              <div class="tab on" data-tab="details">Details</div>
+              <div class="tab" data-tab="profit">Profitability</div>
+              <div class="tab" data-tab="checklist">Checklist <span class="n">5</span></div>
+              <div class="tab" data-tab="attach">Attachments <span class="n">3</span></div>
+              <div class="tab" data-tab="timeline">Timeline</div>
+            </div>
+
+            <section class="card"><div class="card-body">
+              <div id="details" class="tabpanel on">
+                <div class="meta-row"><span class="k">Description</span><span class="v" style="max-width:60%;text-align:right;font-weight:400">Replace front + rear brake pads and discs across 3 fleet trucks; bleed lines and road test.</span></div>
+                <div class="meta-row"><span class="k">Customer</span><span class="v"><a href="CustomerDetail.html" style="color:var(--accent)">Northland Freight</a></span></div>
+                <div class="meta-row"><span class="k">Site address</span><span class="v" style="font-weight:400">12 Klinac Lane, Whangarei 0110</span></div>
+                <div class="meta-row"><span class="k">Scheduled</span><span class="v mono" style="font-weight:400">04 Nov 8:00am — 06 Nov 5:00pm</span></div>
+                <div class="meta-row"><span class="k">Actual start</span><span class="v mono" style="font-weight:400">04 Nov 8:20am</span></div>
+                <div class="meta-row"><span class="k">Assigned staff</span><span class="v" style="font-weight:400">Dave M. (lead) · Sam T.</span></div>
+              </div>
+
+              <div id="profit" class="tabpanel">
+                <div class="section-label">Job profitability</div>
+                <div class="profit">
+                  <div class="row"><span class="k" style="color:var(--muted)">Total revenue</span><span class="mono" style="font-weight:600">$8,420.00</span></div>
+                  <div class="row"><span class="k" style="color:var(--muted)">Time costs</span><span class="mono">$2,280.00</span></div>
+                  <div class="row"><span class="k" style="color:var(--muted)">Material costs</span><span class="mono">$3,140.00</span></div>
+                  <div class="row"><span class="k" style="color:var(--muted)">Expense costs</span><span class="mono">$310.00</span></div>
+                  <div class="row"><span class="k" style="color:var(--muted)">Total costs</span><span class="mono" style="font-weight:600">$5,730.00</span></div>
+                  <div class="row"><span class="k" style="color:var(--muted)">Profit margin</span><span class="mono" style="font-weight:600">$2,690.00</span></div>
+                </div>
+                <div style="margin-top:16px;display:flex;align-items:center;gap:12px;padding:14px 16px;background:var(--ok-soft);border-radius:var(--r-ctl)">
+                  <span class="mono" style="font-size:22px;font-weight:700;color:var(--ok)">31.9%</span>
+                  <span style="font-size:13px;color:var(--ok)">Healthy margin — above the 25% workshop target.</span>
+                </div>
+              </div>
+
+              <div id="checklist" class="tabpanel">
+                <div class="section-label">Job checklist</div>
+                <div class="chk done"><span class="checkbox" style="background:var(--accent);border-color:var(--accent)"></span>Inspect existing pads &amp; discs</div>
+                <div class="chk done"><span class="checkbox" style="background:var(--accent);border-color:var(--accent)"></span>Source replacement parts</div>
+                <div class="chk done"><span class="checkbox" style="background:var(--accent);border-color:var(--accent)"></span>Replace front brakes — all 3 trucks</div>
+                <div class="chk"><span class="checkbox"></span>Replace rear brakes — all 3 trucks</div>
+                <div class="chk"><span class="checkbox"></span>Bleed lines &amp; road test</div>
+              </div>
+
+              <div id="attach" class="tabpanel">
+                <div class="section-label">Attachments</div>
+                <div class="att"><span class="fi"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z M14 2v6h6"/></svg></span><div style="flex:1"><div style="font-size:13.5px;font-weight:500">brake-inspection-report.pdf</div><div style="font-size:12px;color:var(--muted)">248 KB · 04 Nov</div></div><button class="btn btn-quiet btn-sm">Download</button></div>
+                <div class="att"><span class="fi"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="M21 15l-5-5L5 21"/></svg></span><div style="flex:1"><div style="font-size:13.5px;font-weight:500">worn-disc-NPR447.jpg</div><div style="font-size:12px;color:var(--muted)">1.2 MB · 04 Nov</div></div><button class="btn btn-quiet btn-sm">Download</button></div>
+                <div class="att"><span class="fi"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="M21 15l-5-5L5 21"/></svg></span><div style="flex:1"><div style="font-size:13.5px;font-weight:500">parts-receipt.jpg</div><div style="font-size:12px;color:var(--muted)">860 KB · 05 Nov</div></div><button class="btn btn-quiet btn-sm">Download</button></div>
+                <button class="btn btn-ghost btn-sm" style="margin-top:14px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>Upload file</button>
+              </div>
+
+              <div id="timeline" class="tabpanel">
+                <div class="section-label">Status history</div>
+                <div class="timeline" style="margin-top:4px">
+                  <div class="tl-item accent"><div class="t">In progress</div><div class="s">Started by Dave M.</div><div class="time">04 Nov 8:20am</div></div>
+                  <div class="tl-item"><div class="t">Accepted → scheduled</div><div class="s">Booked into Bay 2</div><div class="time">02 Nov 3:10pm</div></div>
+                  <div class="tl-item"><div class="t">Quoted → accepted</div><div class="s">Customer approved QT-318</div><div class="time">01 Nov 11:42am</div></div>
+                  <div class="tl-item"><div class="t">Draft → quoted</div><div class="s">Quote sent to Northland Freight</div><div class="time">31 Oct 4:05pm</div></div>
+                </div>
+              </div>
+            </div></section>
+          </div>
+
+          <div class="stack">
+            <section class="card"><div class="card-body">
+              <div class="section-label">Summary</div>
+              <div class="meta-row"><span class="k">Status</span><span class="v"><span class="badge inprogress"><span class="b-dot"></span>In progress</span></span></div>
+              <div class="meta-row"><span class="k">Priority</span><span class="v"><span class="badge warn"><span class="b-dot"></span>High</span></span></div>
+              <div class="meta-row"><span class="k">Job value</span><span class="v mono">$8,420.00</span></div>
+              <div class="meta-row"><span class="k">Margin</span><span class="v mono" style="color:var(--ok)">31.9%</span></div>
+              <div class="meta-row"><span class="k">Linked invoice</span><span class="v" style="color:var(--muted);font-weight:400">Not yet invoiced</span></div>
+            </div></section>
+            <section class="card"><div class="card-body">
+              <div class="section-label">Linked compliance docs</div>
+              <div class="meta-row"><span class="k" style="display:flex;align-items:center;gap:8px"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="var(--ok)" stroke-width="2"><path d="M9 12l2 2 4-4M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>Brake test certificate</span><span class="v" style="color:var(--muted);font-weight:400">Valid</span></div>
+              <div class="meta-row"><span class="k" style="display:flex;align-items:center;gap:8px"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="var(--warn)" stroke-width="2"><path d="M12 9v4m0 4h.01M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L14.7 3.9a2 2 0 00-3.4 0z"/></svg>Road user charges</span><span class="v" style="color:var(--warn);font-weight:400">Expires soon</span></div>
+            </div></section>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+<div class="toast ok" id="toast"></div>
+<script src="shell.js" data-active="" data-title="Job JOB-1142"></script>
+<script>
+document.querySelectorAll('.tab[data-tab]').forEach(t=>t.addEventListener('click',()=>{
+  document.querySelectorAll('.tab[data-tab]').forEach(x=>x.classList.remove('on'));
+  document.querySelectorAll('.tabpanel').forEach(p=>p.classList.remove('on'));
+  t.classList.add('on');
+  document.getElementById(t.dataset.tab).classList.add('on');
+}));
+let tt;function toast(m){const t=document.getElementById('toast');t.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><span>'+m+'</span>';t.classList.add('show');clearTimeout(tt);tt=setTimeout(()=>t.classList.remove('show'),2600);}
+</script>
+</body>
+</html>

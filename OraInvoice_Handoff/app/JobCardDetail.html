@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+.veh-banner{display:flex;align-items:center;gap:16px;padding:18px 20px;background:var(--ink);border-radius:var(--r-card);color:#fff;margin-bottom:var(--gap)}
+.veh-banner .reg{font-family:var(--mono);font-weight:600;font-size:15px;background:rgba(255,255,255,.12);padding:5px 11px;border-radius:8px}
+.veh-banner .vn{font-size:16px;font-weight:600}.veh-banner .vs{font-size:12.5px;color:rgba(255,255,255,.6);margin-top:2px}
+.task-line{display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--border)}
+.task-line:last-child{border-bottom:none}.task-line .tl-t{flex:1;font-size:13.5px;font-weight:500}.task-line.done .tl-t{color:var(--muted-2);text-decoration:line-through}
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Job JC-1187">
+        <div class="crumbs"><a href="JobCards.html">Job Cards</a><span class="sep">/</span><span style="color:var(--text)">JC-1187</span></div>
+        <div class="page-head">
+          <div><div class="eyebrow">Work</div><h1>Job Card</h1><p class="sub">Brake service · Toyota Corolla</p></div>
+          <div class="head-actions"><button class="btn btn-ghost btn-sm">Print card</button><a class="btn btn-primary btn-sm" href="InvoiceCreate.html">Convert to invoice</a></div>
+        </div>
+        <div class="veh-banner">
+          <span class="reg">KMR-218</span>
+          <div style="flex:1"><div class="vn">2019 Toyota Corolla</div><div class="vs">1.8L Hybrid · 84,210 km · VIN JTDBR32E…</div></div>
+          <span class="badge inprogress" style="background:rgba(255,255,255,.14);color:#fff"><span class="b-dot" style="background:#7FA0FF"></span>In progress</span>
+        </div>
+        <div class="detail-grid">
+          <div class="stack">
+            <section class="card"><div class="card-head"><h2>Tasks</h2><span class="mono" style="font-size:12px;color:var(--muted)">3 / 5 done</span></div><div class="card-body" style="padding-top:6px">
+              <div class="task-line done"><input type="checkbox" class="checkbox" checked><span class="tl-t">Inspect front & rear brakes</span><span class="mono" style="font-size:11px;color:var(--muted-2)">0.5h</span></div>
+              <div class="task-line done"><input type="checkbox" class="checkbox" checked><span class="tl-t">Replace front pads</span><span class="mono" style="font-size:11px;color:var(--muted-2)">1.0h</span></div>
+              <div class="task-line done"><input type="checkbox" class="checkbox" checked><span class="tl-t">Machine front rotors</span><span class="mono" style="font-size:11px;color:var(--muted-2)">0.8h</span></div>
+              <div class="task-line"><input type="checkbox" class="checkbox"><span class="tl-t">Bleed brake fluid</span><span class="mono" style="font-size:11px;color:var(--muted-2)">0.5h</span></div>
+              <div class="task-line"><input type="checkbox" class="checkbox"><span class="tl-t">Road test & final check</span><span class="mono" style="font-size:11px;color:var(--muted-2)">0.3h</span></div>
+            </div></section>
+            <section class="card"><div class="card-head"><h2>Parts & labour</h2><a class="link" href="#">Add line</a></div>
+              <div class="tbl-wrap"><table><thead><tr><th>Item</th><th class="r">Qty</th><th class="r">Unit</th><th class="r">Total</th></tr></thead><tbody>
+                <tr><td><span class="cust">Brake Pads Front</span> <span class="id">BRK-F22</span></td><td class="r mono">1</td><td class="r mono">$185.00</td><td class="r amt">$185.00</td></tr>
+                <tr><td><span class="cust">Brake fluid DOT4</span> <span class="id">FLD-D4</span></td><td class="r mono">1</td><td class="r mono">$24.00</td><td class="r amt">$24.00</td></tr>
+                <tr><td><span class="cust">Labour — workshop</span></td><td class="r mono">3.1</td><td class="r mono">$95.00</td><td class="r amt">$294.50</td></tr>
+              </tbody></table></div>
+            </section>
+          </div>
+          <div class="stack">
+            <section class="card"><div class="card-body">
+              <div class="section-label">Details</div>
+              <div class="meta-row"><span class="k">Customer</span><span class="v"><a href="CustomerDetail.html" style="color:var(--accent)">K. Williams</a></span></div>
+              <div class="meta-row"><span class="k">Assigned</span><span class="v">Dave Mceachern</span></div>
+              <div class="meta-row"><span class="k">Booked</span><span class="v">12 Nov, 8:00am</span></div>
+              <div class="meta-row"><span class="k">Priority</span><span class="v"><span class="badge warn"><span class="b-dot"></span>Medium</span></span></div>
+              <div class="meta-row"><span class="k">Est. total</span><span class="v mono">$503.50</span></div>
+            </div></section>
+            <section class="card"><div class="card-body">
+              <div class="section-label">Time logged</div>
+              <div style="font-family:var(--mono);font-size:28px;font-weight:600">3.5<span style="font-size:16px;color:var(--muted-2)">h</span></div>
+              <div style="font-size:12.5px;color:var(--muted);margin-top:4px">of 3.1h estimated</div>
+            </div></section>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="jobs" data-title="Job JC-1187"></script>
+</body>
+</html>

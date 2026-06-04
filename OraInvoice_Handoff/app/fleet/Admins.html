@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="../ds.css" />
+<link rel="stylesheet" href="fleet.css" />
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Fleet portal admins">
+        <div class="page-head"><div><h1>Portal admins</h1><p class="sub">People who can manage this fleet account</p></div><div class="head-actions"><button class="btn btn-primary btn-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>Invite admin</button></div></div>
+        <section class="card"><div class="tbl-wrap"><table>
+          <thead><tr><th>Name</th><th>Email</th><th>Role</th><th class="c">2FA</th><th>Last sign-in</th><th class="r"></th></tr></thead>
+          <tbody id="rows"></tbody>
+        </table></div></section>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="fleet-shell.js" data-active="admins" data-title="Admins"></script>
+<script>
+const A=[
+  {n:'Dean Whaitiri',e:'dean@northlandfreight.co.nz',role:'Fleet admin',mfa:true,last:'2h ago',you:true},
+  {n:'Sara Te Kani',e:'sara@northlandfreight.co.nz',role:'Fleet admin',mfa:true,last:'Yesterday',you:false},
+  {n:'Paul Nguyen',e:'paul@northlandfreight.co.nz',role:'Viewer',mfa:false,last:'1 week ago',you:false},
+];
+function av(n){return n.split(' ').map(w=>w[0]).slice(0,2).join('');}
+document.getElementById('rows').innerHTML=A.map(a=>`<tr>
+  <td><div class="row-flex"><span class="row-av">${av(a.n)}</span><span class="cust">${a.n}${a.you?' <span style="color:var(--muted);font-weight:400">(you)</span>':''}</span></div></td>
+  <td><span style="color:var(--muted)">${a.e}</span></td>
+  <td>${a.role==='Fleet admin'?'<span class="badge info"><span class="b-dot"></span>Fleet admin</span>':'<span class="badge neutral"><span class="b-dot"></span>Viewer</span>'}</td>
+  <td class="c">${a.mfa?'<span class="exp green"><span class="d"></span>On</span>':'<span class="exp red"><span class="d"></span>Off</span>'}</td>
+  <td class="mono" style="color:var(--muted)">${a.last}</td>
+  <td class="r">${a.you?'':'<button class="btn btn-quiet btn-sm">Manage</button>'}</td>
+</tr>`).join('');
+</script>
+</body>
+</html>

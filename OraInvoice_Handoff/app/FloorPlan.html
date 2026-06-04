@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+.floor{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:16px;margin-top:8px}
+.tablec{aspect-ratio:1;border-radius:var(--r-card);border:2px solid var(--border);background:var(--card);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;cursor:pointer}
+.tablec .tn{font-family:var(--mono);font-size:18px;font-weight:600}.tablec .ts{font-size:11px;color:var(--muted)}
+.tablec.occ{border-color:var(--accent);background:var(--accent-soft)}.tablec.occ .ts{color:var(--accent);font-weight:600}
+.tablec.bill{border-color:var(--warn);background:var(--warn-soft)}
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Floor plan">
+        <div class="page-head"><div><div class="eyebrow">Hospitality</div><h1>Floor plan</h1><p class="sub">Front room · 9 of 18 tables occupied</p></div><div class="head-actions"><div class="seg"><button class="on">Front</button><button>Patio</button><button>Bar</button></div></div></div>
+  <div class="floor"><div class="tablec bill"><div class="tn">T1</div><div class="ts">Bill printed</div></div><div class="tablec "><div class="tn">T2</div><div class="ts">Free</div></div><div class="tablec occ"><div class="tn">T3</div><div class="ts">Seated · 25m</div></div><div class="tablec "><div class="tn">T4</div><div class="ts">Free</div></div><div class="tablec occ"><div class="tn">T5</div><div class="ts">Seated · 25m</div></div><div class="tablec bill"><div class="tn">T6</div><div class="ts">Bill printed</div></div><div class="tablec occ"><div class="tn">T7</div><div class="ts">Seated · 25m</div></div><div class="tablec "><div class="tn">T8</div><div class="ts">Free</div></div><div class="tablec occ"><div class="tn">T9</div><div class="ts">Seated · 25m</div></div><div class="tablec "><div class="tn">T10</div><div class="ts">Free</div></div><div class="tablec bill"><div class="tn">T11</div><div class="ts">Bill printed</div></div><div class="tablec "><div class="tn">T12</div><div class="ts">Free</div></div><div class="tablec occ"><div class="tn">T13</div><div class="ts">Seated · 25m</div></div><div class="tablec "><div class="tn">T14</div><div class="ts">Free</div></div><div class="tablec occ"><div class="tn">T15</div><div class="ts">Seated · 25m</div></div><div class="tablec bill"><div class="tn">T16</div><div class="ts">Bill printed</div></div><div class="tablec occ"><div class="tn">T17</div><div class="ts">Seated · 25m</div></div><div class="tablec "><div class="tn">T18</div><div class="ts">Free</div></div></div>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="" data-title="Floor plan"></script>
+</body>
+</html>

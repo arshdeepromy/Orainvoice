@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Accounting">
+        <div class="page-head">
+          <div><div class="eyebrow">Money</div><h1>Accounting</h1><p class="sub">Chart of accounts · period to 30 Nov 2025</p></div>
+          <div class="head-actions"><button class="btn btn-ghost btn-sm">Export to Xero</button><button class="btn btn-primary btn-sm">Journal entry</button></div>
+        </div>
+        <div class="kpis">
+          <div class="kpi"><div class="top"><span class="label">Income (MTD)</span></div><div class="val"><span class="c">$</span>48,250</div></div>
+          <div class="kpi"><div class="top"><span class="label">Expenses (MTD)</span></div><div class="val"><span class="c">$</span>26,410</div></div>
+          <div class="kpi"><div class="top"><span class="label">Net profit</span></div><div class="val" style="color:var(--ok)"><span class="c" style="color:var(--ok);opacity:.5">$</span>21,840</div></div>
+          <div class="kpi"><div class="top"><span class="label">GST owing</span></div><div class="val"><span class="c">$</span>3,276</div></div>
+        </div>
+        <div class="tabs"><div class="tab on">Chart of accounts</div><div class="tab">Journals</div><div class="tab">P&L</div><div class="tab">Balance sheet</div></div>
+        <section class="card"><div class="tbl-wrap"><table><thead><tr><th>Code</th><th>Account</th><th>Type</th><th class="r">Debit</th><th class="r">Credit</th><th class="r">Balance</th></tr></thead><tbody>
+          <tr><td><span class="id">200</span></td><td><span class="cust">Sales — Labour</span></td><td><span class="mono" style="color:var(--muted);font-size:12px">Revenue</span></td><td class="r amt" style="color:var(--muted)">—</td><td class="r amt" style="color:var(--muted)">$28,400</td><td class="r amt">$28,400</td></tr><tr><td><span class="id">201</span></td><td><span class="cust">Sales — Parts</span></td><td><span class="mono" style="color:var(--muted);font-size:12px">Revenue</span></td><td class="r amt" style="color:var(--muted)">—</td><td class="r amt" style="color:var(--muted)">$19,850</td><td class="r amt">$19,850</td></tr><tr><td><span class="id">400</span></td><td><span class="cust">Cost of goods sold</span></td><td><span class="mono" style="color:var(--muted);font-size:12px">Expense</span></td><td class="r amt" style="color:var(--muted)">$14,200</td><td class="r amt" style="color:var(--muted)">—</td><td class="r amt">$-14,200</td></tr><tr><td><span class="id">420</span></td><td><span class="cust">Wages</span></td><td><span class="mono" style="color:var(--muted);font-size:12px">Expense</span></td><td class="r amt" style="color:var(--muted)">$9,800</td><td class="r amt" style="color:var(--muted)">—</td><td class="r amt">$-9,800</td></tr><tr><td><span class="id">440</span></td><td><span class="cust">Rent</span></td><td><span class="mono" style="color:var(--muted);font-size:12px">Expense</span></td><td class="r amt" style="color:var(--muted)">$2,410</td><td class="r amt" style="color:var(--muted)">—</td><td class="r amt">$-2,410</td></tr><tr><td><span class="id">820</span></td><td><span class="cust">GST</span></td><td><span class="mono" style="color:var(--muted);font-size:12px">Liability</span></td><td class="r amt" style="color:var(--muted)">—</td><td class="r amt" style="color:var(--muted)">$3,276</td><td class="r amt">$-3,276</td></tr><tr><td><span class="id">610</span></td><td><span class="cust">Accounts receivable</span></td><td><span class="mono" style="color:var(--muted);font-size:12px">Asset</span></td><td class="r amt" style="color:var(--muted)">$12,840</td><td class="r amt" style="color:var(--muted)">—</td><td class="r amt">$12,840</td></tr>
+        </tbody></table></div></section>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="accounting" data-title="Accounting"></script>
+<script>
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));t.classList.add('on');}));
+</script>
+</body>
+</html>

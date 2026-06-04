@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Two-factor verification · OraInvoice</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<link rel="stylesheet" href="auth.css" />
+<style>
+  .mfa-wrap { min-height: 100vh; display: grid; place-items: center; padding: 40px 20px;
+    background: var(--sb-bg);
+    background-image: radial-gradient(110% 80% at 15% 0%, rgba(47,98,240,.18), transparent 55%),
+                      radial-gradient(90% 80% at 100% 100%, rgba(109,90,230,.16), transparent 50%); }
+  .mfa-card { width: 100%; max-width: 420px; background: var(--card); border-radius: var(--r-card); box-shadow: var(--shadow-pop); padding: 34px; }
+  .mfa-card .ic-top { width: 52px; height: 52px; border-radius: 14px; background: var(--accent-soft); display: grid; place-items: center; margin: 0 auto 18px; }
+  .mfa-card .ic-top svg { width: 26px; height: 26px; color: var(--accent); }
+  .mfa-tabs { display: flex; gap: 4px; background: var(--canvas); border-radius: var(--r-ctl); padding: 4px; margin-bottom: 22px; }
+  .mfa-tabs button { flex: 1; height: 36px; border: none; background: none; border-radius: 7px; font-family: inherit; font-size: 13px; font-weight: 600; color: var(--muted); }
+  .mfa-tabs button.on { background: var(--card); color: var(--text); box-shadow: var(--shadow-card); }
+</style>
+</head>
+<body>
+<div class="mfa-wrap">
+  <div class="mfa-card">
+    <div class="ic-top"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 15a2 2 0 100-4 2 2 0 000 4zm6-5V7a6 6 0 00-12 0v3M5 10h14a1 1 0 011 1v9a1 1 0 01-1 1H5a1 1 0 01-1-1v-9a1 1 0 011-1z"/></svg></div>
+    <div style="text-align:center;margin-bottom:22px">
+      <h1 style="font-size:22px;font-weight:700">Two-factor verification</h1>
+      <p style="color:var(--muted);font-size:14px;margin:7px 0 0">Signing in as <b style="color:var(--text)">arsh@kerikerimotors.co.nz</b></p>
+    </div>
+
+    <div class="mfa-tabs">
+      <button class="on" data-tab="code" onclick="tab('code')">Authenticator</button>
+      <button data-tab="backup" onclick="tab('backup')">Backup code</button>
+    </div>
+
+    <!-- Authenticator -->
+    <div id="tab-code">
+      <p style="font-size:13px;color:var(--muted);text-align:center;margin:0 0 18px">Enter the 6-digit code from your authenticator app.</p>
+      <div class="otp" id="otp" style="margin-bottom:20px">
+        <input maxlength="1" inputmode="numeric" autofocus /><input maxlength="1" inputmode="numeric" /><input maxlength="1" inputmode="numeric" /><input maxlength="1" inputmode="numeric" /><input maxlength="1" inputmode="numeric" /><input maxlength="1" inputmode="numeric" />
+      </div>
+      <label class="checkline" style="justify-content:center;margin-bottom:18px"><input class="checkbox" type="checkbox" />Trust this device for 30 days</label>
+      <button class="btn btn-primary btn-lg btn-block" onclick="window.location.href='Dashboard.html'">Verify &amp; sign in</button>
+    </div>
+
+    <!-- Backup -->
+    <div id="tab-backup" style="display:none">
+      <p style="font-size:13px;color:var(--muted);text-align:center;margin:0 0 18px">Enter one of your unused backup codes.</p>
+      <div class="field" style="margin-bottom:18px"><input class="input mono" placeholder="xxxx-xxxx-xx" style="text-align:center;letter-spacing:.12em;font-size:16px;height:50px" /></div>
+      <div class="alert warn" style="margin-bottom:18px">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4m0 4h.01M10.3 3.9l-8 14A2 2 0 004 21h16a2 2 0 001.7-3l-8-14a2 2 0 00-3.4 0z"/></svg>
+        <div>Each backup code works once. You have <b>6</b> codes remaining.</div>
+      </div>
+      <button class="btn btn-primary btn-lg btn-block" onclick="window.location.href='Dashboard.html'">Verify &amp; sign in</button>
+    </div>
+
+    <p style="text-align:center;font-size:13px;margin:22px 0 0;color:var(--muted)">Lost your device? <a class="auth-link" href="#">Contact your admin</a></p>
+  </div>
+</div>
+
+<script>
+function tab(t) {
+  document.querySelectorAll('.mfa-tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === t));
+  document.getElementById('tab-code').style.display = t === 'code' ? 'block' : 'none';
+  document.getElementById('tab-backup').style.display = t === 'backup' ? 'block' : 'none';
+}
+const otp = document.querySelectorAll('#otp input');
+otp.forEach((inp, i) => {
+  inp.addEventListener('input', () => {
+    inp.classList.toggle('filled', !!inp.value);
+    if (inp.value && i < otp.length - 1) otp[i+1].focus();
+  });
+  inp.addEventListener('keydown', e => { if (e.key === 'Backspace' && !inp.value && i > 0) otp[i-1].focus(); });
+  inp.addEventListener('paste', e => {
+    const d = (e.clipboardData.getData('text') || '').replace(/\D/g,'').slice(0,6);
+    if (d) { e.preventDefault(); d.split('').forEach((c,j) => { if (otp[j]) { otp[j].value = c; otp[j].classList.add('filled'); } }); otp[Math.min(d.length,5)].focus(); }
+  });
+});
+</script>
+</body>
+</html>

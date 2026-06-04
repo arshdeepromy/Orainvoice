@@ -6019,3 +6019,66 @@ These entries track the open questions in `.kiro/specs/ppsr-module/requirements.
 - **Root Cause**: design open question — awaiting UX review.
 - **Fix Applied**: pending — design + implement a one-shot prompt that links to Subscription Plans for orgs whose plan still has `ppsr_lookups_included=0` after enabling.
 - **Files Changed**: pending.
+
+---
+
+### ISSUE-169: "Send Invoice" email links to payment page (shows "Paid") instead of the invoice HTML view
+
+- **Date**: 2026-06-02
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: v1.9.2 notification-template integration (commit `5f770f1`, 2026-05-18)
+
+**Symptoms**: A customer (Iqbal singh Pannu, invoice SPINV-0050 on the local Prod Standby) received a "Send Invoice" email whose "View Invoice" button opened the `/pay/{token}` payment page showing "Paid" / payment info, instead of the actual invoice. The link produced by the **Share** button (`/api/v1/public/invoice/{token}`) is the correct invoice view. Confirmed against the standby DB (`workshoppro`): SPINV-0050 was `status=paid`, `payment_gateway=cash`, `balance_due=0.00`, with both a `payment_page_url` and a `share_token` present.
+
+**Root Cause**: In `app/modules/invoices/service.py :: email_invoice`, the "View Invoice" CTA was derived from `invoice.payment_page_url` (the `/pay/{token}` payment page) on both the template path (`_rendered_template.cta_url or payment_page_url`) and the hardcoded fallback path (`payment_page_url or ""`). The `invoice_issued` template variable `payment_link` was also set to `payment_page_url`, and the default `invoice_issued` email template's button is labelled "View Invoice" but uses `{{payment_link}}` as its URL (`app/modules/notifications/schemas.py`). So both paths resolved the "View Invoice" button to the payment page. The public invoice-view URL was only used as a last-resort fallback when no payment page URL existed. Once an invoice is settled, the payment page renders "Paid", which is what the customer saw.
+
+**Fix Applied**:
+
+1. In `email_invoice`, build the public invoice-view URL (`{base}/api/v1/public/invoice/{share_token}`) up front, minting a `share_token` on the invoice if one does not yet exist (same token the Share button uses).
+2. Set the `payment_link` template variable to the invoice-view URL so the default "View Invoice" button resolves to the invoice view.
+3. Use the invoice-view URL as the CTA on both the template path and the hardcoded fallback path.
+4. Simplified the now-redundant universal-fallback share-link block to a guard.
+
+The public invoice-view page (`public_router.py`) still renders its own "Pay Online" button while the invoice is payable, so online payment stays reachable for unpaid invoices. The stale-payment-link regeneration block is retained because that page reads `invoice.payment_page_url`.
+
+**Preserved (unchanged)**: the dedicated "Send Payment Link" action (`app/modules/payments/service.py :: send_invoice_payment_link_email`) still sends the `/pay/{token}` payment page; the QR payment flow; the Share button; and the email failover / notification-log / in-app-notification behaviour.
+
+**Files Changed**:
+- `app/modules/invoices/service.py`
+- `tests/test_invoice_email_cta_link.py` (new regression test — fails on unfixed code, passes with fix)
+- `.kiro/specs/invoice-send-link-payment-page-fix/bugfix.md`
+
+**Similar Bugs to Watch**: any other email/SMS path that labels a button "View Invoice" but feeds it `payment_page_url` via `{{payment_link}}`. The overdue-reminder template intentionally uses the payment link and is out of scope here.
+
+---
+
+### ISSUE-170: Record-payment auto-email invoice link uses LAN IP instead of the public domain
+
+- **Date**: 2026-06-02
+- **Severity**: high
+- **Status**: resolved
+- **Reporter**: user
+- **Related**: ISSUE-169 (same email CTA, different trigger)
+
+**Symptoms**: Clicking "Record Payment" on an issued invoice marks it paid and auto-sends an updated invoice email. The "View Invoice" link in that email pointed at the deployment's LAN IP (`http://192.168.1.90:8999/...`) instead of the public domain the staff member was using. Same problem on the "mark paid at invoice creation" path.
+
+**Root Cause**: Two background (fire-and-forget) callers of `email_invoice` did not pass `base_url`:
+- `app/modules/payments/router.py` — `record_cash_payment_endpoint`'s `_send_payment_email()` task called `email_invoice(...)` with no `base_url`.
+- `app/modules/invoices/router.py` — the `mark_paid`-at-creation `_record_payment_and_email_bg()` task likewise omitted `base_url`.
+
+With no `base_url`, `email_invoice`'s invoice-view link builder falls back to `settings.frontend_base_url`, which on Pi PROD is `http://192.168.1.90:8999` (a LAN IP). The request `Origin` header (carrying the real public domain via the reverse proxy) was available in the endpoint but was not captured before the background task was spawned, so it was lost. (Every other email-sending endpoint — issue email, QR session, send-payment-link, regenerate-link — already captured and passed the origin; these two background paths were the gap.)
+
+**Fix Applied**:
+1. `record_cash_payment_endpoint`: capture `_email_origin = request.headers.get("origin") or None` before spawning the task and pass `base_url=_email_origin` to `email_invoice`.
+2. `mark_paid` creation path: capture `_paid_origin = request.headers.get("origin") or None` in the endpoint scope and pass `base_url=_paid_origin` to `email_invoice`.
+
+Combined with ISSUE-169's `email_invoice` change (which also derives the link origin from the invoice's stored `payment_page_url` when present), the receipt email now uses the public domain the staff member is on.
+
+**Files Changed**:
+- `app/modules/payments/router.py`
+- `app/modules/invoices/router.py`
+- `tests/test_record_payment_email_base_url.py` (new AST-based regression guard — fails on unfixed code, passes with fix)
+
+**Note**: There is no per-org canonical public-domain field in the data model; the request `Origin` is the source of truth for customer-facing link hosts (per the email-delivery-visibility-fixes Bug 3 pattern). If staff access the app directly via the LAN IP, links will reflect that — the durable fix is to ensure staff use the public domain (and optionally set `FRONTEND_BASE_URL` on Pi to the public domain as the background-task fallback).

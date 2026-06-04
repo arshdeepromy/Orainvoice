@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+  .ev-ico { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; flex-shrink: 0; }
+  .ev-ico svg { width: 15px; height: 15px; }
+  .tag { font-family: var(--mono); font-size: 10.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; padding: 2px 7px; border-radius: 5px; }
+  .tag.create { background: var(--ok-soft); color: var(--ok); }
+  .tag.update { background: var(--accent-soft); color: var(--accent); }
+  .tag.delete { background: var(--danger-soft); color: var(--danger); }
+  .tag.auth { background: var(--purple-soft); color: var(--purple); }
+  .tag.billing { background: var(--warn-soft); color: var(--warn); }
+  .ip { font-family: var(--mono); font-size: 12px; color: var(--muted-2); }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Admin · Audit log">
+        <div class="page-head">
+          <div><div class="eyebrow">Platform admin</div><h1>Audit log</h1><p class="sub">Immutable record of privileged actions across the platform</p></div>
+          <div class="head-actions">
+            <button class="btn btn-ghost btn-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14"/></svg>Export CSV</button>
+          </div>
+        </div>
+
+        <div id="admin-nav" data-active="audit"></div>
+
+        <div class="toolbar">
+          <label class="search-input" style="flex:1;max-width:300px">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 21l-5-5m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+            <input id="search" type="text" placeholder="Search actor, action or resource…" />
+          </label>
+          <div class="seg" id="cat-seg">
+            <button class="on" data-c="">All</button>
+            <button data-c="auth">Auth</button>
+            <button data-c="create">Create</button>
+            <button data-c="update">Update</button>
+            <button data-c="delete">Delete</button>
+            <button data-c="billing">Billing</button>
+          </div>
+          <div class="spacer"></div>
+          <button class="filter-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 7V3m8 4V3M3 11h18M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>Last 7 days</button>
+        </div>
+
+        <section class="card">
+          <div class="tbl-wrap"><table>
+            <thead><tr><th>Event</th><th>Actor</th><th>Organisation</th><th>Type</th><th>IP address</th><th class="r">When</th></tr></thead>
+            <tbody id="rows"></tbody>
+          </table></div>
+          <div class="pagination">
+            <div class="info">Showing <span class="mono">1–12</span> of <span class="mono">8,402</span> events</div>
+            <div class="pg-btns"><button disabled>‹</button><button class="on">1</button><button>2</button><button>3</button><button>›</button></div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script src="shell.js" data-active="admin" data-title="Admin · Audit log"></script>
+<script src="admin-nav.js"></script>
+<script>
+const EV = {
+  create: ['var(--ok-soft)','var(--ok)','M12 5v14M5 12h14'],
+  update: ['var(--accent-soft)','var(--accent)','M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7m-1.5-9.5a2.1 2.1 0 113 3L12 19l-4 1 1-4z'],
+  delete: ['var(--danger-soft)','var(--danger)','M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6'],
+  auth: ['var(--purple-soft)','var(--purple)','M12 15a2 2 0 100-4 2 2 0 000 4zm6-5V7a6 6 0 00-12 0v3M5 10h14a1 1 0 011 1v9a1 1 0 01-1 1H5a1 1 0 01-1-1v-9a1 1 0 011-1z'],
+  billing: ['var(--warn-soft)','var(--warn)','M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z'],
+};
+const LOG = [
+  { ev:'Subscription upgraded to Multi-site', actor:'Arsh Randhawa', org:'North Panel & Paint', cat:'billing', ip:'203.97.12.44', t:'2m ago' },
+  { ev:'User account deleted', actor:'system (retention)', org:'Apex Tyres', cat:'delete', ip:'10.0.1.8', t:'18m ago' },
+  { ev:'Admin signed in (impersonation)', actor:'platform@orainvoice', org:'Hilltop Diesel', cat:'auth', ip:'118.92.40.10', t:'41m ago' },
+  { ev:'Organisation created', actor:'Liam Foster', org:'AutoSparky NZ', cat:'create', ip:'222.154.8.3', t:'1h ago' },
+  { ev:'Feature flag “bank_feeds” enabled', actor:'platform@orainvoice', org:'All tenants', cat:'update', ip:'10.0.1.4', t:'2h ago' },
+  { ev:'Failed sign-in (5 attempts)', actor:'unknown', org:'Kerikeri Motors', cat:'auth', ip:'45.88.21.190', t:'3h ago' },
+  { ev:'Payment method updated', actor:'Anika Sharma', org:'Kerikeri Motors', cat:'billing', ip:'203.97.12.44', t:'4h ago' },
+  { ev:'Branch added — Kaitaia', actor:'Mere Wiki', org:'Coastline Marine', cat:'create', ip:'121.98.140.2', t:'6h ago' },
+  { ev:'Role changed: Salesperson → Admin', actor:'Arsh Randhawa', org:'Kerikeri Motors', cat:'update', ip:'203.97.12.44', t:'8h ago' },
+  { ev:'Organisation suspended', actor:'platform@orainvoice', org:'Demo Workshop', cat:'delete', ip:'10.0.1.4', t:'11h ago' },
+  { ev:'Trial started', actor:'Greg Patel', org:'NorthPaint Co.', cat:'create', ip:'182.55.9.12', t:'14h ago' },
+  { ev:'MFA enabled', actor:'Dave Mceachern', org:'Kerikeri Motors', cat:'auth', ip:'203.97.12.44', t:'1d ago' },
+];
+const CAT_LABEL = { create:'Create', update:'Update', delete:'Delete', auth:'Auth', billing:'Billing' };
+let cat = '';
+function render() {
+  const q = (document.getElementById('search').value || '').toLowerCase();
+  const list = LOG.filter(l => (!cat || l.cat === cat) && (l.ev.toLowerCase().includes(q) || l.actor.toLowerCase().includes(q) || l.org.toLowerCase().includes(q)));
+  document.getElementById('rows').innerHTML = list.map(l => {
+    const [bg, fg, d] = EV[l.cat];
+    return `<tr>
+      <td><div class="row-flex"><span class="ev-ico" style="background:${bg};color:${fg}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="${d}"/></svg></span><span style="font-weight:500">${l.ev}</span></div></td>
+      <td><span style="color:var(--muted)">${l.actor}</span></td>
+      <td>${l.org}</td>
+      <td><span class="tag ${l.cat}">${CAT_LABEL[l.cat]}</span></td>
+      <td><span class="ip">${l.ip}</span></td>
+      <td class="r mono" style="color:var(--muted)">${l.t}</td>
+    </tr>`;
+  }).join('');
+}
+document.getElementById('search').addEventListener('input', render);
+document.querySelectorAll('#cat-seg button').forEach(b => b.addEventListener('click', () => {
+  document.querySelectorAll('#cat-seg button').forEach(x => x.classList.remove('on'));
+  b.classList.add('on'); cat = b.dataset.c; render();
+}));
+render();
+</script>
+</body>
+</html>

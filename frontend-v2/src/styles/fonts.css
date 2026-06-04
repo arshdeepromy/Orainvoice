@@ -1,0 +1,67 @@
+/* ============================================================
+   OraInvoice frontend-v2 — Fonts & base typography
+   ------------------------------------------------------------
+   Design authority: OraInvoice_Handoff/app/*.html <head> + ds.css
+
+   Every prototype screen loads IBM Plex via the same Google Fonts
+   stylesheet and applies it through ds.css. We mirror that here:
+
+     • Loading  — Google Fonts @import below (matches the prototype's
+                  <link href="…fonts.googleapis.com/css2?family=
+                  IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:
+                  wght@400;500;600;700&display=swap"> exactly: same
+                  families, same weights, same display=swap).
+     • Applying — base typography + the `.mono` utility below, copied
+                  from ds.css (body font, smoothing, tabular numerals).
+
+   WHY @import here (not a <link> in index.html for the load):
+   keeping the font load with the font-application rules makes this a
+   single self-contained styles module. tokens.css pulls it into the
+   one global import chain (main.tsx → tokens.css → fonts.css), so the
+   whole design layer travels together. The two <link rel="preconnect">
+   hints from the prototype's <head> CANNOT be expressed in CSS, so they
+   live in index.html purely as a performance optimisation (they warm
+   the connection that this @import then reuses).
+
+   ORDERING (Tailwind v4 / Lightning CSS): tokens.css is the build entry
+   and pulls this file in with `@import "./fonts.css"` placed right after
+   `@import "tailwindcss"`. At build time Tailwind's bundler inlines both
+   local @imports and HOISTS the remaining remote `@import url(…)` to the
+   very top of the emitted stylesheet — so the Google Fonts import ends up
+   before every other rule in the final CSS, satisfying the spec rule that
+   @import must precede all other rules. Keeping `@import "tailwindcss"`
+   as the first line also preserves the canonical Tailwind v4 entry.
+
+   The rules below are intentionally un-layered (no @layer): Tailwind v4
+   preflight lives in `@layer base`, and un-layered rules win over
+   layered ones in the cascade regardless of source order — matching how
+   ds.css's plain `body`/`.mono` rules behave in the prototype.
+   ============================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+
+/* ---------- Base typography (from ds.css) ----------
+   tokens.css declares --font-sans / --font-mono but does not apply a
+   document font, so this is not a duplication of tokens.css. */
+body {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Form controls don't inherit font-family by default — keep them on the
+   IBM Plex Sans stack (ds.css: `button { font-family: inherit; }`). */
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+}
+
+/* ---------- Mono utility ----------
+   Tabular numerals (`tnum`) keep numbers, IDs, codes and money columns
+   aligned to a fixed advance width. Mirrors ds.css `.mono`. */
+.mono {
+  font-family: var(--font-mono);
+  font-feature-settings: "tnum" 1;
+}

@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+</head>
+<body>
+<div class="app"><div id="sidebar"></div><div class="main"><div id="topbar"></div>
+<main class="content"><div class="page page-wide" data-screen-label="Project">
+<div class="crumbs"><a href="Projects.html">Projects</a><span class="sep">/</span><span style="color:var(--text)">Fleet overhaul</span></div>
+<div class="page-head"><div><div class="eyebrow">Work</div><h1>Fleet overhaul — 8 trucks</h1><p class="sub">Northland Freight · 62% complete</p></div><div class="head-actions"><button class="btn btn-ghost btn-sm">Edit</button><button class="btn btn-primary btn-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>Add job</button></div></div>
+<div class="kpis"><div class="kpi"><div class="top"><span class="label">Budget</span></div><div class="val" ><span class="c">$</span>28,000</div></div><div class="kpi"><div class="top"><span class="label">Spent</span></div><div class="val" ><span class="c">$</span>17,360</div></div><div class="kpi"><div class="top"><span class="label">Remaining</span></div><div class="val" style="color:var(--ok)"><span class="c">$</span>10,640</div></div><div class="kpi"><div class="top"><span class="label">Jobs</span></div><div class="val" >8</div></div></div><section class="card"><div class="tbl-wrap"><table><thead><tr><th class="">Job</th><th class="">Vehicle</th><th class="">Status</th><th class="r">Value</th></tr></thead><tbody><tr class="clickable" onclick="location.href='JobCardDetail.html'"><td class=""><span class="id">JC-1184</span></td><td class=""><span class="mono" style="color:var(--muted)">NPR-447</span></td><td class=""><span class="badge success"><span class="b-dot"></span>Done</span></td><td class="r"><span class="amt">$4,011</span></td></tr><tr class="clickable" onclick="location.href='JobCardDetail.html'"><td class=""><span class="id">JC-1182</span></td><td class=""><span class="mono" style="color:var(--muted)">TRK-204</span></td><td class=""><span class="badge warn"><span class="b-dot"></span>Blocked</span></td><td class="r"><span class="amt">$3,820</span></td></tr><tr class="clickable" onclick="location.href='JobCardDetail.html'"><td class=""><span class="id">JC-1190</span></td><td class=""><span class="mono" style="color:var(--muted)">NPR-448</span></td><td class=""><span class="badge inprogress"><span class="b-dot"></span>In progress</span></td><td class="r"><span class="amt">$2,640</span></td></tr></tbody></table></div></section>
+</div></main></div></div>
+<script src="shell.js" data-active="projects" data-title="Project"></script>
+</body></html>

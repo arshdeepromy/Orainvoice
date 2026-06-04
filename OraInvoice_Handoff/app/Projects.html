@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Projects">
+        <div class="page-head">
+          <div><div class="eyebrow">Work</div><h1>Projects</h1><p class="sub">4 active · $42,600 in progress</p></div>
+          <div class="head-actions"><a class="btn btn-primary btn-sm" href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>New project</a></div>
+        </div>
+
+
+
+        <section class="card">
+          <div class="tbl-wrap"><table><thead><tr><th class="">Project</th><th class="">Customer</th><th class="">Progress</th><th class="r">Budget</th><th class="r">Spent</th><th class="">Status</th></tr></thead><tbody><tr class="" ><td class=" "><span class="cust">Fleet overhaul — 8 trucks</span></td><td class=" ">Northland Freight</td><td class=" "><div class="progress" style="width:90px"><i style="width:62%"></i></div></td><td class="r "><span class="amt">$28,000</span></td><td class="r "><span class="amt" style="color:var(--muted)">$17,360</span></td><td class=" "><span class="badge inprogress"><span class="b-dot"></span>In progress</span></td></tr><tr class="" ><td class=" "><span class="cust">Workshop fit-out</span></td><td class=" ">Te Awa Joinery</td><td class=" "><div class="progress" style="width:90px"><i style="width:35%"></i></div></td><td class="r "><span class="amt">$9,400</span></td><td class="r "><span class="amt" style="color:var(--muted)">$3,290</span></td><td class=" "><span class="badge inprogress"><span class="b-dot"></span>In progress</span></td></tr><tr class="" ><td class=" "><span class="cust">Site machinery service</span></td><td class=" ">Coastal Builders</td><td class=" "><div class="progress" style="width:90px"><i style="width:88%"></i></div></td><td class="r "><span class="amt">$5,200</span></td><td class="r "><span class="amt" style="color:var(--muted)">$4,576</span></td><td class=" "><span class="badge inprogress"><span class="b-dot"></span>In progress</span></td></tr></tbody></table></div>
+          <div class="pagination"><div class="info">Showing <span class="mono">1–3</span> of <span class="mono">18</span></div><div class="pg-btns"><button disabled>‹</button><button class="on">1</button><button>2</button><button>3</button><button>›</button></div></div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="projects" data-title="Projects" data-primary="New project"></script>
+<script>
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));t.classList.add('on');}));
+</script>
+</body>
+</html>

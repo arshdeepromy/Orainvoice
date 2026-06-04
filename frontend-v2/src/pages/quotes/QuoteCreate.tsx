@@ -1,0 +1,2076 @@
+/**
+ * QuoteCreate — Task 21 port of frontend/src/pages/quotes/QuoteCreate.tsx.
+ *
+ * The full quote create/edit form. It mirrors InvoiceCreate closely (line items,
+ * GST inclusive/exclusive back-calculation, per-line gst-exempt handling, %/fixed
+ * discount, shipping, adjustment, subtotal/gst/total). EVERY calculation is copied
+ * BYTE-FOR-BYTE from the original — this is money, do not "simplify". All API
+ * calls (create/update quote, send, issue, catalogue/parts/labour/inventory
+ * pickers, customer + vehicle prefill, multi-rego, attachments), validation,
+ * navigationGuard dirty-state, contentEditable notes/T&C editors, and
+ * role/module/trade-family gating are preserved verbatim.
+ *
+ * Imports are rewritten to `@/` (FR-3 self-contained). The original
+ * `Button variant="secondary"` maps to the v2 `ghost` variant (v2 Button has no
+ * `secondary`). The inner gray/blue form styling is kept (available in v2) and
+ * the page is framed in the prototype's canvas/card/sticky-header language
+ * exactly as Task 20 did for InvoiceCreate (FR-2 / FR-2b).
+ */
+
+import { useState, useCallback, useEffect, useRef } from 'react'
+import { useNavigate, useParams } from 'react-router-dom'
+import apiClient from '@/api/client'
+import { Button, Modal } from '@/components/ui'
+import { useModules } from '@/contexts/ModuleContext'
+import { useTenant } from '@/contexts/TenantContext'
+import { useBranch } from '@/contexts/BranchContext'
+import { useAuth } from '@/contexts/AuthContext'
+import { setNavigationGuard, clearNavigationGuard } from '@/utils/navigationGuard'
+import { VehicleLiveSearch } from '@/components/vehicles/VehicleLiveSearch'
+import QuoteMultiVehicleSection from '@/components/quotes/QuoteMultiVehicleSection'
+import InventoryPickerModal from '@/components/quotes/InventoryPickerModal'
+import { CustomerCreateModal } from '@/components/customers/CustomerCreateModal'
+
+/* ------------------------------------------------------------------ */
+/*  Types                                                              */
+/* ------------------------------------------------------------------ */
+
+interface Customer {
+  id: string
+  first_name: string
+  last_name: string
+  email: string
+  phone: string
+  address?: string
+  linked_vehicles?: LinkedVehicle[]
+}
+
+interface Vehicle {
+  id: string
+  rego: string
+  make: string
+  model: string
+  year: number | null
+  colour: string
+  odometer?: number | null
+  wof_expiry?: string | null
+  cof_expiry?: string | null
+  inspection_type?: string | null
+}
+
+interface LinkedVehicle {
+  id: string
+  rego: string
+  make: string | null
+  model: string | null
+  year: number | null
+  colour: string | null
+  odometer?: number | null
+  wof_expiry?: string | null
+  cof_expiry?: string | null
+  inspection_type?: string | null
+}
+
+interface Project {
+  id: string
+  name: string
+  status: string
+}
+
+interface CatalogueItem {
+  id: string
+  name: string
+  description?: string
+  default_price: number
+  gst_applicable: boolean
+  gst_inclusive?: boolean
+  category?: string
+  sku?: string
+  is_package?: boolean
+}
+
+interface TaxRate {
+  id: string
+  name: string
+  rate: number
+}
+
+interface LineItem {
+  key: string
+  item_id?: string
+  description: string
+  line_description?: string
+  original_description?: string
+  quantity: number
+  rate: number
+  tax_id: string
+  tax_rate: number
+  amount: number
+  gst_inclusive?: boolean
+  inclusive_price?: number | null
+  catalogue_item_id?: string | null
+  stock_item_id?: string | null
+}
+
+interface FluidUsageItem {
+  stock_item_id: string
+  catalogue_item_id: string
+  litres: number
+  item_name: string
+}
+
+interface FormErrors {
+  customer?: string
+  lineItems?: string
+  submit?: string
+  [key: string]: string | undefined
+}
+
+/* ------------------------------------------------------------------ */
+/*  Constants                                                          */
+/* ------------------------------------------------------------------ */
+
+const VALIDITY_OPTIONS = [
+  { value: '7', label: '7 days' },
+  { value: '14', label: '14 days' },
+  { value: '30', label: '30 days' },
+]
+
+const DEFAULT_TAX_RATES: TaxRate[] = [
+  { id: 'gst_15', name: 'GST (15%)', rate: 15 },
+  { id: 'gst_0', name: 'GST Exempt (0%)', rate: 0 },
+]
+
+/* ------------------------------------------------------------------ */
+/*  Helpers                                                            */
+/* ------------------------------------------------------------------ */
+
+function formatNZD(amount: number): string {
+  return new Intl.NumberFormat('en-NZ', { style: 'currency', currency: 'NZD' }).format(amount)
+}
+
+function formatDate(d: Date): string {
+  return new Intl.DateTimeFormat('en-NZ', { day: '2-digit', month: 'short', year: 'numeric' }).format(d)
+}
+
+function formatDateISO(d: Date): string {
+  return d.toISOString().split('T')[0]
+}
+
+function newLineItem(): LineItem {
+  return {
+    key: crypto.randomUUID(),
+    description: '',
+    quantity: 1,
+    rate: 0,
+    tax_id: 'gst_15',
+    tax_rate: 15,
+    amount: 0,
+  }
+}
+
+function calcLineAmount(item: LineItem): number {
+  return Math.round(item.quantity * item.rate * 100) / 100
+}
+
+/* ------------------------------------------------------------------ */
+/*  Customer Search                                                    */
+/* ------------------------------------------------------------------ */
+
+function CustomerSearch({
+  selectedCustomer,
+  onSelect,
+  onVehicleAutoSelect,
+  includeVehicles = true,
+  error,
+}: {
+  selectedCustomer: Customer | null
+  onSelect: (c: Customer | null) => void
+  onVehicleAutoSelect?: (v: LinkedVehicle) => void
+  includeVehicles?: boolean
+  error?: string
+}) {
+  const [query, setQuery] = useState('')
+  const [results, setResults] = useState<Customer[]>([])
+  const [loading, setLoading] = useState(false)
+  const [showDropdown, setShowDropdown] = useState(false)
+  const [showCreateModal, setShowCreateModal] = useState(false)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined)
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) setShowDropdown(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
+
+  const search = useCallback(async (q: string) => {
+    if (q.length < 2) { setResults([]); return }
+    setLoading(true)
+    try {
+      const res = await apiClient.get('/customers', { params: { q: q, ...(includeVehicles ? { include_vehicles: true } : {}) } })
+      const data = res.data as any
+      const customers = Array.isArray(data) ? data : (data?.customers ?? [])
+      const term = q.toLowerCase()
+      const matchesSequence = (haystack: string, needle: string): boolean => {
+        let ni = 0
+        const h = haystack.toLowerCase()
+        for (let i = 0; i < h.length && ni < needle.length; i++) {
+          if (h[i] === needle[ni]) ni++
+        }
+        return ni === needle.length
+      }
+      const filtered = customers.filter((c: any) => {
+        const firstName = (c.first_name || '').toLowerCase()
+        const lastName = (c.last_name || '').toLowerCase()
+        const displayName = (c.display_name || '').toLowerCase()
+        const phone = (c.phone || '').toLowerCase()
+        const regoMatch = (c.linked_vehicles || []).some((v: LinkedVehicle) =>
+          matchesSequence(v.rego || '', term)
+        )
+        return (
+          matchesSequence(firstName, term) ||
+          matchesSequence(lastName, term) ||
+          matchesSequence(displayName, term) ||
+          matchesSequence(phone, term) ||
+          regoMatch
+        )
+      })
+      setResults(filtered)
+    } catch { setResults([]) }
+    finally { setLoading(false) }
+  }, [includeVehicles])
+
+  const handleInput = (value: string) => {
+    setQuery(value)
+    setShowDropdown(true)
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(() => search(value), 300)
+  }
+
+  const handleSelect = (c: Customer) => {
+    onSelect(c)
+    setQuery(`${c.first_name} ${c.last_name}`)
+    setShowDropdown(false)
+
+    // Auto-select first linked vehicle if available
+    if (onVehicleAutoSelect && c.linked_vehicles && c.linked_vehicles.length > 0) {
+      onVehicleAutoSelect(c.linked_vehicles[0])
+    }
+  }
+
+  if (selectedCustomer) {
+    return (
+      <div className="flex flex-col gap-1">
+        <label className="text-sm font-medium text-gray-700">Customer Name *</label>
+        <div className="flex items-center gap-2 rounded-md border border-gray-300 bg-gray-50 px-3 py-2">
+          <span className="flex-1 text-gray-900">
+            {selectedCustomer.first_name} {selectedCustomer.last_name}
+            {selectedCustomer.email && <span className="ml-2 text-gray-500">· {selectedCustomer.email}</span>}
+          </span>
+          <button type="button" onClick={() => { onSelect(null); setQuery('') }}
+            className="rounded p-1 text-gray-400 hover:text-gray-600" aria-label="Change customer">✕</button>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div ref={containerRef} className="relative flex flex-col gap-1">
+      <label className="text-sm font-medium text-gray-700">Customer Name *</label>
+      <input type="text" value={query} onChange={(e) => handleInput(e.target.value)}
+        onFocus={() => query.length >= 2 && setShowDropdown(true)}
+        placeholder="Search or select a customer"
+        className={`w-full rounded-md border px-3 py-2 text-sm shadow-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${error ? 'border-red-500' : 'border-gray-300'}`}
+        autoComplete="off" />
+      {error && <p className="mt-1 text-xs text-red-600">{error}</p>}
+      {showDropdown && (
+        <div className="absolute top-full left-0 right-0 z-30 mt-1 max-h-56 overflow-auto rounded-md border border-gray-200 bg-white shadow-lg">
+          {loading && <div className="px-4 py-3 text-sm text-gray-500">Searching…</div>}
+          {!loading && results.map((c) => (
+            <button key={c.id} type="button"
+              onClick={() => handleSelect(c)}
+              className="w-full px-4 py-2.5 text-left hover:bg-gray-50 text-sm">
+              <span className="font-medium text-gray-900">{c.first_name} {c.last_name}</span>
+              {c.email && <span className="ml-2 text-gray-500">{c.email}</span>}
+            </button>
+          ))}
+          {!loading && query.length >= 2 && results.length === 0 && (
+            <div className="px-4 py-3 text-sm text-gray-500">No customers found</div>
+          )}
+          <button type="button" onClick={() => { setShowDropdown(false); setShowCreateModal(true) }}
+            className="w-full border-t border-gray-100 px-4 py-3 text-left text-sm font-medium text-blue-600 hover:bg-blue-50">
+            + Add New Customer
+          </button>
+        </div>
+      )}
+      <CustomerCreateModal
+        open={showCreateModal}
+        onClose={() => setShowCreateModal(false)}
+        onCustomerCreated={(created: Customer) => {
+          onSelect(created)
+          setQuery(`${created.first_name} ${created.last_name}`)
+          setShowCreateModal(false)
+        }}
+      />
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/*  Item Table Row                                                     */
+/* ------------------------------------------------------------------ */
+
+function ItemTableRow({
+  item,
+  index,
+  catalogueItems,
+  taxRates,
+  onChange,
+  onRemove,
+  onItemCreated,
+}: {
+  item: LineItem
+  index: number
+  catalogueItems: CatalogueItem[]
+  taxRates: TaxRate[]
+  onChange: (index: number, updated: LineItem) => void
+  onRemove: (index: number) => void
+  onItemCreated: (ci: CatalogueItem) => void
+}) {
+  const [showItemDropdown, setShowItemDropdown] = useState(false)
+  const [itemSearch, setItemSearch] = useState('')
+  const [showInlineForm, setShowInlineForm] = useState(false)
+  const [inlineName, setInlineName] = useState('')
+  const [inlineUnit, setInlineUnit] = useState('')
+  const [inlinePrice, setInlinePrice] = useState('')
+  const [inlineDescription, setInlineDescription] = useState('')
+  const [inlineGstExempt, setInlineGstExempt] = useState(false)
+  const [inlineSaving, setInlineSaving] = useState(false)
+  const [inlineError, setInlineError] = useState('')
+  const [descUpdating, setDescUpdating] = useState(false)
+  const [descUpdated, setDescUpdated] = useState(false)
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) setShowItemDropdown(false)
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  const update = (patch: Partial<LineItem>) => {
+    const updated = { ...item, ...patch }
+    updated.amount = calcLineAmount(updated)
+    onChange(index, updated)
+  }
+
+  const handleItemSelect = (ci: CatalogueItem) => {
+    // Match InvoiceCreate pattern:
+    // GST-inclusive: back-calculate ex-GST rate so quote shows proper breakdown
+    // GST-exempt: rate as-is, 0% tax
+    // GST-exclusive (default): rate as-is, 15% tax
+    const isGstInclusive = ci.gst_inclusive === true
+    const isGstExempt = !ci.gst_applicable
+    let rate: number
+    let taxRate: number
+    let taxId: string
+    if (isGstExempt) {
+      rate = ci.default_price
+      taxRate = 0
+      taxId = 'gst_0'
+    } else if (isGstInclusive) {
+      rate = Math.round((ci.default_price / 1.15) * 100) / 100
+      taxRate = 15
+      taxId = 'gst_15'
+    } else {
+      rate = ci.default_price
+      taxRate = 15
+      taxId = 'gst_15'
+    }
+    update({
+      item_id: ci.id,
+      description: ci.name,
+      line_description: ci.description || '',
+      original_description: ci.description || '',
+      rate,
+      tax_rate: taxRate,
+      tax_id: taxId,
+      gst_inclusive: isGstInclusive,
+      inclusive_price: isGstInclusive ? ci.default_price : null,
+    })
+    setShowItemDropdown(false)
+    setItemSearch('')
+    setDescUpdated(false)
+  }
+
+  const handleTaxChange = (taxId: string) => {
+    const tax = taxRates.find(t => t.id === taxId)
+    update({ tax_id: taxId, tax_rate: tax?.rate || 0 })
+  }
+
+  const filteredItems = (Array.isArray(catalogueItems) ? catalogueItems : []).filter(ci =>
+    ci.name.toLowerCase().includes(itemSearch.toLowerCase()) ||
+    (ci.sku && ci.sku.toLowerCase().includes(itemSearch.toLowerCase()))
+  )
+
+  const handleInlineItemSubmit = async () => {
+    if (!inlineName.trim()) { setInlineError('Name is required.'); return }
+    if (!inlinePrice.trim() || isNaN(Number(inlinePrice))) { setInlineError('Valid selling price is required.'); return }
+    setInlineSaving(true)
+    setInlineError('')
+    try {
+      const res = await apiClient.post<{ item: { id: string; name: string; default_price: string; is_gst_exempt: boolean; category: string | null; description: string | null } }>('/catalogue/items', {
+        name: inlineName.trim(),
+        default_price: inlinePrice.trim(),
+        is_gst_exempt: inlineGstExempt,
+        description: inlineDescription.trim() || null,
+        category: inlineUnit.trim() || null,
+      })
+      const created = res.data.item
+      const mapped: CatalogueItem = {
+        id: created.id,
+        name: created.name,
+        default_price: Number(created.default_price),
+        gst_applicable: !created.is_gst_exempt,
+        category: created.category || undefined,
+      }
+      onItemCreated(mapped)
+      handleItemSelect(mapped)
+      setShowInlineForm(false)
+      setInlineName(''); setInlinePrice(''); setInlineDescription(''); setInlineUnit('')
+    } catch (err: any) {
+      setInlineError(err?.response?.data?.detail || 'Failed to create item.')
+    } finally {
+      setInlineSaving(false)
+    }
+  }
+
+  const descriptionChanged = item.item_id && item.line_description !== undefined && item.line_description !== (item.original_description || '')
+
+  const handleUpdateDescriptionPermanently = async () => {
+    if (!item.item_id || !item.line_description) return
+    setDescUpdating(true)
+    try {
+      await apiClient.put(`/catalogue/items/${item.item_id}`, { description: item.line_description.trim() })
+      update({ original_description: item.line_description })
+      setDescUpdated(true)
+      setTimeout(() => setDescUpdated(false), 3000)
+    } catch { /* silent */ }
+    finally { setDescUpdating(false) }
+  }
+
+  return (
+    <tr className="border-b border-gray-100 hover:bg-gray-50 align-top">
+      <td className="py-3 px-2">
+        <div ref={containerRef} className="relative">
+          <input type="text" value={item.description}
+            onChange={(e) => { update({ description: e.target.value }); setItemSearch(e.target.value) }}
+            onFocus={() => setShowItemDropdown(true)}
+            placeholder="Type or click to select an item"
+            className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          {item.item_id && (
+            <div className="mt-1">
+              {item.gst_inclusive && (
+                <span className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5 mb-1">
+                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                  Price is GST inclusive — GST not added again
+                </span>
+              )}
+              <textarea
+                value={item.line_description || ''}
+                onChange={(e) => { update({ line_description: e.target.value }); setDescUpdated(false) }}
+                placeholder="Item description"
+                rows={2}
+                className="w-full rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-400 resize-y"
+              />
+              {descUpdated ? (
+                <span className="text-[10px] text-green-600 flex items-center gap-1">
+                  <svg className="w-3 h-3 animate-bounce" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+                  Updated
+                </span>
+              ) : descriptionChanged ? (
+                <span className="text-[10px] text-red-500">
+                  Description changed —{' '}
+                  <button type="button" disabled={descUpdating} onClick={handleUpdateDescriptionPermanently}
+                    className="text-blue-600 hover:underline font-medium disabled:opacity-50">
+                    {descUpdating ? 'Updating…' : 'Update permanently'}
+                  </button>
+                </span>
+              ) : null}
+            </div>
+          )}
+          {showItemDropdown && (
+            <div className="absolute top-full left-0 right-0 z-50 mt-1 max-h-48 overflow-auto rounded-md border border-gray-200 bg-white shadow-lg">
+              {filteredItems.slice(0, 10).map((ci) => (
+                <button key={ci.id} type="button" onClick={() => handleItemSelect(ci)}
+                  className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50">
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium text-gray-900">{ci.name}</span>
+                    {(ci.is_package ?? false) && (
+                      <span className="inline-flex items-center rounded-full bg-blue-100 px-1.5 py-0.5 text-[10px] font-medium text-blue-700">📦 Package</span>
+                    )}
+                  </div>
+                  {ci.sku && <div className="text-xs text-gray-500">SKU: {ci.sku}</div>}
+                  <div className="text-xs text-gray-500">{formatNZD(ci.default_price)}</div>
+                </button>
+              ))}
+              {filteredItems.length === 0 && (
+                <div className="px-3 py-2 text-sm text-gray-500">No items found</div>
+              )}
+              <button type="button"
+                onClick={() => { setShowInlineForm(true); setInlineName(itemSearch.trim()); setShowItemDropdown(false) }}
+                className="w-full px-3 py-2 text-left text-sm text-blue-600 font-medium hover:bg-blue-50">
+                + Add new item
+              </button>
+            </div>
+          )}
+          {showInlineForm && (
+            <div className="mt-2 rounded-md border border-gray-200 bg-gray-50 p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <h4 className="text-sm font-semibold text-gray-900">New Item</h4>
+                <button type="button" onClick={() => setShowInlineForm(false)} className="text-gray-400 hover:text-gray-600 text-lg leading-none">&times;</button>
+              </div>
+              <hr className="border-gray-200" />
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Item name *</label>
+                <input type="text" value={inlineName} onChange={(e) => setInlineName(e.target.value)}
+                  className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Description</label>
+                <textarea value={inlineDescription} onChange={(e) => setInlineDescription(e.target.value)} rows={3} placeholder="Optional item description"
+                  className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-1">Default price (ex-GST) *</label>
+                  <input type="number" min="0" step="0.01" value={inlinePrice} onChange={(e) => setInlinePrice(e.target.value)} placeholder="e.g. 85.00"
+                    className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-1">Category</label>
+                  <input type="text" value={inlineUnit} onChange={(e) => setInlineUnit(e.target.value)} placeholder="e.g. Plumbing, Electrical"
+                    className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </div>
+              </div>
+              <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                <input type="checkbox" checked={inlineGstExempt} onChange={(e) => setInlineGstExempt(e.target.checked)} className="rounded border-gray-300" />
+                GST exempt
+              </label>
+              {inlineError && <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{inlineError}</div>}
+              <div className="flex justify-end gap-2">
+                <button type="button" disabled={inlineSaving} onClick={() => setShowInlineForm(false)}
+                  className="rounded border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100">
+                  Cancel
+                </button>
+                <button type="button" disabled={inlineSaving} onClick={handleInlineItemSubmit}
+                  className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50">
+                  {inlineSaving ? 'Saving…' : 'Create Item'}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </td>
+      <td className="py-3 px-2 w-24">
+        <input type="number" min="1" step="1" value={item.quantity}
+          onChange={(e) => update({ quantity: Math.max(1, Number(e.target.value) || 1) })}
+          className="w-full rounded border border-gray-300 px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500" />
+      </td>
+      <td className="py-3 px-2 w-32">
+        <input type="number" min="0" step="0.01" value={item.rate}
+          onChange={(e) => update({ rate: Math.max(0, Number(e.target.value) || 0), gst_inclusive: false, inclusive_price: undefined })}
+          className="w-full rounded border border-gray-300 px-3 py-2 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500" />
+      </td>
+      {/* Tax */}
+      <td className="py-3 px-2 w-36">
+        <div className="rounded-md border border-gray-200 bg-gray-50 px-3 py-1.5 text-center">
+          <span className="block text-sm font-semibold text-gray-900">
+            {formatNZD(item.tax_rate > 0 ? Math.round(item.amount * item.tax_rate) / 100 : 0)}
+          </span>
+          <select
+            value={item.tax_id || ''}
+            onChange={(e) => handleTaxChange(e.target.value)}
+            className="mt-0.5 w-full rounded border-0 bg-transparent px-0 py-0 text-[11px] text-blue-600 text-center cursor-pointer hover:text-blue-800 focus:outline-none focus:ring-0 appearance-none font-medium"
+          >
+            {taxRates.map((tax) => (
+              <option key={tax.id} value={tax.id}>{tax.name}</option>
+            ))}
+          </select>
+        </div>
+      </td>
+      {/* Amount (line total including GST) */}
+      <td className="py-3 px-2 w-28 text-right text-sm font-medium text-gray-900">
+        {formatNZD(item.amount + (item.tax_rate > 0 ? Math.round(item.amount * item.tax_rate) / 100 : 0))}
+      </td>
+      <td className="py-3 px-2 w-12">
+        <button type="button" onClick={() => onRemove(index)}
+          className="rounded p-1 text-gray-400 hover:text-red-500" aria-label="Remove item">
+          <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+          </svg>
+        </button>
+      </td>
+    </tr>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/*  Main Component                                                     */
+/* ------------------------------------------------------------------ */
+
+export default function QuoteCreate() {
+  const navigate = useNavigate()
+  const { id: editId } = useParams<{ id: string }>()
+  const isEditMode = Boolean(editId)
+  const { tradeFamily, settings } = useTenant()
+  const { selectedBranchId } = useBranch()
+  const { user } = useAuth()
+  const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
+  const { isEnabled } = useModules()
+  const projectsEnabled = isEnabled('projects')
+  const vehiclesEnabled = isEnabled('vehicles')
+
+  // Read pre-fill params from URL (e.g., /quotes/new?customer_id=xxx&vehicle_rego=yyy
+  // or vehicle_regos=A,B,C from the multi-vehicle picker on the customer profile).
+  // Mirrors the InvoiceCreate "Issue Invoice" prefill flow so the Customer
+  // Profile "Issue Quote" button populates customer + vehicle (incl. WOF /
+  // COF / odometer / inspection_type / service-due) without a manual lookup.
+  const [searchParams] = useState(() => new URLSearchParams(window.location.search))
+  const prefillCustomerId = searchParams.get('customer_id')
+  const prefillVehicleRego = searchParams.get('vehicle_rego')
+  const prefillVehicleRegos = (searchParams.get('vehicle_regos') ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+
+  // Header fields
+  const [customer, setCustomer] = useState<Customer | null>(null)
+  const [vehicle, setVehicle] = useState<Vehicle | null>(null)
+  const [vehicleRego, setVehicleRego] = useState('')
+  const [subject, setSubject] = useState('')
+  const [validityDays, setValidityDays] = useState('30')
+  const [quoteDate] = useState(() => formatDateISO(new Date()))
+
+  // Projects
+  const [projects, setProjects] = useState<Project[]>([])
+  const [selectedProjectId, setSelectedProjectId] = useState('')
+
+  // Line items
+  const [lineItems, setLineItems] = useState<LineItem[]>([newLineItem()])
+  const [catalogueItems, setCatalogueItems] = useState<CatalogueItem[]>([])
+  const [taxRates] = useState<TaxRate[]>(DEFAULT_TAX_RATES)
+
+  // Totals adjustments (aligned with invoice)
+  const [discountType, setDiscountType] = useState<'percentage' | 'fixed'>('percentage')
+  const [discountValue, setDiscountValue] = useState(0)
+  const [shippingCharges, setShippingCharges] = useState(0)
+  const [adjustment, setAdjustment] = useState(0)
+
+  // Notes and terms
+  const [notes, setNotes] = useState('')
+  const [terms, setTerms] = useState('')
+
+  // Both Notes and T&C are rendered as HTML on the org and the document.
+  // contentEditable preserves rich formatting and line breaks; mirrors
+  // InvoiceCreate's T&C editor.
+  const notesEditorRef = useRef<HTMLDivElement>(null)
+  const notesUserEditingRef = useRef(false)
+  const tcEditorRef = useRef<HTMLDivElement>(null)
+  const tcUserEditingRef = useRef(false)
+
+  // Convert legacy plain-text (with \n) to HTML for contentEditable editors.
+  // If the value already contains tags, pass it through unchanged.
+  const toHtml = (value: string | null | undefined): string => {
+    const v = value || ''
+    if (/<[a-z][\s\S]*>/i.test(v)) return v
+    return v.replace(/\r\n|\r|\n/g, '<br>')
+  }
+
+  // Pre-fill notes from org settings (only on create, not edit) — mirrors invoice behaviour
+  useEffect(() => {
+    if (!isEditMode && settings?.invoice?.default_notes_enabled && settings?.invoice?.default_notes) {
+      setNotes(prev => prev || toHtml(settings.invoice.default_notes))
+    }
+  }, [isEditMode, settings?.invoice?.default_notes_enabled, settings?.invoice?.default_notes])
+
+  // Pre-fill T&C from org settings (same as invoice creation). Org-level T&C
+  // is already HTML; toHtml passes it through.
+  useEffect(() => {
+    if (!isEditMode && settings?.invoice?.terms_and_conditions_enabled && settings?.invoice?.terms_and_conditions) {
+      setTerms(prev => prev || toHtml(settings.invoice.terms_and_conditions))
+    }
+  }, [isEditMode, settings?.invoice?.terms_and_conditions_enabled, settings?.invoice?.terms_and_conditions])
+
+  // Sync the Notes contentEditable editor with the `notes` state — only when
+  // the user is not actively typing.
+  useEffect(() => {
+    if (notesUserEditingRef.current) {
+      notesUserEditingRef.current = false
+      return
+    }
+    if (notesEditorRef.current) {
+      const desired = notes || ''
+      if (notesEditorRef.current.innerHTML !== desired) {
+        notesEditorRef.current.innerHTML = desired
+      }
+    }
+  }, [notes])
+
+  // Sync the T&C contentEditable editor with the `terms` state — same pattern.
+  useEffect(() => {
+    if (tcUserEditingRef.current) {
+      tcUserEditingRef.current = false
+      return
+    }
+    if (tcEditorRef.current) {
+      const desired = terms || ''
+      if (tcEditorRef.current.innerHTML !== desired) {
+        tcEditorRef.current.innerHTML = desired
+      }
+    }
+  }, [terms])
+
+  // Parity fields (Phase 5)
+  const [orderNumber, setOrderNumber] = useState('')
+  const [salespersonId, setSalespersonId] = useState<string | null>(null)
+  const [salespersonOptions, setSalespersonOptions] = useState<{ id: string; name: string }[]>([])
+  const [additionalVehicles, setAdditionalVehicles] = useState<{ rego?: string; make?: string; model?: string; year?: number | null; odometer?: number | null; wof_expiry?: string | null; cof_expiry?: string | null }[]>([])
+  const [fluidUsage, setFluidUsage] = useState<FluidUsageItem[]>([])
+  const [saveTermsAsDefault, setSaveTermsAsDefault] = useState(false)
+
+  // Attachments (Task 16)
+  const [pendingFiles, setPendingFiles] = useState<File[]>([])
+  const [existingAttachments, setExistingAttachments] = useState<{ id: string; file_name: string; file_size: number; mime_type: string }[]>([])
+  const [uploadError, setUploadError] = useState<string | null>(null)
+
+  // Form state
+  const [saving, setSaving] = useState(false)
+  const [sendingAndSaving, setSendingAndSaving] = useState(false)
+  const [issuing, setIssuing] = useState(false)
+  const [errors, setErrors] = useState<FormErrors>({})
+  const [loadingQuote, setLoadingQuote] = useState(isEditMode)
+
+  const expiryDate = formatDate(new Date(Date.now() + Number(validityDays) * 86400000))
+
+  // Calculate totals (same approach as InvoiceCreate)
+  const subTotal = lineItems.reduce((sum, item) => sum + item.amount, 0)
+  const discountAmount = discountType === 'percentage'
+    ? (subTotal * discountValue / 100)
+    : discountValue
+  const afterDiscount = subTotal - discountAmount
+  // For GST-inclusive items, derive GST from the inclusive price to avoid
+  // rounding errors. Ex: $150 incl → GST = $150 - ($150/1.15) = $19.57
+  // instead of $130.43 × 0.15 = $19.56 (loses 1 cent).
+  const taxAmount = lineItems.reduce((sum, item) => {
+    if (item.tax_rate <= 0) return sum
+    if (item.gst_inclusive && item.inclusive_price) {
+      // Reconstruct the inclusive total for the line (qty × inclusive unit price)
+      const inclTotal = Math.round(item.quantity * item.inclusive_price * 100) / 100
+      // GST = inclusive - ex-GST amount
+      const gst = Math.round((inclTotal - item.amount) * 100) / 100
+      return sum + gst
+    }
+    return sum + Math.round(item.amount * item.tax_rate) / 100
+  }, 0)
+  const total = afterDiscount + taxAmount + shippingCharges + adjustment
+
+  // Load existing quote for edit mode
+  useEffect(() => {
+    if (!editId) return
+    let cancelled = false
+    async function loadQuote() {
+      try {
+        const res = await apiClient.get(`/quotes/${editId}`)
+        const q = (res.data as any)?.quote || (res.data as any)
+        if (cancelled) return
+
+        if (q.customer_id) {
+          try {
+            const custRes = await apiClient.get(`/customers/${q.customer_id}`)
+            const cust = (custRes.data as any)?.customer || custRes.data
+            if (!cancelled) setCustomer(cust)
+          } catch { /* non-blocking */ }
+        }
+
+        if (q.vehicle_rego) {
+          setVehicleRego(q.vehicle_rego)
+          setVehicle({
+            id: '', rego: q.vehicle_rego,
+            make: q.vehicle_make || '', model: q.vehicle_model || '',
+            year: q.vehicle_year || null, colour: '',
+            odometer: q.vehicle_odometer ?? null,
+            wof_expiry: q.vehicle_wof_expiry ?? null,
+            cof_expiry: q.vehicle_cof_expiry ?? null,
+          })
+        }
+
+        setSubject(q.subject || '')
+        setNotes(q.notes || '')
+        setTerms(q.terms || '')
+        if (q.order_number) setOrderNumber(q.order_number)
+        if (q.salesperson_id) setSalespersonId(q.salesperson_id)
+        if (q.additional_vehicles?.length) setAdditionalVehicles(q.additional_vehicles)
+        if (q.fluid_usage?.length) setFluidUsage(q.fluid_usage)
+        if (q.project_id) setSelectedProjectId(q.project_id)
+
+        // Populate discount/shipping/adjustment
+        if (q.discount_type) setDiscountType(q.discount_type === 'fixed' ? 'fixed' : 'percentage')
+        if (q.discount_value != null) setDiscountValue(Number(q.discount_value))
+        if (q.shipping_charges != null) setShippingCharges(Number(q.shipping_charges))
+        if (q.adjustment != null) setAdjustment(Number(q.adjustment))
+
+        // Populate line items (convert from quote format to invoice-aligned format)
+        if (q.line_items && q.line_items.length > 0) {
+          setLineItems(q.line_items.map((li: any) => ({
+            key: crypto.randomUUID(),
+            item_id: '',
+            description: li.description || '',
+            quantity: Number(li.quantity) || 1,
+            rate: Number(li.unit_price) || 0,
+            tax_id: li.is_gst_exempt ? 'gst_0' : 'gst_15',
+            tax_rate: li.is_gst_exempt ? 0 : 15,
+            amount: Number(li.line_total) || 0,
+            gst_inclusive: li.gst_inclusive ?? false,
+            inclusive_price: li.inclusive_price != null ? Number(li.inclusive_price) : null,
+            catalogue_item_id: li.catalogue_item_id ?? null,
+            stock_item_id: li.stock_item_id ?? null,
+          })))
+        }
+      } catch {
+        setErrors({ submit: 'Failed to load quote for editing' })
+      } finally {
+        if (!cancelled) setLoadingQuote(false)
+      }
+    }
+    loadQuote()
+    return () => { cancelled = true }
+  }, [editId])
+
+  // Pre-fill customer and vehicle from URL query params
+  // (e.g., from Customer Profile "Issue Quote" button →
+  //  /quotes/new?customer_id=xxx&vehicle_rego=yyy).
+  // Mirrors the InvoiceCreate "Issue Invoice" prefill flow exactly so a
+  // schema-level miss on either side surfaces immediately on the other.
+  useEffect(() => {
+    if (!prefillCustomerId || isEditMode) return
+    let cancelled = false
+    async function prefill() {
+      try {
+        const res = await apiClient.get<any>(`/customers/${prefillCustomerId}`)
+        if (cancelled) return
+        const c = res.data
+        if (!c) return
+
+        const customerObj: Customer = {
+          id: c.id,
+          first_name: c.first_name ?? '',
+          last_name: c.last_name ?? '',
+          email: c.email ?? '',
+          phone: c.phone ?? '',
+          address: c.address ?? undefined,
+          linked_vehicles: (c.vehicles ?? []).map((v: any) => ({
+            id: v.id,
+            rego: v.rego ?? '',
+            make: v.make ?? null,
+            model: v.model ?? null,
+            year: v.year ?? null,
+            colour: v.colour ?? null,
+            odometer: v.odometer ?? null,
+            wof_expiry: v.wof_expiry ?? null,
+            cof_expiry: v.cof_expiry ?? null,
+            inspection_type: v.inspection_type ?? null,
+          })),
+        }
+        setCustomer(customerObj)
+
+        if (!vehiclesEnabled || !isAutomotive) return
+
+        // Multi-vehicle prefill from the customer-profile picker
+        // (?vehicle_regos=A,B,C). The first rego becomes the primary
+        // vehicle on the form; the rest are loaded as additional
+        // vehicles. Mirrors the InvoiceCreate multi-rego branch exactly.
+        if (prefillVehicleRegos.length > 0) {
+          type LocalVeh = {
+            id: string
+            rego: string
+            make: string
+            model: string
+            year: number | null
+            odometer: number | null
+            wof_expiry: string | null
+            cof_expiry: string | null
+            inspection_type: string | null
+          }
+          const matched: LocalVeh[] = []
+          for (const rego of prefillVehicleRegos) {
+            // Try the customer's linked vehicles first.
+            const local = (c.vehicles ?? []).find(
+              (v: any) => (v.rego ?? '').toUpperCase() === rego.toUpperCase(),
+            )
+            if (local) {
+              matched.push({
+                id: local.id,
+                rego: local.rego ?? '',
+                make: local.make ?? '',
+                model: local.model ?? '',
+                year: local.year ?? null,
+                odometer: local.odometer ?? null,
+                wof_expiry: local.wof_expiry ?? null,
+                cof_expiry: local.cof_expiry ?? null,
+                inspection_type: local.inspection_type ?? null,
+              })
+              continue
+            }
+            // Fall back to the global rego search per vehicle.
+            try {
+              const searchRes = await apiClient.get<{ results: any[] }>(
+                '/vehicles/search',
+                { params: { q: rego } },
+              )
+              const found = (searchRes.data?.results ?? []).find(
+                (v: any) => (v.rego ?? '').toUpperCase() === rego.toUpperCase(),
+              )
+              if (found) {
+                matched.push({
+                  id: found.id,
+                  rego: found.rego ?? '',
+                  make: found.make ?? '',
+                  model: found.model ?? '',
+                  year: found.year ?? null,
+                  odometer: found.odometer ?? null,
+                  wof_expiry: found.wof_expiry ?? null,
+                  cof_expiry: found.cof_expiry ?? null,
+                  inspection_type: found.inspection_type ?? null,
+                })
+              }
+            } catch { /* non-blocking */ }
+          }
+          if (matched.length > 0) {
+            const [primary, ...rest] = matched
+            setVehicle({
+              id: primary.id,
+              rego: primary.rego,
+              make: primary.make,
+              model: primary.model,
+              year: primary.year,
+              colour: '',
+              odometer: primary.odometer,
+              wof_expiry: primary.wof_expiry,
+              cof_expiry: primary.cof_expiry,
+              inspection_type: primary.inspection_type,
+            })
+            setVehicleRego(primary.rego)
+            if (rest.length > 0) {
+              setAdditionalVehicles(
+                rest.map((v) => ({
+                  rego: v.rego,
+                  make: v.make,
+                  model: v.model,
+                  year: v.year,
+                  odometer: v.odometer,
+                  wof_expiry: v.wof_expiry,
+                  cof_expiry: v.cof_expiry,
+                })),
+              )
+            }
+            return
+          }
+          // Fall through to the single-vehicle branches as a safety net.
+        }
+
+        // Pre-fill vehicle: prefer the rego from the URL → match in
+        // customer's linked vehicles → search globally → finally fall
+        // back to the first linked vehicle when no rego given.
+        if (prefillVehicleRego && (c.vehicles ?? []).length > 0) {
+          const matchedVehicle = (c.vehicles ?? []).find(
+            (v: any) => (v.rego ?? '').toUpperCase() === prefillVehicleRego.toUpperCase(),
+          )
+          if (matchedVehicle) {
+            setVehicle({
+              id: matchedVehicle.id,
+              rego: matchedVehicle.rego ?? '',
+              make: matchedVehicle.make ?? '',
+              model: matchedVehicle.model ?? '',
+              year: matchedVehicle.year ?? null,
+              colour: '',
+              odometer: matchedVehicle.odometer ?? null,
+              wof_expiry: matchedVehicle.wof_expiry ?? null,
+              cof_expiry: matchedVehicle.cof_expiry ?? null,
+              inspection_type: matchedVehicle.inspection_type ?? null,
+            })
+            setVehicleRego(matchedVehicle.rego ?? '')
+            return
+          }
+        }
+        if (prefillVehicleRego) {
+          // Vehicle rego not in customer's linked vehicles — search globally.
+          try {
+            const searchRes = await apiClient.get<{ results: any[] }>(
+              '/vehicles/search',
+              { params: { q: prefillVehicleRego } },
+            )
+            const found = (searchRes.data?.results ?? []).find(
+              (v: any) => (v.rego ?? '').toUpperCase() === prefillVehicleRego.toUpperCase(),
+            )
+            if (found) {
+              setVehicle({
+                id: found.id,
+                rego: found.rego ?? '',
+                make: found.make ?? '',
+                model: found.model ?? '',
+                year: found.year ?? null,
+                colour: found.colour ?? '',
+                odometer: found.odometer ?? null,
+                wof_expiry: found.wof_expiry ?? null,
+                cof_expiry: found.cof_expiry ?? null,
+                inspection_type: found.inspection_type ?? null,
+              })
+              setVehicleRego(found.rego ?? '')
+              return
+            }
+          } catch { /* non-blocking */ }
+        }
+        // No rego in URL or no global match — auto-fill first linked vehicle.
+        if ((c.vehicles ?? []).length > 0) {
+          const v = c.vehicles[0]
+          setVehicle({
+            id: v.id,
+            rego: v.rego ?? '',
+            make: v.make ?? '',
+            model: v.model ?? '',
+            year: v.year ?? null,
+            colour: '',
+            odometer: v.odometer ?? null,
+            wof_expiry: v.wof_expiry ?? null,
+            cof_expiry: v.cof_expiry ?? null,
+            inspection_type: v.inspection_type ?? null,
+          })
+          setVehicleRego(v.rego ?? '')
+        }
+      } catch {
+        // Non-blocking — user can still manually select customer
+      }
+    }
+    prefill()
+    return () => { cancelled = true }
+  }, [prefillCustomerId, prefillVehicleRego, isEditMode, vehiclesEnabled, isAutomotive])
+
+  // Fetch existing attachments when editing (Task 16)
+  useEffect(() => {
+    if (!editId) return
+    const controller = new AbortController()
+    apiClient.get<{ attachments: { id: string; file_name: string; file_size: number; mime_type: string }[]; total: number }>(
+      `/quotes/${editId}/attachments`,
+      { signal: controller.signal }
+    )
+      .then(res => setExistingAttachments(res.data?.attachments ?? []))
+      .catch(() => {})
+    return () => controller.abort()
+  }, [editId])
+
+  // Load catalogue items
+  useEffect(() => {
+    let cancelled = false
+    async function load() {
+      try {
+        const res = await apiClient.get('/catalogue/items', { params: { active_only: true } })
+        const data = res.data as any
+        const rawItems = Array.isArray(data) ? data : (data?.items || [])
+        if (!cancelled) setCatalogueItems(rawItems.map((item: any) => ({
+          id: item.id,
+          name: item.name,
+          description: item.description ?? undefined,
+          default_price: typeof item.default_price === 'string' ? parseFloat(item.default_price) : (item.default_price ?? 0),
+          gst_applicable: item.gst_applicable ?? (item.is_gst_exempt === false),
+          gst_inclusive: item.gst_inclusive ?? false,
+          category: item.category ?? undefined,
+          sku: item.sku ?? undefined,
+          is_package: item.is_package ?? false,
+        })))
+      } catch { /* non-blocking */ }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [])
+
+  // Load projects if enabled
+  useEffect(() => {
+    if (!projectsEnabled || !customer) return
+    let cancelled = false
+    async function load() {
+      try {
+        const res = await apiClient.get('/projects', {
+          baseURL: '/api/v2',
+          params: { customer_id: customer?.id, page_size: 100 },
+        })
+        const data = res.data as any
+        if (!cancelled) setProjects(data?.projects ?? [])
+      } catch { /* non-blocking */ }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [projectsEnabled, customer])
+
+  // Load salespeople for dropdown (Task 11.2)
+  useEffect(() => {
+    const controller = new AbortController()
+    async function load() {
+      try {
+        const res = await apiClient.get<{ salespeople: { id: string; name?: string; first_name?: string; last_name?: string; email?: string }[] }>(
+          '/org/salespeople',
+          { signal: controller.signal }
+        )
+        const people = res.data?.salespeople ?? []
+        const mapped = people.map(p => ({
+          id: p.id,
+          name: p.name || `${p.first_name ?? ''} ${p.last_name ?? ''}`.trim() || p.email || 'Unknown',
+        }))
+        setSalespersonOptions(mapped)
+        // Auto-select the logged-in user as salesperson (matches InvoiceCreate)
+        if (!isEditMode && !salespersonId && user?.id) {
+          const currentUser = mapped.find(s => s.id === user.id)
+          if (currentUser) {
+            setSalespersonId(currentUser.id)
+          }
+        }
+      } catch { /* non-blocking */ }
+    }
+    load()
+    return () => controller.abort()
+  }, [])
+
+  // Auto-fill linked vehicle when customer is selected (Task 11.6).
+  // Carries the full Customer Driven Field set (odometer / WOF / COF /
+  // inspection_type) — same parity as the InvoiceCreate auto-fill so a
+  // customer selected via the search dropdown gets the same vehicle data
+  // as one passed in via the "Issue Quote" URL prefill.
+  useEffect(() => {
+    if (!customer || !isAutomotive || !isEnabled('vehicles') || isEditMode) return
+    const customerId = customer.id
+    const controller = new AbortController()
+    async function fetchLinkedVehicles() {
+      try {
+        // GET /customers/{id} returns the full profile, including linked
+        // ``vehicles[]`` with the Customer Driven Fields. The /vehicles
+        // sub-route does not exist on the customers module — calling it
+        // 404s and the fallback never fires. Same endpoint as the URL-
+        // param prefill above, so behaviour is identical regardless of
+        // entry point.
+        const res = await apiClient.get<{
+          vehicles?: {
+            id: string
+            rego: string
+            make: string
+            model: string
+            year: number | null
+            colour?: string | null
+            odometer?: number | null
+            wof_expiry?: string | null
+            cof_expiry?: string | null
+            inspection_type?: string | null
+          }[]
+        }>(
+          `/customers/${customerId}`,
+          { signal: controller.signal }
+        )
+        const linked = res.data?.vehicles ?? []
+        if (linked.length > 0 && !vehicle) {
+          const first = linked[0]
+          setVehicle({
+            id: first.id,
+            rego: first.rego,
+            make: first.make,
+            model: first.model,
+            year: first.year,
+            colour: first.colour ?? '',
+            odometer: first.odometer ?? null,
+            wof_expiry: first.wof_expiry ?? null,
+            cof_expiry: first.cof_expiry ?? null,
+            inspection_type: first.inspection_type ?? null,
+          })
+          setVehicleRego(first.rego)
+        }
+      } catch { /* non-blocking */ }
+    }
+    fetchLinkedVehicles()
+    return () => controller.abort()
+  }, [customer])
+
+  // Line item management
+  const addLineItem = () => setLineItems(prev => [...prev, newLineItem()])
+
+  // Parts catalogue picker
+  const [partsPickerOpen, setPartsPickerOpen] = useState(false)
+  const [catalogueParts, setCatalogueParts] = useState<{id:string;name:string;part_number:string|null;default_price:string;part_type:string;brand:string|null;tyre_width:string|null;tyre_profile:string|null;tyre_rim_dia:string|null}[]>([])
+  const [partsLoading, setPartsLoading] = useState(false)
+  const [partsSearch, setPartsSearch] = useState('')
+
+  // Labour rates picker
+  const [labourPickerOpen, setLabourPickerOpen] = useState(false)
+  const [labourRates, setLabourRates] = useState<{id:string;name:string;hourly_rate:string}[]>([])
+  const [labourLoading, setLabourLoading] = useState(false)
+
+  // Inventory picker (Task 13.2-13.3)
+  const [inventoryPickerOpen, setInventoryPickerOpen] = useState(false)
+  const handleInventorySelect = (item: { id: string; catalogue_item_id: string | null; name: string; sell_price: number | string; gst_inclusive: boolean }) => {
+    const price = typeof item.sell_price === 'string' ? parseFloat(item.sell_price) : (item.sell_price ?? 0)
+    // Match InvoiceCreate pattern: back-calculate ex-GST rate for inclusive items
+    const isGstInclusive = item.gst_inclusive === true
+    const rate = isGstInclusive ? Math.round((price / 1.15) * 100) / 100 : price
+    setLineItems(prev => [...prev, {
+      key: crypto.randomUUID(),
+      description: item.name,
+      quantity: 1,
+      rate,
+      tax_id: 'gst_15',
+      tax_rate: 15,
+      amount: rate,
+      gst_inclusive: isGstInclusive,
+      inclusive_price: isGstInclusive ? price : null,
+      catalogue_item_id: item.catalogue_item_id ?? null,
+      stock_item_id: item.id,
+    }])
+  }
+
+  const openPartsPicker = async () => {
+    setPartsPickerOpen(true); setPartsSearch(''); setPartsLoading(true)
+    try {
+      const res = await apiClient.get('/catalogue/parts')
+      setCatalogueParts((res.data as any).parts || [])
+    } catch { setCatalogueParts([]) }
+    finally { setPartsLoading(false) }
+  }
+
+  const addPartLineItem = (part: typeof catalogueParts[0]) => {
+    const desc = part.part_type === 'tyre' && part.tyre_width
+      ? `${part.name} (${part.tyre_width}/${part.tyre_profile}R${part.tyre_rim_dia})`
+      : part.name
+    setLineItems(prev => [...prev, {
+      ...newLineItem(),
+      description: desc,
+      rate: parseFloat(part.default_price) || 0,
+      amount: parseFloat(part.default_price) || 0,
+    }])
+    setPartsPickerOpen(false)
+  }
+
+  const openLabourPicker = async () => {
+    setLabourPickerOpen(true); setLabourLoading(true)
+    try {
+      const res = await apiClient.get('/catalogue/labour-rates')
+      setLabourRates((res.data as any).labour_rates || [])
+    } catch { setLabourRates([]) }
+    finally { setLabourLoading(false) }
+  }
+
+  const addLabourLineItem = (rate: typeof labourRates[0]) => {
+    setLineItems(prev => [...prev, {
+      ...newLineItem(),
+      description: `Labour: ${rate.name}`,
+      rate: parseFloat(rate.hourly_rate) || 0,
+      amount: parseFloat(rate.hourly_rate) || 0,
+    }])
+    setLabourPickerOpen(false)
+  }
+  const updateLineItem = (index: number, updated: LineItem) => {
+    setLineItems(prev => prev.map((item, i) => i === index ? updated : item))
+  }
+  const removeLineItem = (index: number) => {
+    if (lineItems.length > 1) setLineItems(prev => prev.filter((_, i) => i !== index))
+  }
+
+  // Validation
+  const validate = (): boolean => {
+    const errs: FormErrors = {}
+    if (!customer) errs.customer = 'Please select a customer'
+    if (lineItems.every(item => !item.description.trim())) errs.lineItems = 'Add at least one item'
+    setErrors(errs)
+    return Object.keys(errs).length === 0
+  }
+
+  // Build payload — sends fields matching backend QuoteCreate/QuoteUpdate schemas
+  const buildPayload = () => {
+    // Determine which expiry to send based on inspection_type
+    let wofExpiry: string | null = null
+    let cofExpiry: string | null = null
+    if (vehicle?.inspection_type === 'cof') {
+      cofExpiry = (vehicle?.cof_expiry && vehicle.cof_expiry !== '1970-01-01') ? vehicle.cof_expiry : null
+    } else {
+      wofExpiry = (vehicle?.wof_expiry && vehicle.wof_expiry !== '1970-01-01') ? vehicle.wof_expiry : null
+    }
+
+    return {
+    customer_id: customer?.id,
+    branch_id: selectedBranchId || undefined,
+    ...(isAutomotive ? {
+      vehicle_rego: vehicle?.rego ?? (vehicleRego.trim() || undefined),
+      vehicle_make: vehicle?.make ?? undefined,
+      vehicle_model: vehicle?.model ?? undefined,
+      vehicle_year: vehicle?.year ?? undefined,
+      vehicle_odometer: vehicle?.odometer ?? null,
+      vehicle_wof_expiry: wofExpiry,
+      vehicle_cof_expiry: cofExpiry,
+    } : {}),
+    project_id: selectedProjectId || undefined,
+    validity_days: Number(validityDays),
+    notes: notes || undefined,
+    terms: terms || undefined,
+    subject: subject || undefined,
+    discount_type: discountType === 'fixed' ? 'fixed' : 'percentage',
+    discount_value: discountValue,
+    shipping_charges: shippingCharges,
+    adjustment: adjustment,
+    order_number: orderNumber.trim() || undefined,
+    salesperson_id: salespersonId || undefined,
+    vehicles: additionalVehicles.length > 0 ? additionalVehicles.map(v => ({
+      rego: v.rego,
+      make: v.make,
+      model: v.model,
+      year: v.year ?? null,
+      odometer: v.odometer ?? null,
+      wof_expiry: v.wof_expiry ?? null,
+      cof_expiry: v.cof_expiry ?? null,
+    })) : undefined,
+    fluid_usage: fluidUsage.length > 0 ? fluidUsage : undefined,
+    save_terms_as_default: saveTermsAsDefault,
+    line_items: lineItems.filter(item => item.description.trim()).map((item, i) => ({
+      item_type: 'service',
+      description: (item.line_description ? `${item.description}\n${item.line_description}` : item.description).slice(0, 2000),
+      quantity: item.quantity,
+      unit_price: item.gst_inclusive ? (item.inclusive_price ?? item.rate) : item.rate,
+      is_gst_exempt: item.tax_rate === 0,
+      sort_order: i,
+      catalogue_item_id: item.catalogue_item_id || undefined,
+      stock_item_id: item.stock_item_id || undefined,
+      gst_inclusive: item.gst_inclusive ?? false,
+      inclusive_price: item.gst_inclusive ? (item.inclusive_price ?? item.rate) : undefined,
+      tax_rate: item.tax_rate,
+    })),
+  }
+  }
+
+  // Upload pending attachments after quote is saved (Task 16)
+  const uploadPendingFiles = async (quoteId: string) => {
+    if (pendingFiles.length === 0) return
+    for (const file of pendingFiles) {
+      try {
+        const formData = new FormData()
+        formData.append('file', file)
+        await apiClient.post(`/quotes/${quoteId}/attachments`, formData, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+        })
+      } catch {
+        // Non-blocking — continue with remaining files
+      }
+    }
+    setPendingFiles([])
+  }
+
+  // Save as Draft
+  const handleSaveDraft = async () => {
+    if (!validate()) return
+    setSaving(true)
+    try {
+      if (isEditMode && editId) {
+        await apiClient.put(`/quotes/${editId}`, buildPayload())
+        await uploadPendingFiles(editId)
+        navigate(`/quotes/${editId}`)
+      } else {
+        const createRes = await apiClient.post('/quotes', buildPayload())
+        const quoteData = (createRes.data as any)?.quote ?? createRes.data
+        const newId = quoteData?.id
+        if (newId) await uploadPendingFiles(newId)
+        navigate(newId ? `/quotes/${newId}` : '/quotes')
+      }
+    } catch (err: unknown) {
+      const detail = (err as any)?.response?.data?.detail
+      setErrors({ submit: detail ?? 'Failed to save quote' })
+    } finally { setSaving(false) }
+  }
+
+  // Save and Send (Email to customer)
+  const handleSaveAndSend = async () => {
+    if (!validate()) return
+    setSendingAndSaving(true)
+    try {
+      let quoteId = editId
+      if (isEditMode && editId) {
+        await apiClient.put(`/quotes/${editId}`, buildPayload())
+      } else {
+        const createRes = await apiClient.post('/quotes', buildPayload())
+        const quoteData = (createRes.data as any)?.quote ?? createRes.data
+        quoteId = quoteData?.id
+      }
+      if (quoteId) {
+        await uploadPendingFiles(quoteId)
+        await apiClient.post(`/quotes/${quoteId}/send`)
+      }
+      navigate('/quotes')
+    } catch (err: unknown) {
+      const detail = (err as any)?.response?.data?.detail
+      setErrors({ submit: detail ?? 'Failed to save and send quote' })
+    } finally { setSendingAndSaving(false) }
+  }
+
+  // Issue Quote (save + set status to "issued" without emailing)
+  const handleIssueQuote = async () => {
+    if (!validate()) return
+    setIssuing(true)
+    try {
+      let quoteId = editId
+      if (isEditMode && editId) {
+        await apiClient.put(`/quotes/${editId}`, buildPayload())
+      } else {
+        const createRes = await apiClient.post('/quotes', buildPayload())
+        const quoteData = (createRes.data as any)?.quote ?? createRes.data
+        quoteId = quoteData?.id
+      }
+      if (quoteId) {
+        await uploadPendingFiles(quoteId)
+        // Just update status to "issued" without emailing
+        await apiClient.put(`/quotes/${quoteId}`, { status: 'issued' })
+      }
+      navigate(`/quotes/${quoteId}`)
+    } catch (err: unknown) {
+      const detail = (err as any)?.response?.data?.detail
+      setErrors({ submit: detail ?? 'Failed to issue quote' })
+    } finally { setIssuing(false) }
+  }
+
+  const handleCancel = () => {
+    navigate(isEditMode && editId ? `/quotes/${editId}` : '/quotes')
+  }
+
+  // Navigation guard — warn on unsaved changes (Task 15.2)
+  const isDirtyRef = useRef(false)
+  const handleSaveDraftRef = useRef(handleSaveDraft)
+  handleSaveDraftRef.current = handleSaveDraft
+
+  isDirtyRef.current = Boolean(
+    customer ||
+    subject ||
+    orderNumber ||
+    salespersonId ||
+    notes ||
+    terms ||
+    lineItems.some(li => li.description.trim()) ||
+    additionalVehicles.length > 0 ||
+    fluidUsage.length > 0 ||
+    pendingFiles.length > 0 ||
+    saveTermsAsDefault
+  )
+
+  useEffect(() => {
+    setNavigationGuard({
+      isDirty: () => isDirtyRef.current,
+      onSave: () => handleSaveDraftRef.current(),
+    })
+    return () => clearNavigationGuard()
+  }, [])
+
+  const isBusy = saving || sendingAndSaving || issuing
+
+  if (loadingQuote) {
+    return (
+      <div className="px-4 py-16 text-center sm:px-6 lg:px-8">
+        <div className="text-muted">Loading quote…</div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="bg-canvas min-h-full">
+      {/* Header */}
+      <div className="bg-card border-b border-border px-6 py-3 sticky top-0 z-10">
+        <div className="max-w-4xl mx-auto flex items-center justify-between">
+          <h1 className="text-lg font-semibold text-text">{isEditMode ? 'Edit Quote' : 'New Quote'}</h1>
+          <div className="flex items-center gap-2">
+            <Button variant="ghost" size="sm" onClick={handleCancel} disabled={isBusy}>Cancel</Button>
+            <Button variant="ghost" size="sm" onClick={handleSaveDraft} loading={saving} disabled={isBusy}>Save as Draft</Button>
+            <Button variant="ghost" size="sm" onClick={handleIssueQuote} loading={issuing} disabled={isBusy}>Issue Quote</Button>
+            <Button size="sm" onClick={handleSaveAndSend} loading={sendingAndSaving} disabled={isBusy}>Email</Button>
+          </div>
+        </div>
+      </div>
+
+      <div className="px-6 py-8">
+        <div className="max-w-4xl mx-auto bg-card rounded-card shadow-card border border-border p-8 space-y-6">
+
+          {/* Customer and Quote Details — 2-column layout like InvoiceCreate */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {/* Left Column — Customer + Vehicle */}
+            <div className="space-y-4">
+              <CustomerSearch
+                selectedCustomer={customer}
+                onSelect={setCustomer}
+                onVehicleAutoSelect={(v) => {
+                  if (!vehicle) {
+                    setVehicle({ id: v.id, rego: v.rego, make: v.make || '', model: v.model || '', year: v.year, colour: v.colour || '', odometer: v.odometer ?? null, wof_expiry: v.wof_expiry ?? null, cof_expiry: v.cof_expiry ?? null, inspection_type: v.inspection_type ?? null })
+                    setVehicleRego(v.rego)
+                  }
+                }}
+                error={errors.customer}
+              />
+
+              {/* Vehicle (module-gated + trade-family-gated) */}
+              {isAutomotive && isEnabled('vehicles') && (
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-gray-700">Vehicle</label>
+                  {vehicle ? (
+                    <>
+                      <div className="flex items-center gap-2 rounded-md border border-gray-300 bg-gray-50 px-3 py-2 text-sm">
+                        <span className="font-semibold">{vehicle.rego}</span>
+                        <span className="text-gray-600">{vehicle.year} {vehicle.make} {vehicle.model}</span>
+                        <button type="button" onClick={() => { setVehicle(null); setVehicleRego('') }}
+                          className="ml-auto text-gray-400 hover:text-gray-600" aria-label="Clear vehicle">✕</button>
+                      </div>
+                      {/* Editable Odometer & WOF/COF */}
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <label className="block text-xs font-semibold text-gray-700">Odometer (km)</label>
+                            {(vehicle.odometer ?? 0) > 0 && (
+                              <span className="text-[11px] text-gray-500">
+                                Last: <span className="font-semibold text-gray-900">{(vehicle.odometer ?? 0).toLocaleString()} km</span>
+                              </span>
+                            )}
+                          </div>
+                          <input
+                            type="number"
+                            min="0"
+                            placeholder="Enter reading"
+                            value={vehicle.odometer ?? ''}
+                            onChange={(e) => {
+                              const val = e.target.value ? Number(e.target.value) : null
+                              setVehicle(prev => prev ? { ...prev, odometer: val } : prev)
+                            }}
+                            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          />
+                        </div>
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <label className="block text-xs font-semibold text-gray-700">
+                              {vehicle.inspection_type === 'cof' ? 'COF Expiry' : 'WOF Expiry'}
+                            </label>
+                            {vehicle.inspection_type === 'cof' ? (
+                              vehicle.cof_expiry && vehicle.cof_expiry !== '1970-01-01' && (
+                                <span className="text-[11px] text-gray-500">
+                                  Last: <span className="font-semibold text-gray-900">{new Date(vehicle.cof_expiry).toLocaleDateString('en-NZ', { day: '2-digit', month: 'short', year: 'numeric' })}</span>
+                                </span>
+                              )
+                            ) : (
+                              vehicle.wof_expiry && vehicle.wof_expiry !== '1970-01-01' && (
+                                <span className="text-[11px] text-gray-500">
+                                  Last: <span className="font-semibold text-gray-900">{new Date(vehicle.wof_expiry).toLocaleDateString('en-NZ', { day: '2-digit', month: 'short', year: 'numeric' })}</span>
+                                </span>
+                              )
+                            )}
+                          </div>
+                          <input
+                            type="date"
+                            lang="en-NZ"
+                            value={vehicle.inspection_type === 'cof'
+                              ? (vehicle.cof_expiry && vehicle.cof_expiry !== '1970-01-01' ? vehicle.cof_expiry : '')
+                              : (vehicle.wof_expiry && vehicle.wof_expiry !== '1970-01-01' ? vehicle.wof_expiry : '')}
+                            onChange={(e) => {
+                              const val = e.target.value || null
+                              if (vehicle.inspection_type === 'cof') {
+                                setVehicle(prev => prev ? { ...prev, cof_expiry: val } : prev)
+                              } else {
+                                setVehicle(prev => prev ? { ...prev, wof_expiry: val } : prev)
+                              }
+                            }}
+                            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          />
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <VehicleLiveSearch
+                      vehicle={null}
+                      onVehicleFound={(v) => {
+                        if (v) {
+                          setVehicle({ id: v.id, rego: v.rego, make: v.make, model: v.model, year: v.year, colour: v.colour || '', odometer: v.odometer ?? null, wof_expiry: v.wof_expiry ?? null, cof_expiry: v.cof_expiry ?? null, inspection_type: (v as any).inspection_type ?? null })
+                          setVehicleRego(v.rego)
+                        }
+                      }}
+                      onCustomerAutoSelect={(c) => {
+                        if (!customer) {
+                          setCustomer({
+                            id: c.id,
+                            first_name: c.first_name,
+                            last_name: c.last_name,
+                            email: c.email || '',
+                            phone: c.phone || '',
+                          })
+                        }
+                      }}
+                    />
+                  )}
+                  <QuoteMultiVehicleSection vehicles={additionalVehicles} onChange={setAdditionalVehicles} />
+                </div>
+              )}
+
+              {/* Project (module-gated) */}
+              {projectsEnabled && customer && (
+                <div className="space-y-1">
+                  <label className="text-sm font-medium text-gray-700">Project</label>
+                  <select value={selectedProjectId} onChange={(e) => setSelectedProjectId(e.target.value)}
+                    className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    <option value="">Select a project</option>
+                    {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+                </div>
+              )}
+            </div>
+
+            {/* Right Column — Quote details */}
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <label className="text-sm font-medium text-gray-700">Quote Date</label>
+                  <input type="date" value={quoteDate} disabled
+                    className="w-full rounded-md border border-gray-300 bg-gray-50 px-3 py-2 text-sm text-gray-500" />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-sm font-medium text-gray-700">Expiry Date</label>
+                  <div className="rounded-md border border-gray-300 bg-gray-50 px-3 py-2 text-sm text-gray-500">
+                    {expiryDate}
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-sm font-medium text-gray-700">Valid For</label>
+                <select value={validityDays} onChange={(e) => setValidityDays(e.target.value)}
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                  {VALIDITY_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              </div>
+
+              {/* GST Number (read-only display) */}
+              {settings?.gst?.gst_number && (
+                <div className="space-y-1">
+                  <label className="text-sm font-medium text-gray-700">GST Number</label>
+                  <div className="rounded-md border border-gray-300 bg-gray-50 px-3 py-2 text-sm text-gray-500">
+                    {settings.gst.gst_number}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Subject — full width like InvoiceCreate */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Subject</label>
+            <input type="text" value={subject} onChange={(e) => setSubject(e.target.value)}
+              placeholder="Let your customer know what this quote is for"
+              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+
+          {/* Order Number + Salesperson (Phase 5 parity) */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Order Number</label>
+              <input type="text" value={orderNumber} onChange={(e) => setOrderNumber(e.target.value)}
+                placeholder="PO or reference number"
+                maxLength={100}
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Salesperson</label>
+              <select
+                value={salespersonId ?? ''}
+                onChange={(e) => setSalespersonId(e.target.value || null)}
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">— None —</option>
+                {salespersonOptions.map(sp => (
+                  <option key={sp.id} value={sp.id}>{sp.name}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {/* Line Items */}
+          <div>
+            {errors.lineItems && <p className="text-sm text-red-600 mb-2">{errors.lineItems}</p>}
+
+            <div className="overflow-visible border border-gray-200 rounded-lg">
+              <table className="w-full">
+                <thead className="bg-gray-50">
+                  <tr className="text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    <th className="py-3 px-2">Details</th>
+                    <th className="py-3 px-2 w-24">Quantity</th>
+                    <th className="py-3 px-2 w-32">Rate</th>
+                    <th className="py-3 px-2 w-36">Tax</th>
+                    <th className="py-3 px-2 w-28 text-right">Amount</th>
+                    <th className="py-3 px-2 w-12"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {lineItems.map((item, index) => (
+                    <ItemTableRow
+                      key={item.key}
+                      item={item}
+                      index={index}
+                      catalogueItems={catalogueItems}
+                      taxRates={taxRates}
+                      onChange={updateLineItem}
+                      onRemove={removeLineItem}
+                      onItemCreated={(ci) => setCatalogueItems(prev => [...prev, ci])}
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="flex gap-3 mt-3">
+              <Button variant="ghost" size="sm" onClick={addLineItem}>+ Add New Row</Button>
+              <Button variant="ghost" size="sm" onClick={() => setInventoryPickerOpen(true)}>+ Add from Inventory</Button>
+              {isAutomotive && vehiclesEnabled && (
+                <Button variant="ghost" size="sm" onClick={openPartsPicker}>+ Add Part</Button>
+              )}
+              {isAutomotive && vehiclesEnabled && (
+                <Button variant="ghost" size="sm" onClick={openLabourPicker}>+ Labour Charge</Button>
+              )}
+            </div>
+          </div>
+
+          {/* Fluid Usage Section (automotive only, non-billable) — Task 14 */}
+          {isAutomotive && isEnabled('vehicles') && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="block text-sm font-medium text-gray-700">
+                  Fluid Usage <span className="text-xs text-gray-400 font-normal">(non-billable)</span>
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setFluidUsage(prev => [...prev, { stock_item_id: '', catalogue_item_id: '', litres: 0, item_name: '' }])}
+                  className="text-xs text-blue-600 hover:text-blue-800 font-medium"
+                >
+                  + Add Fluid
+                </button>
+              </div>
+              {fluidUsage.length > 0 && (
+                <div className="space-y-2">
+                  {fluidUsage.map((f, i) => (
+                    <div key={i} className="flex items-center gap-2 rounded-md border border-gray-200 p-2">
+                      <input
+                        type="text"
+                        value={f.item_name}
+                        onChange={(e) => {
+                          const updated = [...fluidUsage]
+                          updated[i] = { ...updated[i], item_name: e.target.value }
+                          setFluidUsage(updated)
+                        }}
+                        placeholder="Fluid/oil name"
+                        className="flex-1 rounded border border-gray-300 px-2 py-1 text-sm"
+                      />
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.1"
+                        value={f.litres || ''}
+                        onChange={(e) => {
+                          const updated = [...fluidUsage]
+                          updated[i] = { ...updated[i], litres: Number(e.target.value) || 0 }
+                          setFluidUsage(updated)
+                        }}
+                        placeholder="Litres"
+                        className="w-20 rounded border border-gray-300 px-2 py-1 text-sm"
+                      />
+                      <span className="text-xs text-gray-500">L</span>
+                      <button
+                        type="button"
+                        onClick={() => setFluidUsage(prev => prev.filter((_, idx) => idx !== i))}
+                        className="rounded px-2 py-1 text-xs text-red-500 hover:bg-red-50"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Totals Section — matches InvoiceCreate exactly */}
+          <div className="flex justify-end">
+            <div className="w-full max-w-sm space-y-3">
+              <div className="flex justify-between text-sm">
+                <span className="text-gray-600">Sub Total (Ex GST)</span>
+                <span className="font-medium text-gray-900">{formatNZD(subTotal)}</span>
+              </div>
+
+              {/* Discount */}
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-sm text-gray-600">Discount</span>
+                <div className="flex items-center gap-2">
+                  <div className="inline-flex rounded-md border border-gray-300">
+                    <button type="button" onClick={() => setDiscountType('percentage')}
+                      className={`min-w-[40px] px-3 py-1.5 text-sm font-semibold text-center rounded-l-md transition-colors ${discountType === 'percentage' ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}>
+                      %
+                    </button>
+                    <button type="button" onClick={() => setDiscountType('fixed')}
+                      className={`min-w-[40px] px-3 py-1.5 text-sm font-semibold text-center rounded-r-md border-l border-gray-300 transition-colors ${discountType === 'fixed' ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}>
+                      $
+                    </button>
+                  </div>
+                  <input type="number" min="0" step={discountType === 'percentage' ? '1' : '0.01'}
+                    value={discountValue}
+                    onChange={(e) => setDiscountValue(Math.max(0, Number(e.target.value) || 0))}
+                    className="w-24 rounded-md border border-gray-300 px-3 py-1.5 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500" />
+                </div>
+              </div>
+              {discountAmount > 0 && (
+                <div className="flex justify-between text-sm text-red-600">
+                  <span></span>
+                  <span>-{formatNZD(discountAmount)}</span>
+                </div>
+              )}
+
+              {/* Tax */}
+              <div className="flex justify-between text-sm">
+                <span className="text-gray-600">GST (15%)</span>
+                <span className="text-gray-900">{formatNZD(taxAmount)}</span>
+              </div>
+
+              {/* Shipping */}
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-sm text-gray-600">Shipping Charges</span>
+                <input type="number" min="0" step="0.01" value={shippingCharges}
+                  onChange={(e) => setShippingCharges(Math.max(0, Number(e.target.value) || 0))}
+                  className="w-24 rounded border border-gray-300 px-2 py-1 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </div>
+
+              {/* Adjustment */}
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-sm text-gray-600">Adjustment</span>
+                <input type="number" step="0.01" value={adjustment}
+                  onChange={(e) => setAdjustment(Number(e.target.value) || 0)}
+                  className="w-24 rounded border border-gray-300 px-2 py-1 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </div>
+
+              {/* Total */}
+              <div className="flex justify-between text-base font-semibold border-t border-gray-200 pt-3">
+                <span className="text-gray-900">Total (NZD)</span>
+                <span className="text-gray-900">{formatNZD(total)}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Customer Notes — full width like InvoiceCreate */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Customer Notes</label>
+            <div
+              ref={notesEditorRef}
+              contentEditable
+              role="textbox"
+              aria-multiline="true"
+              aria-label="Customer notes"
+              data-placeholder="Enter any notes to be displayed in your transaction"
+              onInput={() => {
+                if (notesEditorRef.current) {
+                  notesUserEditingRef.current = true
+                  setNotes(notesEditorRef.current.innerHTML)
+                }
+              }}
+              className="w-full min-h-[80px] rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 shadow-sm prose prose-sm max-w-none focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+
+          {/* Terms & Conditions — full width like InvoiceCreate */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Terms & Conditions</label>
+            <div
+              ref={tcEditorRef}
+              contentEditable
+              role="textbox"
+              aria-multiline="true"
+              aria-label="Terms and conditions"
+              data-placeholder="Enter the terms and conditions of your business to be displayed in your transaction"
+              onInput={() => {
+                if (tcEditorRef.current) {
+                  tcUserEditingRef.current = true
+                  setTerms(tcEditorRef.current.innerHTML)
+                }
+              }}
+              className="w-full min-h-[80px] rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 shadow-sm prose prose-sm max-w-none focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <label className="flex items-center gap-2 mt-2 text-sm text-gray-600 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={saveTermsAsDefault}
+                onChange={(e) => setSaveTermsAsDefault(e.target.checked)}
+                className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+              />
+              Save as default for all future quotes
+            </label>
+          </div>
+
+          {/* Attachments (Task 16) */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Attachments</label>
+
+            {/* Existing attachments (edit mode) */}
+            {existingAttachments.length > 0 && (
+              <ul className="space-y-1 mb-2">
+                {existingAttachments.map(att => (
+                  <li key={att.id} className="flex items-center justify-between rounded border border-gray-100 px-2 py-1.5 text-sm">
+                    <span className="truncate text-gray-700">{att.file_name}</span>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          await apiClient.delete(`/quotes/${editId}/attachments/${att.id}`)
+                          setExistingAttachments(prev => prev.filter(a => a.id !== att.id))
+                        } catch (err: unknown) {
+                          const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+                          setUploadError(detail ?? 'Failed to delete attachment')
+                        }
+                      }}
+                      className="ml-2 text-xs text-red-500 hover:text-red-700"
+                    >
+                      ×
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {/* Pending files (not yet uploaded) */}
+            {pendingFiles.length > 0 && (
+              <ul className="space-y-1 mb-2">
+                {pendingFiles.map((file, i) => (
+                  <li key={i} className="flex items-center justify-between rounded border border-blue-100 bg-blue-50 px-2 py-1.5 text-sm">
+                    <span className="truncate text-gray-700">{file.name}</span>
+                    <button
+                      type="button"
+                      onClick={() => setPendingFiles(prev => prev.filter((_, idx) => idx !== i))}
+                      className="ml-2 text-xs text-red-500 hover:text-red-700"
+                    >
+                      ×
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {/* File picker */}
+            {(existingAttachments.length + pendingFiles.length) < 5 && (
+              <input
+                type="file"
+                accept="image/jpeg,image/png,image/webp,image/gif,application/pdf"
+                multiple
+                onChange={(e) => {
+                  if (!e.target.files) return
+                  setUploadError(null)
+                  const maxAllowed = 5 - existingAttachments.length - pendingFiles.length
+                  const newFiles = Array.from(e.target.files).slice(0, maxAllowed)
+                  // Client-side validation
+                  const ALLOWED_MIMES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf']
+                  const MAX_SIZE = 20 * 1024 * 1024
+                  for (const f of newFiles) {
+                    if (!ALLOWED_MIMES.includes(f.type)) {
+                      setUploadError('Only JPEG, PNG, WebP, GIF, and PDF files are allowed')
+                      return
+                    }
+                    if (f.size > MAX_SIZE) {
+                      setUploadError('File exceeds 20 MB')
+                      return
+                    }
+                  }
+                  setPendingFiles(prev => [...prev, ...newFiles])
+                  e.target.value = ''
+                }}
+                className="text-sm text-gray-500 file:mr-3 file:rounded file:border-0 file:bg-blue-50 file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-blue-700 hover:file:bg-blue-100"
+              />
+            )}
+            {uploadError && <p className="mt-1 text-xs text-red-600">{uploadError}</p>}
+            <p className="mt-1 text-xs text-gray-400">JPEG, PNG, WebP, GIF, PDF — max 20 MB each, up to 5 files</p>
+          </div>
+
+          {/* Submit Error */}
+          {errors.submit && (
+            <p className="text-sm text-red-600" role="alert">{errors.submit}</p>
+          )}
+
+          {/* Bottom Actions */}
+          <div className="flex justify-end gap-2 pt-4 border-t border-gray-200">
+            <Button variant="ghost" size="sm" onClick={handleCancel} disabled={isBusy}>Cancel</Button>
+            <Button variant="ghost" size="sm" onClick={handleSaveDraft} loading={saving} disabled={isBusy}>Save as Draft</Button>
+            <Button variant="ghost" size="sm" onClick={handleIssueQuote} loading={issuing} disabled={isBusy}>Issue Quote</Button>
+            <Button size="sm" onClick={handleSaveAndSend} loading={sendingAndSaving} disabled={isBusy}>Email</Button>
+          </div>
+        </div>
+      </div>
+
+      {/* Parts Catalogue Picker */}
+      <Modal open={partsPickerOpen} onClose={() => setPartsPickerOpen(false)} title="Add Part from Catalogue">
+        <div className="space-y-3">
+          <input type="text" placeholder="Search parts..." value={partsSearch} onChange={e => setPartsSearch(e.target.value)}
+            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm" />
+          {partsLoading ? (
+            <div className="py-8 text-center text-sm text-gray-500">Loading parts...</div>
+          ) : (
+            <div className="max-h-64 overflow-y-auto divide-y divide-gray-100">
+              {catalogueParts
+                .filter(p => !partsSearch || p.name.toLowerCase().includes(partsSearch.toLowerCase()) || (p.part_number && p.part_number.toLowerCase().includes(partsSearch.toLowerCase())))
+                .map(part => (
+                  <button key={part.id} onClick={() => addPartLineItem(part)}
+                    className="w-full text-left px-3 py-2.5 hover:bg-blue-50 flex items-center justify-between">
+                    <div>
+                      <div className="text-sm font-medium text-gray-900">{part.name}</div>
+                      <div className="text-xs text-gray-500">
+                        {part.part_number && <span>{part.part_number} · </span>}
+                        <span className="capitalize">{part.part_type}</span>
+                        {part.brand && <span> · {part.brand}</span>}
+                        {part.part_type === 'tyre' && part.tyre_width && <span> · {part.tyre_width}/{part.tyre_profile}R{part.tyre_rim_dia}</span>}
+                      </div>
+                    </div>
+                    <span className="text-sm font-medium text-gray-900">${part.default_price}</span>
+                  </button>
+                ))}
+              {catalogueParts.length === 0 && !partsLoading && (
+                <div className="py-8 text-center text-sm text-gray-500">No parts in catalogue.</div>
+              )}
+            </div>
+          )}
+        </div>
+      </Modal>
+
+      {/* Labour Rate Picker */}
+      <Modal open={labourPickerOpen} onClose={() => setLabourPickerOpen(false)} title="Add Labour Charge">
+        {labourLoading ? (
+          <div className="py-8 text-center text-sm text-gray-500">Loading labour rates...</div>
+        ) : (
+          <div className="max-h-64 overflow-y-auto divide-y divide-gray-100">
+            {labourRates.map(rate => (
+              <button key={rate.id} onClick={() => addLabourLineItem(rate)}
+                className="w-full text-left px-3 py-2.5 hover:bg-blue-50 flex items-center justify-between">
+                <span className="text-sm font-medium text-gray-900">{rate.name}</span>
+                <span className="text-sm font-medium text-gray-900">${rate.hourly_rate}/hr</span>
+              </button>
+            ))}
+            {labourRates.length === 0 && !labourLoading && (
+              <div className="py-8 text-center text-sm text-gray-500">No labour rates configured.</div>
+            )}
+          </div>
+        )}
+      </Modal>
+
+      {/* Inventory Picker (Task 13.2) */}
+      <InventoryPickerModal
+        open={inventoryPickerOpen}
+        onClose={() => setInventoryPickerOpen(false)}
+        onSelect={handleInventorySelect}
+      />
+    </div>
+  )
+}

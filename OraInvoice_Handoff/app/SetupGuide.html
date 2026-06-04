@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+.step{display:flex;gap:14px;padding:16px 0;border-bottom:1px solid var(--border)}.step:last-child{border-bottom:none}.step .sc{width:28px;height:28px;border-radius:50%;display:grid;place-items:center;flex-shrink:0;font-family:var(--mono);font-size:13px;font-weight:600}.step.done .sc{background:var(--ok);color:#fff}.step.now .sc{background:var(--accent);color:#fff}.step .sc.todo{border:2px solid var(--border-strong);color:var(--muted-2)}
+</style>
+</head>
+<body>
+<div class="app"><div id="sidebar"></div><div class="main"><div id="topbar"></div>
+<main class="content"><div class="page " data-screen-label="Setup guide">
+<div class="page-head"><div><div class="eyebrow">Get started</div><h1>Setup guide</h1><p class="sub">5 of 8 steps complete · finish setting up Kerikeri Motors</p></div></div>
+  <section class="card"><div class="card-body"><div class="progress" style="margin-bottom:6px"><i style="width:62%"></i></div><div style="font-size:12.5px;color:var(--muted);margin-bottom:8px">62% complete</div>
+  <div class="step done"><div class="sc ">✓</div><div style="flex:1"><div style="font-size:13.5px;font-weight:600">Business details</div><div style="font-size:12.5px;color:var(--muted)">GST, address, logo</div></div></div><div class="step done"><div class="sc ">✓</div><div style="flex:1"><div style="font-size:13.5px;font-weight:600">Invoice template</div><div style="font-size:12.5px;color:var(--muted)">Branding & colours</div></div></div><div class="step done"><div class="sc ">✓</div><div style="flex:1"><div style="font-size:13.5px;font-weight:600">Add team members</div><div style="font-size:12.5px;color:var(--muted)">3 invited</div></div></div><div class="step done"><div class="sc ">✓</div><div style="flex:1"><div style="font-size:13.5px;font-weight:600">Connect bank feed</div><div style="font-size:12.5px;color:var(--muted)">ASB Business</div></div></div><div class="step done"><div class="sc ">✓</div><div style="flex:1"><div style="font-size:13.5px;font-weight:600">Import customers</div><div style="font-size:12.5px;color:var(--muted)">312 imported</div></div></div><div class="step now"><div class="sc ">6</div><div style="flex:1"><div style="font-size:13.5px;font-weight:600">Set up online payments</div><div style="font-size:12.5px;color:var(--muted)">Connect Stripe to get paid faster</div></div><button class="btn btn-primary btn-sm">Start</button></div><div class="step todo"><div class="sc todo">7</div><div style="flex:1"><div style="font-size:13.5px;font-weight:600">Configure tax / GST</div><div style="font-size:12.5px;color:var(--muted)">2-monthly, payments basis</div></div><button class="btn btn-ghost btn-sm">Start</button></div><div class="step todo"><div class="sc todo">8</div><div style="flex:1"><div style="font-size:13.5px;font-weight:600">Customise modules</div><div style="font-size:12.5px;color:var(--muted)">Enable what you use</div></div><button class="btn btn-ghost btn-sm">Start</button></div>
+  </div></section>
+</div></main></div></div>
+<script src="shell.js" data-active="" data-title="Setup guide"></script>
+</body></html>

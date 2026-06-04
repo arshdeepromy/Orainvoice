@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+.meta-4 { display:grid; grid-template-columns:repeat(4,1fr); gap:18px; margin-top:18px; padding-top:18px; border-top:1px solid var(--border); }
+.meta-4 .k { font-size:12.5px; color:var(--muted); }
+.meta-4 .v { font-size:14px; font-weight:600; margin-top:4px; }
+.gst-row td { font-size:13.5px; }
+.gst-row .box { font-family:var(--mono); font-size:11px; color:var(--muted-2); margin-right:8px; }
+@media (max-width:680px){ .meta-4{grid-template-columns:repeat(2,1fr);} }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page" data-screen-label="GST filing detail">
+        <div class="crumbs"><a href="Tax.html">Tax / GST</a><span class="sep">/</span><a href="GstPeriods.html">GST periods</a><span class="sep">/</span><span style="color:var(--text)">Sep–Oct 2025</span></div>
+
+        <section class="card" style="margin-bottom:var(--gap)"><div class="card-body">
+          <div class="page-head" style="margin-bottom:0;align-items:flex-start">
+            <div>
+              <h1 style="font-size:23px">1 Sep 2025 — 31 Oct 2025</h1>
+              <p class="sub" style="margin-top:4px">Two-monthly GST period · GST101A</p>
+            </div>
+            <div class="head-actions">
+              <span class="badge warn" style="height:28px"><span class="b-dot"></span>Ready to file</span>
+              <button class="btn btn-ghost btn-sm" onclick="toast('Period locked. Invoices &amp; expenses can no longer change.')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/></svg>Lock period</button>
+              <button class="btn btn-primary btn-sm" onclick="toast('Marked as filed with IRD.')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>File with IRD</button>
+            </div>
+          </div>
+          <div class="meta-4">
+            <div><div class="k">Due date</div><div class="v">28 Nov 2025</div></div>
+            <div><div class="k">IRD reference</div><div class="v mono">102-845-771</div></div>
+            <div><div class="k">Filed at</div><div class="v" style="color:var(--muted);font-weight:400">— not filed</div></div>
+            <div><div class="k">Created</div><div class="v mono" style="font-weight:400">01 Nov 2025</div></div>
+          </div>
+        </div></section>
+
+        <section class="card">
+          <div class="card-head"><h2>GST return data</h2><span style="font-size:12.5px;color:var(--muted)">Calculated from posted transactions</span></div>
+          <div class="tbl-wrap"><table>
+            <thead><tr><th>Field</th><th class="r">Value</th></tr></thead>
+            <tbody>
+              <tr class="gst-row"><td><span class="box">Box 5</span>Total sales &amp; income (incl GST)</td><td class="r mono">142,580.00</td></tr>
+              <tr class="gst-row"><td><span class="box">Box 6</span>Zero-rated supplies</td><td class="r mono">3,200.00</td></tr>
+              <tr class="gst-row"><td><span class="box">Box 7</span>Sales subject to GST</td><td class="r mono">139,380.00</td></tr>
+              <tr class="gst-row"><td><span class="box">Box 8</span>GST on sales (output tax)</td><td class="r mono">18,180.00</td></tr>
+              <tr class="gst-row"><td><span class="box">Box 11</span>Total purchases &amp; expenses (incl GST)</td><td class="r mono">96,420.00</td></tr>
+              <tr class="gst-row"><td><span class="box">Box 12</span>GST on purchases (input tax)</td><td class="r mono">12,576.00</td></tr>
+              <tr class="gst-row" style="background:var(--accent-soft)"><td style="font-weight:700"><span class="box">Box 13</span>GST to pay to IRD</td><td class="r mono" style="font-weight:700;font-size:15px">5,604.00</td></tr>
+            </tbody>
+          </table></div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+<div class="toast ok" id="toast"></div>
+<script src="shell.js" data-active="tax" data-title="GST filing Sep–Oct 2025"></script>
+<script>
+let tt;function toast(m){const t=document.getElementById('toast');t.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><span>'+m+'</span>';t.classList.add('show');clearTimeout(tt);tt=setTimeout(()=>t.classList.remove('show'),2800);}
+</script>
+</body>
+</html>

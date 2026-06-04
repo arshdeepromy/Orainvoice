@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+  .week-nav { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--border); border-radius: var(--r-ctl); background: var(--card); padding: 3px; }
+  .week-nav button { width: 32px; height: 32px; border-radius: 7px; border: none; background: none; color: var(--muted); display: grid; place-items: center; }
+  .week-nav button:hover { background: var(--canvas); color: var(--text); }
+  .week-nav .lbl { font-family: var(--mono); font-size: 12.5px; font-weight: 500; padding: 0 10px; color: var(--text); }
+
+  .cal { overflow-x: auto; }
+  .cal-grid { min-width: 880px; }
+  .cal-row { display: grid; grid-template-columns: 200px repeat(7, 1fr); border-bottom: 1px solid var(--border); }
+  .cal-row:last-child { border-bottom: none; }
+  .cal-head { position: sticky; top: 0; background: var(--card); z-index: 2; }
+  .cal-head .ch { padding: 12px 10px; text-align: center; border-left: 1px solid var(--border); }
+  .cal-head .ch .dow { font-family: var(--mono); font-size: 10.5px; font-weight: 500; letter-spacing: .08em; text-transform: uppercase; color: var(--muted-2); }
+  .cal-head .ch .dt { font-family: var(--mono); font-size: 15px; font-weight: 600; margin-top: 2px; }
+  .cal-head .ch.today .dt { color: var(--accent); }
+  .cal-head .corner { padding: 12px 16px; display: flex; align-items: flex-end; font-family: var(--mono); font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted-2); }
+  .cal-staff { padding: 12px 16px; display: flex; align-items: center; gap: 10px; }
+  .cal-staff .nm { font-size: 13px; font-weight: 600; line-height: 1.2; }
+  .cal-staff .rl { font-size: 11.5px; color: var(--muted); }
+  .cal-cell { border-left: 1px solid var(--border); padding: 8px 7px; min-height: 60px; display: flex; flex-direction: column; gap: 5px; }
+  .cal-cell.wknd { background: var(--canvas); }
+  .shift { border-radius: 8px; padding: 6px 8px; font-size: 11.5px; line-height: 1.25; cursor: pointer; position: relative; transition: filter .12s; }
+  .shift:hover { filter: brightness(.97); }
+  .shift .t { font-family: var(--mono); font-weight: 600; }
+  .shift .n { color: var(--muted); font-size: 10.5px; margin-top: 1px; }
+  .shift.blue { background: var(--accent-soft); color: var(--accent); }
+  .shift.blue .n { color: var(--accent); opacity: .7; }
+  .shift.green { background: var(--ok-soft); color: var(--ok); }
+  .shift.green .n { color: var(--ok); opacity: .7; }
+  .shift.purple { background: var(--purple-soft); color: var(--purple); }
+  .shift.purple .n { color: var(--purple); opacity: .7; }
+  .add-shift { border: 1px dashed var(--border-strong); border-radius: 8px; min-height: 30px; display: grid; place-items: center; color: var(--muted-2); opacity: 0; transition: opacity .12s; cursor: pointer; }
+  .cal-cell:hover .add-shift { opacity: 1; }
+  .add-shift:hover { color: var(--accent); border-color: var(--accent); }
+  .add-shift svg { width: 14px; height: 14px; }
+  .view-toggle .tab { cursor: pointer; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Staff schedule">
+        <div class="page-head">
+          <div>
+            <div class="eyebrow">Scheduling</div>
+            <h1>Staff schedule</h1>
+            <p class="sub">Plan and publish shifts across your branches</p>
+          </div>
+          <div class="head-actions">
+            <div class="week-nav">
+              <button aria-label="Previous week"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg></button>
+              <span class="lbl">3–9 Nov 2025</span>
+              <button aria-label="Next week"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg></button>
+            </div>
+            <a class="btn btn-ghost btn-sm" href="ShiftSwaps.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 16l-4-4 4-4M3 12h12M17 8l4 4-4 4M21 12H9"/></svg>Swaps <span class="mono" style="background:var(--accent);color:#fff;border-radius:20px;padding:0 6px;font-size:11px">5</span></a>
+            <button class="btn btn-primary btn-sm" id="add-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>Add shift</button>
+          </div>
+        </div>
+
+        <div class="kpis">
+          <div class="kpi"><div class="top"><span class="label">Shifts this week</span><span class="ico blue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 7V3m8 4V3M3 11h18M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg></span></div><div class="val">31</div><div class="delta"><span class="since">across 3 branches</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">Hours scheduled</span><span class="ico green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></span></div><div class="val">248<span class="c">h</span></div><div class="delta up"><span>↗ 12h</span><span class="since">vs last week</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">Staff rostered</span><span class="ico purple"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 20h5v-2a3 3 0 00-5.4-1.9M17 20H7m10 0v-2c0-.7-.1-1.3-.4-1.9M7 20H2v-2a3 3 0 015.4-1.9M7 20v-2c0-.7.1-1.3.4-1.9m0 0a5 5 0 019.3 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg></span></div><div class="val">7<span class="c"> / 9</span></div><div class="delta"><span class="since">with login access</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">Unfilled days</span><span class="ico amber"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4m0 4h.01M10.3 3.9l-8 14A2 2 0 004 21h16a2 2 0 001.7-3l-8-14a2 2 0 00-3.4 0z"/></svg></span></div><div class="val">2</div><div class="delta"><span class="since">Sat coverage gap</span></div></div>
+        </div>
+
+        <div class="toolbar">
+          <div class="seg" id="branch-seg">
+            <button class="on" data-branch="">All branches</button>
+            <button data-branch="Kerikeri">Kerikeri</button>
+            <button data-branch="Whangarei">Whangarei</button>
+            <button data-branch="Kaitaia">Kaitaia</button>
+          </div>
+          <div class="spacer"></div>
+          <div class="tabs view-toggle" style="margin:0;border:none">
+            <div class="tab on" data-view="cal">Calendar</div>
+            <div class="tab" data-view="list">List</div>
+          </div>
+        </div>
+
+        <!-- Calendar view -->
+        <section class="card" id="cal-view">
+          <div class="cal">
+            <div class="cal-grid">
+              <div class="cal-row cal-head">
+                <div class="corner">Staff</div>
+                <div class="ch"><div class="dow">Mon</div><div class="dt">3</div></div>
+                <div class="ch"><div class="dow">Tue</div><div class="dt">4</div></div>
+                <div class="ch"><div class="dow">Wed</div><div class="dt">5</div></div>
+                <div class="ch today"><div class="dow">Thu</div><div class="dt">6</div></div>
+                <div class="ch"><div class="dow">Fri</div><div class="dt">7</div></div>
+                <div class="ch"><div class="dow">Sat</div><div class="dt">8</div></div>
+                <div class="ch"><div class="dow">Sun</div><div class="dt">9</div></div>
+              </div>
+              <div id="cal-body"></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- List view -->
+        <section class="card" id="list-view" style="display:none">
+          <div class="tbl-wrap"><table>
+            <thead><tr><th>Staff</th><th>Branch</th><th>Date</th><th>Start</th><th>End</th><th>Notes</th><th class="r">Actions</th></tr></thead>
+            <tbody id="list-rows"></tbody>
+          </table></div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- Add shift modal -->
+<div class="modal-scrim" id="shift-modal">
+  <div class="modal wide">
+    <div class="modal-head">
+      <h3>Add shift</h3>
+      <button class="x" onclick="closeModal()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 18L18 6M6 6l12 12"/></svg></button>
+    </div>
+    <div class="modal-body">
+      <div class="form-grid">
+        <div class="field"><label>Staff member</label>
+          <select class="select" id="m-staff">
+            <option value="">Select staff</option>
+            <option>Dave Mceachern</option>
+            <option>Sina Faleolo</option>
+            <option>Mere Wiki</option>
+            <option>Hemi Ngata</option>
+            <option>Wiremu Tana</option>
+            <option disabled>Tom Cole (no account)</option>
+          </select>
+          <span class="hint">Only staff with a user account can be scheduled.</span>
+        </div>
+        <div class="field"><label>Branch</label>
+          <select class="select"><option value="">Select branch</option><option selected>Kerikeri</option><option>Whangarei</option><option>Kaitaia</option></select></div>
+        <div class="field"><label>Date</label><input class="input mono" type="date" value="2025-11-06" /></div>
+        <div class="field"></div>
+        <div class="field"><label>Start time</label><input class="input mono" type="time" value="08:00" /></div>
+        <div class="field"><label>End time</label><input class="input mono" type="time" value="17:00" /></div>
+        <div class="field full"><label>Notes <span class="opt">(optional)</span></label><input class="input" placeholder="e.g. Covering front counter" /></div>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin:14px 0 0;display:flex;align-items:center;gap:7px"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="var(--muted-2)" stroke-width="2"><path d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>Times are pre-filled from the staff member's default work hours.</p>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="closeModal();toast('Shift added')">Add shift</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M20 6L9 17l-5-5"/></svg><span id="toast-msg">Saved</span></div>
+
+<script src="shell.js" data-active="staffschedule" data-title="Staff Schedule"></script>
+<script>
+// roster: per staff, per day index (0=Mon..6=Sun) -> shift
+const ROSTER = [
+  { nm:'Dave Mceachern', rl:'Senior Tech · Kerikeri', branch:'Kerikeri', av:'#6D5AE6', c:'blue', shifts:{0:['08:00','17:00'],1:['08:00','17:00'],2:['08:00','17:00'],3:['08:00','17:00'],4:['08:00','16:30']} },
+  { nm:'Sina Faleolo', rl:'Technician · Kerikeri', branch:'Kerikeri', av:'#1F8A5B', c:'blue', shifts:{0:['08:00','17:00'],1:['08:00','17:00'],2:['08:00','17:00'],3:['08:00','17:00'],4:['08:00','17:00']} },
+  { nm:'Mere Wiki', rl:'Service Advisor · Whangarei', branch:'Whangarei', av:'#2F62F0', c:'green', shifts:{0:['09:00','17:30'],1:['09:00','17:30'],3:['09:00','17:30'],4:['09:00','17:30'],5:['09:00','13:00']} },
+  { nm:'Hemi Ngata', rl:'Technician · Kerikeri', branch:'Kerikeri', av:'#B5740F', c:'blue', shifts:{1:['08:30','17:00'],2:['08:30','17:00'],3:['08:30','17:00'],4:['08:30','17:00'],5:['08:30','13:00']} },
+  { nm:'Wiremu Tana', rl:'Technician · Kaitaia', branch:'Kaitaia', av:'#C8412F', c:'purple', shifts:{0:['08:00','16:30'],1:['08:00','16:30'],2:['08:00','16:30'],3:['08:00','16:30'],4:['08:00','16:30']} },
+  { nm:'Anika Sharma', rl:'Bookkeeper · Kerikeri', branch:'Kerikeri', av:'#6D5AE6', c:'blue', shifts:{0:['09:00','15:00'],2:['09:00','15:00'],4:['09:00','15:00']} },
+  { nm:'Arsh Randhawa', rl:'Owner / Admin · Kerikeri', branch:'Kerikeri', av:'#2F62F0', c:'blue', shifts:{0:['07:30','16:00'],1:['07:30','16:00'],2:['07:30','16:00'],3:['07:30','16:00'],4:['07:30','16:00']} },
+];
+
+let branch = '';
+function renderCal() {
+  const body = document.getElementById('cal-body');
+  const list = ROSTER.filter(r => !branch || r.branch === branch);
+  body.innerHTML = list.map(r => {
+    const cells = [];
+    for (let d=0; d<7; d++) {
+      const sh = r.shifts[d];
+      const wknd = d>=5 ? 'wknd' : '';
+      cells.push(`<div class="cal-cell ${wknd}">${sh
+        ? `<div class="shift ${r.c}" onclick="openModal()"><div class="t">${sh[0]}–${sh[1]}</div><div class="n">${r.branch}</div></div>`
+        : `<div class="add-shift" onclick="openModal()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg></div>`}</div>`);
+    }
+    return `<div class="cal-row">
+      <div class="cal-staff"><span class="avatar-sm" style="background:${r.av}">${r.nm.split(' ').map(x=>x[0]).slice(0,2).join('')}</span><div><div class="nm">${r.nm}</div><div class="rl">${r.rl}</div></div></div>
+      ${cells.join('')}
+    </div>`;
+  }).join('');
+}
+
+function renderList() {
+  const DATES = ['Mon 3 Nov','Tue 4 Nov','Wed 5 Nov','Thu 6 Nov','Fri 7 Nov','Sat 8 Nov','Sun 9 Nov'];
+  const rows = [];
+  ROSTER.filter(r => !branch || r.branch === branch).forEach(r => {
+    Object.entries(r.shifts).forEach(([d, sh]) => {
+      rows.push({ nm:r.nm, branch:r.branch, date:DATES[d], di:+d, start:sh[0], end:sh[1] });
+    });
+  });
+  rows.sort((a,b) => a.di - b.di || a.nm.localeCompare(b.nm));
+  document.getElementById('list-rows').innerHTML = rows.map(r => `
+    <tr>
+      <td><span class="cust">${r.nm}</span></td>
+      <td><span style="color:var(--muted)">${r.branch}</span></td>
+      <td class="mono" style="color:var(--muted)">${r.date}</td>
+      <td class="mono">${r.start}</td>
+      <td class="mono">${r.end}</td>
+      <td><span style="color:var(--muted-2)">—</span></td>
+      <td class="r"><button class="link-btn danger" style="border:none;background:none;font-family:inherit;font-size:13px;font-weight:500;padding:4px 8px;border-radius:7px;color:var(--danger)" onclick="toast('Shift deleted')">Delete</button></td>
+    </tr>`).join('');
+}
+
+document.querySelectorAll('#branch-seg button').forEach(b => b.addEventListener('click', () => {
+  document.querySelectorAll('#branch-seg button').forEach(x => x.classList.remove('on'));
+  b.classList.add('on'); branch = b.dataset.branch; renderCal(); renderList();
+}));
+document.querySelectorAll('.view-toggle .tab').forEach(t => t.addEventListener('click', () => {
+  document.querySelectorAll('.view-toggle .tab').forEach(x => x.classList.remove('on'));
+  t.classList.add('on');
+  const cal = t.dataset.view === 'cal';
+  document.getElementById('cal-view').style.display = cal ? 'block' : 'none';
+  document.getElementById('list-view').style.display = cal ? 'none' : 'block';
+}));
+
+function openModal() { document.getElementById('shift-modal').classList.add('open'); }
+function closeModal() { document.getElementById('shift-modal').classList.remove('open'); }
+document.getElementById('add-btn').addEventListener('click', openModal);
+document.getElementById('shift-modal').addEventListener('click', e => { if (e.target.id === 'shift-modal') closeModal(); });
+
+let toastTimer;
+function toast(msg) {
+  const t = document.getElementById('toast');
+  document.getElementById('toast-msg').textContent = msg;
+  t.classList.add('show'); clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
+}
+
+renderCal(); renderList();
+</script>
+</body>
+</html>

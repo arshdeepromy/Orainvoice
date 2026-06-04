@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Jobs">
+        <div class="page-head"><div><div class="eyebrow">Work</div><h1>Jobs</h1><p class="sub">Jobs v2 · 22 open across all stages</p></div><div class="head-actions"><a class="btn btn-ghost btn-sm" href="JobBoard.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 3H5a2 2 0 00-2 2v14a2 2 0 002 2h4m0-18v18m0-18h4m-4 18h4m0-18h4a2 2 0 012 2v14a2 2 0 01-2 2h-4m0-18v18"/></svg>Board view</a><a class="btn btn-primary btn-sm" href="JobDetail.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>New job</a></div></div>
+        <div class="kpis"><div class="kpi"><div class="top"><span class="label">Open jobs</span></div><div class="val" >22</div></div><div class="kpi"><div class="top"><span class="label">Due today</span></div><div class="val" style="color:var(--warn)">6</div></div><div class="kpi"><div class="top"><span class="label">Overdue</span></div><div class="val" style="color:var(--danger)">2</div></div><div class="kpi"><div class="top"><span class="label">Unassigned</span></div><div class="val" >3</div></div></div>
+        <div class="tabs"><div class="tab on">All</div><div class="tab ">Scheduled</div><div class="tab ">In progress</div><div class="tab ">Blocked</div><div class="tab ">Done</div></div>
+        <div class="toolbar"><div class="search-input" style="flex:1;max-width:320px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 21l-5-5m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg><input placeholder="Search…"></div><button class="filter-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 4h18M6 12h12M10 20h4"/></svg>Filters</button></div>
+<section class="card"><div class="tbl-wrap"><table><thead><tr><th class="">Job</th><th class="">Customer</th><th class="">Assigned</th><th class="">Stage</th><th class="">Due</th><th class="r">Value</th></tr></thead><tbody><tr class="clickable" onclick="location.href='JobDetail.html'"><td class=""><span class="id">JOB-1187</span></td><td class="">K. Williams</td><td class="">Dave M.</td><td class=""><span class="badge inprogress"><span class="b-dot"></span>In progress</span></td><td class=""><span class="mono" style="color:var(--muted)">Today</span></td><td class="r"><span class="amt">$503.50</span></td></tr><tr class="clickable" onclick="location.href='JobDetail.html'"><td class=""><span class="id">JOB-1186</span></td><td class="">Coastal Builders</td><td class="">Sina F.</td><td class=""><span class="badge inprogress"><span class="b-dot"></span>In progress</span></td><td class=""><span class="mono" style="color:var(--muted)">Today</span></td><td class="r"><span class="amt">$1,240.00</span></td></tr><tr class="clickable" onclick="location.href='JobDetail.html'"><td class=""><span class="id">JOB-1182</span></td><td class="">Northland Freight</td><td class="">—</td><td class=""><span class="badge warn"><span class="b-dot"></span>Blocked</span></td><td class=""><span class="mono" style="color:var(--muted)">Held</span></td><td class="r"><span class="amt">$3,820.00</span></td></tr><tr class="clickable" onclick="location.href='JobDetail.html'"><td class=""><span class="id">JOB-1189</span></td><td class="">M. Taufa</td><td class="">Tom C.</td><td class=""><span class="badge neutral"><span class="b-dot"></span>Scheduled</span></td><td class=""><span class="mono" style="color:var(--muted)">Tomorrow</span></td><td class="r"><span class="amt">$220.00</span></td></tr></tbody></table></div></section>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="" data-title="Jobs" data-primary="New job"></script>
+<script>
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));t.classList.add('on');}));
+</script>
+</body>
+</html>

@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="../ds.css" />
+<link rel="stylesheet" href="fleet.css" />
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Fleet portal vehicles">
+        <div class="page-head"><div><h1>Vehicles</h1><p class="sub">38 vehicles in your fleet</p></div><div class="head-actions"><button class="btn btn-primary btn-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>Add vehicle</button></div></div>
+
+        <div class="toolbar"><div class="search-input" style="flex:1;max-width:300px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 21l-5-5m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg><input placeholder="Search rego or model…"></div><div class="seg"><button class="on">All</button><button>Expiring</button><button>Overdue</button></div></div>
+
+        <section class="card"><div class="tbl-wrap"><table>
+          <thead><tr><th>Rego</th><th>Make / Model</th><th>Year</th><th class="r">Odometer</th><th>WOF</th><th>COF</th><th>Service</th></tr></thead>
+          <tbody id="rows"></tbody>
+        </table></div></section>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="fleet-shell.js" data-active="vehicles" data-title="Vehicles"></script>
+<script>
+const V=[
+  {rego:'NPR-447',mm:'Isuzu NPR 400',yr:2019,od:184210,wof:'green',cof:'amber',svc:'red'},
+  {rego:'NPR-220',mm:'Isuzu NPR 300',yr:2021,od:96540,wof:'green',cof:'green',svc:'amber'},
+  {rego:'HBR-012',mm:'Hino 300',yr:2020,od:142880,wof:'amber',cof:'green',svc:'green'},
+  {rego:'HBR-440',mm:'Fuso Canter',yr:2018,od:210400,wof:'green',cof:'green',svc:'green'},
+  {rego:'JDC-991',mm:'Toyota Hiace',yr:2022,od:48200,wof:'green',cof:'grey',svc:'green'},
+  {rego:'TAJ-009',mm:'Ford Transit',yr:2017,od:188900,wof:'red',cof:'grey',svc:'amber'},
+];
+const LBL={green:'Valid',amber:'Soon',red:'Expired',grey:'N/A'};
+document.getElementById('rows').innerHTML=V.map(v=>`<tr class="clickable" onclick="location.href='VehicleDetail.html'">
+  <td><a href="VehicleDetail.html" style="color:var(--accent);font-weight:600" onclick="event.stopPropagation()">${v.rego}</a></td>
+  <td>${v.mm}</td><td class="mono" style="color:var(--muted)">${v.yr}</td>
+  <td class="r mono">${v.od.toLocaleString()} km</td>
+  <td><span class="exp ${v.wof}"><span class="d"></span>${LBL[v.wof]}</span></td>
+  <td><span class="exp ${v.cof}"><span class="d"></span>${LBL[v.cof]}</span></td>
+  <td><span class="exp ${v.svc}"><span class="d"></span>${LBL[v.svc]}</span></td>
+</tr>`).join('');
+</script>
+</body>
+</html>

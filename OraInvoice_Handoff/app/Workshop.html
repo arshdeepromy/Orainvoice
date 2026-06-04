@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>OraInvoice for Workshops · Auto & mechanical</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+  body { background: var(--card); }
+  .nav { position: sticky; top: 0; z-index: 30; background: rgba(255,255,255,.85); backdrop-filter: blur(10px); border-bottom: 1px solid var(--border); }
+  .nav .in { max-width: 1140px; margin: 0 auto; padding: 14px 24px; display: flex; align-items: center; gap: 20px; }
+  .nav .brand { display: flex; align-items: center; gap: 10px; } .nav .brand .m { width: 32px; height: 32px; border-radius: 9px; background: var(--accent); display: grid; place-items: center; color: #fff; } .nav .brand .m svg { width: 18px; height: 18px; }
+  .nav .brand .n { font-size: 16px; font-weight: 700; } .nav .brand .n .dim { color: var(--muted-2); font-weight: 500; }
+  .nav .links { display: flex; gap: 4px; } .nav .links a { padding: 8px 12px; border-radius: 8px; font-size: 13.5px; font-weight: 500; color: var(--muted); } .nav .links a:hover, .nav .links a.on { background: var(--canvas); color: var(--text); }
+  .nav .cta { margin-left: auto; display: flex; gap: 10px; }
+  @media (max-width:720px){ .nav .links { display: none; } }
+  .hero { max-width: 1140px; margin: 0 auto; padding: 64px 24px 40px; display: grid; grid-template-columns: 1.05fr .95fr; gap: 48px; align-items: center; }
+  @media (max-width:880px){ .hero { grid-template-columns: 1fr; padding-top: 44px; } }
+  .hero .pill { display: inline-flex; align-items: center; gap: 8px; padding: 6px 13px; border-radius: 20px; background: var(--accent-soft); color: var(--accent); font-size: 12.5px; font-weight: 600; }
+  .hero h1 { font-size: 46px; font-weight: 700; letter-spacing: -.03em; line-height: 1.08; margin: 20px 0 0; }
+  .hero p { font-size: 17px; color: var(--muted); line-height: 1.6; margin: 18px 0 0; max-width: 48ch; }
+  .hero .actions { display: flex; gap: 12px; margin-top: 26px; flex-wrap: wrap; }
+  .stat-band { display: flex; gap: 36px; margin-top: 34px; flex-wrap: wrap; }
+  .stat-band .s .v { font-family: var(--mono); font-size: 26px; font-weight: 600; letter-spacing: -.02em; } .stat-band .s .l { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+  .hero-card { border: 1px solid var(--border); border-radius: 18px; box-shadow: 0 24px 60px -24px rgba(11,18,32,.32); overflow: hidden; }
+  .hc-top { height: 44px; background: var(--sb-bg); display: flex; align-items: center; padding: 0 16px; gap: 7px; } .hc-top i { width: 10px; height: 10px; border-radius: 50%; background: rgba(255,255,255,.2); }
+  .hc-body { padding: 18px; background: var(--canvas); }
+  .bay { display: flex; align-items: center; gap: 12px; background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 13px 15px; margin-bottom: 10px; }
+  .bay .num { width: 34px; height: 34px; border-radius: 9px; background: var(--accent-soft); color: var(--accent); display: grid; place-items: center; font-weight: 700; font-family: var(--mono); }
+  .bay .t { font-weight: 600; font-size: 13.5px; } .bay .s { font-size: 11.5px; color: var(--muted); }
+  .section { max-width: 1140px; margin: 0 auto; padding: 64px 24px; }
+  .section-head { text-align: center; max-width: 56ch; margin: 0 auto 44px; }
+  .section-head h2 { font-size: 32px; font-weight: 700; letter-spacing: -.02em; } .section-head p { font-size: 15.5px; color: var(--muted); margin: 12px 0 0; line-height: 1.6; }
+  .feat-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 20px; } @media (max-width:880px){ .feat-grid { grid-template-columns: 1fr; } }
+  .feat { border: 1px solid var(--border); border-radius: var(--r-card); padding: 24px; } .feat:hover { box-shadow: var(--shadow-card); }
+  .feat .ic { width: 42px; height: 42px; border-radius: 11px; display: grid; place-items: center; margin-bottom: 14px; } .feat .ic svg { width: 21px; height: 21px; }
+  .feat h3 { font-size: 16px; font-weight: 700; } .feat p { font-size: 13px; color: var(--muted); line-height: 1.6; margin: 7px 0 0; }
+  .cta-band { background: var(--sb-bg); background-image: radial-gradient(100% 120% at 50% 0%, rgba(47,98,240,.24), transparent 60%); border-radius: 24px; max-width: 1140px; margin: 0 auto 72px; padding: 56px 24px; text-align: center; color: #fff; }
+  .cta-band h2 { font-size: 32px; font-weight: 700; } .cta-band p { color: rgba(255,255,255,.66); margin: 12px auto 0; max-width: 48ch; }
+  .footer { border-top: 1px solid var(--border); } .footer .in { max-width: 1140px; margin: 0 auto; padding: 28px 24px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; font-size: 12.5px; color: var(--muted); }
+  .footer .fl { display: flex; gap: 18px; } .footer .fl a:hover { color: var(--text); }
+</style>
+</head>
+<body>
+<div class="nav"><div class="in">
+  <a class="brand" href="LandingPage.html"><div class="m"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h7l5 5v11a2 2 0 01-2 2z"/></svg></div><div class="n"><b>Ora</b><span class="dim">Invoice</span></div></a>
+  <div class="links"><a href="Trades.html">Trades</a><a class="on" href="Workshop.html">Workshops</a><a href="LandingPage.html#pricing">Pricing</a></div>
+  <div class="cta"><a class="btn btn-ghost btn-sm" href="Login.html">Sign in</a><a class="btn btn-primary btn-sm" href="Signup.html">Start free trial</a></div>
+</div></div>
+
+<section class="hero">
+  <div>
+    <span class="pill"><svg viewBox="0 0 24 24" width="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 11l1.5-4.5A2 2 0 018.4 5h7.2a2 2 0 011.9 1.5L19 11M5 11h14M5 11a2 2 0 00-2 2v3a1 1 0 001 1h1"/></svg>For auto &amp; mechanical workshops</span>
+    <h1>Every bay, every job, every invoice — in one place.</h1>
+    <p>From the booking calendar to the WoF certificate to the paid invoice, OraInvoice keeps your whole workshop moving without the double-entry.</p>
+    <div class="actions"><a class="btn btn-primary btn-lg" href="Signup.html">Start your free trial</a><a class="btn btn-ghost btn-lg" href="Dashboard.html">See a live demo →</a></div>
+    <div class="stat-band">
+      <div class="s"><div class="v">2,400+</div><div class="l">NZ workshops</div></div>
+      <div class="s"><div class="v">3.2 days</div><div class="l">faster payment</div></div>
+      <div class="s"><div class="v">12 hrs</div><div class="l">admin saved / wk</div></div>
+    </div>
+  </div>
+  <div class="hero-card">
+    <div class="hc-top"><i></i><i></i><i></i></div>
+    <div class="hc-body">
+      <div style="font-family:var(--mono);font-size:11px;color:var(--muted-2);text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px">Today · 6 Nov</div>
+      <div class="bay"><div class="num">1</div><div style="flex:1"><div class="t">Toyota Hilux — Full service</div><div class="s">Dave · 09:00–11:00</div></div><span class="badge inprogress"><span class="b-dot"></span>In bay</span></div>
+      <div class="bay"><div class="num">2</div><div style="flex:1"><div class="t">Mazda CX-5 — WoF + brakes</div><div class="s">Sina · 09:30–11:30</div></div><span class="badge inprogress"><span class="b-dot"></span>In bay</span></div>
+      <div class="bay"><div class="num">3</div><div style="flex:1"><div class="t">Ford Ranger — Diagnostics</div><div class="s">Hemi · 11:00</div></div><span class="badge pending"><span class="b-dot"></span>Booked</span></div>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="section-head"><h2>From booking to paid, without the paperwork pile.</h2><p>Purpose-built for motor workshops — vehicle history, job cards and GST done right.</p></div>
+  <div class="feat-grid">
+    <div class="feat"><div class="ic" style="background:var(--accent-soft);color:var(--accent)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 7V3m8 4V3M3 11h18M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg></div><h3>Online bookings</h3><p>Customers book the right service into the right bay — no phone tag.</p></div>
+    <div class="feat"><div class="ic" style="background:var(--warn-soft);color:var(--warn)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 11l1.5-4.5A2 2 0 018.4 5h7.2a2 2 0 011.9 1.5L19 11m-14 0h14m-14 0a2 2 0 00-2 2v3a1 1 0 001 1h1"/></svg></div><h3>Vehicle history</h3><p>Every job, part and WoF against the rego — recall work instantly.</p></div>
+    <div class="feat"><div class="ic" style="background:var(--ok-soft);color:var(--ok)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg></div><h3>GST &amp; Xero sync</h3><p>Invoices flow to Xero automatically. GST returns take minutes, not days.</p></div>
+  </div>
+</section>
+
+<div class="cta-band">
+  <h2>Run a tidier workshop.</h2>
+  <p>Set up in minutes. Free for 14 days, no card required.</p>
+  <div style="margin-top:24px"><a class="btn btn-primary btn-lg" href="Signup.html">Start free trial</a></div>
+</div>
+
+<div class="footer"><div class="in"><span>© 2025 OraInvoice</span><div class="fl"><a href="Trades.html">Trades</a><a href="Workshop.html">Workshops</a><a href="Privacy.html">Privacy</a><a href="LandingPage.html">Home</a></div></div></div>
+</body>
+</html>

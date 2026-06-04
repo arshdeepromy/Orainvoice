@@ -1,0 +1,167 @@
+import { useState, useEffect, useCallback } from 'react'
+import apiClient from '@/api/client'
+import { Button, Input, Select, Spinner } from '@/components/ui'
+
+/* ------------------------------------------------------------------ */
+/*  Types                                                              */
+/* ------------------------------------------------------------------ */
+
+interface WofRegoSettings {
+  enabled: boolean
+  days_in_advance: number
+  channel: 'email' | 'sms' | 'both'
+}
+
+const CHANNEL_OPTIONS = [
+  { value: 'email', label: 'Email only' },
+  { value: 'sms', label: 'SMS only' },
+  { value: 'both', label: 'Email + SMS' },
+]
+
+/**
+ * WOF and registration expiry reminder settings — enable/disable per org,
+ * configurable days in advance, channel selection.
+ *
+ * Requirements: 39.1, 39.2, 39.3, 39.4
+ */
+export default function WofRegoReminders() {
+  const [settings, setSettings] = useState<WofRegoSettings>({
+    enabled: false,
+    days_in_advance: 30,
+    channel: 'email',
+  })
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+
+  const fetchSettings = useCallback(async () => {
+    setLoading(true)
+    setError('')
+    try {
+      const res = await apiClient.get<WofRegoSettings>('/notifications/wof-rego-settings')
+      setSettings(res.data ?? { enabled: false, days_in_advance: 30, channel: 'email' })
+    } catch {
+      setError('Failed to load WOF/rego reminder settings.')
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { fetchSettings() }, [fetchSettings])
+
+  const update = (updates: Partial<WofRegoSettings>) => {
+    setSettings((prev) => ({ ...prev, ...updates }))
+    setSaved(false)
+  }
+
+  const handleSave = async () => {
+    setSaving(true)
+    setError('')
+    setSaved(false)
+    try {
+      await apiClient.put('/notifications/wof-rego-settings', settings)
+      setSaved(true)
+    } catch {
+      setError('Failed to save WOF/rego reminder settings.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (loading) {
+    return <div className="py-16"><Spinner label="Loading WOF/rego settings" /></div>
+  }
+
+  return (
+    <div>
+      <p className="text-sm text-muted mb-6">
+        Send automated reminders to customers when their vehicle's WOF or registration is about to expire.
+        Reminders include the vehicle rego, expiry type, date, and your workshop contact details.
+      </p>
+
+      {error && (
+        <div className="mb-4 rounded-ctl border border-danger bg-danger-soft px-4 py-3 text-sm text-danger" role="alert">
+          {error}
+        </div>
+      )}
+
+      {saved && (
+        <div className="mb-4 rounded-ctl border border-ok bg-ok-soft px-4 py-3 text-sm text-ok" role="status">
+          Settings saved successfully.
+        </div>
+      )}
+
+      <div className="space-y-6">
+        {/* WOF/Rego Reminders Toggle */}
+        <div className="rounded-card border border-border bg-card p-4 space-y-4">
+          <div className="flex items-center gap-3">
+            <button
+              role="switch"
+              aria-checked={settings.enabled}
+              aria-label="Enable WOF and registration expiry reminders"
+              onClick={() => update({ enabled: !settings.enabled })}
+              className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors
+                focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2
+                ${settings.enabled ? 'bg-accent' : 'bg-border-strong'}`}
+            >
+              <span
+                aria-hidden="true"
+                className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-card shadow ring-0 transition-transform
+                  ${settings.enabled ? 'translate-x-5' : 'translate-x-0'}`}
+              />
+            </button>
+            <div>
+              <span className="text-sm font-medium text-text">WOF &amp; Registration Expiry Reminders</span>
+              <p className="text-xs text-muted">
+                {settings.enabled
+                  ? 'Active — reminders sent automatically.'
+                  : 'Disabled — no WOF or registration reminders will be sent.'}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Days in advance + channel — visible when enabled */}
+        {settings.enabled && (
+          <>
+            <div className="rounded-card border border-border bg-card p-4">
+              <div className="max-w-xs">
+                <Input
+                  label="Days before expiry"
+                  type="number"
+                  min={1}
+                  max={90}
+                  value={String(settings.days_in_advance)}
+                  onChange={(e) => update({ days_in_advance: Math.max(1, parseInt(e.target.value) || 30) })}
+                />
+                <p className="mt-1 text-xs text-muted">
+                  How many days before a WOF or registration expires to send the reminder.
+                </p>
+              </div>
+            </div>
+
+            <div className="rounded-card border border-border bg-card p-4">
+              <div className="max-w-xs">
+                <Select
+                  label="Reminder channel"
+                  value={settings.channel}
+                  onChange={(e) => update({ channel: e.target.value as WofRegoSettings['channel'] })}
+                  options={CHANNEL_OPTIONS}
+                />
+                <p className="mt-1 text-xs text-muted">
+                  Applies to both WOF and registration reminders.
+                </p>
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* Save */}
+        <div className="flex justify-end">
+          <Button onClick={handleSave} loading={saving}>Save Settings</Button>
+        </div>
+      </div>
+    </div>
+  )
+}

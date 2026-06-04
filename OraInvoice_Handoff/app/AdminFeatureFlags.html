@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+  .flag { display: flex; align-items: center; gap: 16px; padding: 16px 20px; border-bottom: 1px solid var(--border); }
+  .flag:last-child { border-bottom: none; }
+  .flag .meta { flex: 1; min-width: 0; }
+  .flag .nm { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 9px; }
+  .flag .key { font-family: var(--mono); font-size: 11px; color: var(--muted-2); background: var(--canvas); padding: 1px 7px; border-radius: 5px; }
+  .flag .d { font-size: 12.5px; color: var(--muted); margin-top: 3px; }
+  .flag .roll { width: 120px; text-align: right; font-family: var(--mono); font-size: 12px; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Admin · Feature Flags">
+        <div class="page-head">
+          <div><div class="eyebrow">Platform admin</div><h1>Feature flags</h1><p class="sub">Toggle features globally or roll out gradually</p></div>
+          <div class="head-actions"><button class="btn btn-primary btn-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>New flag</button></div>
+        </div>
+        <div id="admin-nav" data-active="flags"></div>
+
+        <div class="toolbar">
+          <label class="search-input" style="flex:1;max-width:300px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 21l-5-5m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg><input type="text" placeholder="Search flags…" /></label>
+          <div class="seg"><button class="on">All</button><button>Enabled</button><button>Disabled</button><button>Partial</button></div>
+        </div>
+
+        <section class="card" id="flags"></section>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script src="shell.js" data-active="admin" data-title="Admin · Feature Flags"></script>
+<script src="admin-nav.js"></script>
+<script>
+const FLAGS = [
+  { nm:'Bank feeds', key:'bank_feeds', d:'Live bank connections & auto-reconciliation', on:true, roll:'100%', tag:['active','GA'] },
+  { nm:'Online bookings', key:'online_bookings', d:'Customer-facing booking calendar widget', on:true, roll:'100%', tag:['active','GA'] },
+  { nm:'POS terminal', key:'pos_terminal', d:'In-store point-of-sale mode', on:true, roll:'100%', tag:['active','GA'] },
+  { nm:'AI quote assist', key:'ai_quote_assist', d:'Draft quotes from a job description', on:true, roll:'35%', tag:['warn','Beta'] },
+  { nm:'Loyalty & rewards', key:'loyalty', d:'Points and rewards for repeat customers', on:true, roll:'12%', tag:['warn','Beta'] },
+  { nm:'Construction module', key:'construction', d:'Progress claims, retentions & variations', on:true, roll:'8%', tag:['sent','Pilot'] },
+  { nm:'Kitchen display', key:'kitchen_display', d:'Order screen for hospitality tenants', on:false, roll:'0%', tag:['draft','Off'] },
+  { nm:'Multi-currency', key:'multi_currency', d:'Invoice in currencies other than NZD', on:false, roll:'0%', tag:['draft','Planned'] },
+];
+document.getElementById('flags').innerHTML = FLAGS.map((f,i)=>`
+  <div class="flag">
+    <button class="toggle ${f.on?'on':''}" onclick="this.classList.toggle('on')"></button>
+    <div class="meta"><div class="nm">${f.nm} <span class="key">${f.key}</span> <span class="badge ${f.tag[0]}" style="margin-left:2px">${f.tag[1]}</span></div><div class="d">${f.d}</div></div>
+    <div class="roll">${f.on?`rollout ${f.roll}`:'disabled'}</div>
+    <button class="btn btn-ghost btn-sm">Configure</button>
+  </div>`).join('');
+</script>
+</body>
+</html>

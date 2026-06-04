@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+.health{display:grid;grid-template-columns:repeat(4,1fr);gap:var(--gap);margin-bottom:var(--gap)}@media(max-width:1080px){.health{grid-template-columns:1fr 1fr}}
+.hcard{background:var(--card);border:1px solid var(--border);border-radius:var(--r-card);padding:18px 20px;box-shadow:var(--shadow-card)}
+.hcard .hl{font-size:12.5px;color:var(--muted);display:flex;align-items:center;gap:7px}.hcard .hl .led{width:8px;height:8px;border-radius:50%}
+.hcard .hv{font-family:var(--mono);font-size:24px;font-weight:600;margin-top:10px}.hcard .hs{font-size:11.5px;color:var(--muted-2);margin-top:3px}
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Admin Console">
+        <div class="page-head">
+          <div><div class="eyebrow">System</div><h1>Admin Console</h1><p class="sub">Infrastructure & platform operations</p></div>
+          <div class="head-actions"><span class="badge active"><span class="b-dot"></span>All systems operational</span></div>
+        </div>
+        <div id="admin-nav" data-active="overview"></div>
+        <div class="health">
+          <div class="hcard"><div class="hl"><span class="led" style="background:var(--ok)"></span>Primary DB</div><div class="hv">42ms</div><div class="hs">PostgreSQL 16 · x86_64</div></div>
+          <div class="hcard"><div class="hl"><span class="led" style="background:var(--ok)"></span>HA Standby</div><div class="hv">In sync</div><div class="hs">Replication lag 0.3s</div></div>
+          <div class="hcard"><div class="hl"><span class="led" style="background:var(--ok)"></span>API</div><div class="hv">99.98%</div><div class="hs">Uptime 30d · p95 118ms</div></div>
+          <div class="hcard"><div class="hl"><span class="led" style="background:var(--warn)"></span>Storage</div><div class="hv">74%</div><div class="hs">148 GB of 200 GB</div></div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 360px;gap:var(--gap);align-items:start">
+          <section class="card"><div class="card-head"><h2>Background jobs & migrations</h2><a class="link" href="#">View all</a></div><div class="tbl-wrap"><table>
+            <thead><tr><th>Task</th><th>Type</th><th>Started</th><th>Status</th></tr></thead><tbody>
+            <tr><td><span class="cust">Nightly backup</span></td><td><span class="id">cron</span></td><td class="mono" style="color:var(--muted)">02:00</td><td><span class="badge paid"><span class="b-dot"></span>Done</span></td></tr>
+            <tr><td><span class="cust">Schema migration v1.13.0</span></td><td><span class="id">migrate</span></td><td class="mono" style="color:var(--muted)">01 Nov</td><td><span class="badge paid"><span class="b-dot"></span>Applied</span></td></tr>
+            <tr><td><span class="cust">Email queue flush</span></td><td><span class="id">worker</span></td><td class="mono" style="color:var(--muted)">live</td><td><span class="badge inprogress"><span class="b-dot"></span>Running</span></td></tr>
+            <tr><td><span class="cust">Search reindex</span></td><td><span class="id">worker</span></td><td class="mono" style="color:var(--muted)">queued</td><td><span class="badge pending"><span class="b-dot"></span>Queued</span></td></tr>
+          </tbody></table></div></section>
+          <div class="stack">
+            <section class="card"><div class="card-body"><div class="section-label">Providers</div>
+              <div class="meta-row"><span class="k">Email — Postmark</span><span class="v"><span class="badge active"><span class="b-dot"></span>OK</span></span></div>
+              <div class="meta-row"><span class="k">SMS — Twilio</span><span class="v"><span class="badge active"><span class="b-dot"></span>OK</span></span></div>
+              <div class="meta-row"><span class="k">Payments — Stripe</span><span class="v"><span class="badge active"><span class="b-dot"></span>OK</span></span></div>
+              <div class="meta-row"><span class="k">Backups — S3</span><span class="v"><span class="badge active"><span class="b-dot"></span>OK</span></span></div>
+            </div></section>
+            <section class="card"><div class="card-body"><div class="section-label">Build</div>
+              <div class="meta-row"><span class="k">Version</span><span class="v mono">v1.13.0</span></div>
+              <div class="meta-row"><span class="k">Arch</span><span class="v mono">ARM64 / x86_64</span></div>
+              <div class="meta-row"><span class="k">Deployed</span><span class="v">01 Nov 2025</span></div>
+            </div></section>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="admin" data-title="Admin Console"></script>
+<script src="admin-nav.js"></script>
+</body>
+</html>

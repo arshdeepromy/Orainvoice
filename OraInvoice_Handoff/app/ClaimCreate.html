@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+.li-pick { display:flex; align-items:center; gap:10px; padding:9px 11px; border-bottom:1px solid var(--border); font-size:13px; }
+.li-pick:last-child { border-bottom:none; }
+.li-pick .amt { margin-left:auto; font-family:var(--mono); color:var(--muted); font-size:12px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page" data-screen-label="Claim create">
+        <div class="crumbs"><a href="Claims.html">Customer claims</a><span class="sep">/</span><span style="color:var(--text)">New claim</span></div>
+        <div class="page-head">
+          <div><div class="eyebrow">Service</div><h1>New claim</h1><p class="sub">Log a warranty, defect or service issue against an invoice or job</p></div>
+          <div class="head-actions"><a class="btn btn-ghost btn-sm" href="Claims.html">Cancel</a></div>
+        </div>
+
+        <div style="max-width:680px">
+          <section class="card"><div class="card-body" style="display:flex;flex-direction:column;gap:20px">
+            <div class="field"><label>Customer <span style="color:var(--danger)">*</span></label>
+              <div class="picked" style="display:flex;align-items:center;gap:10px;padding:12px 14px;border:1px solid var(--border);border-radius:var(--r-ctl);background:var(--canvas)"><span class="avatar-sm" style="width:30px;height:30px;background:#6D5AE6">RS</span><div><div style="font-size:13.5px;font-weight:600">Ravi Singh</div><div style="font-size:12px;color:var(--muted)">ravi@example.co.nz</div></div><a href="#" style="margin-left:auto;font-size:12px;color:var(--danger)" onclick="event.preventDefault()">Change</a></div>
+            </div>
+
+            <div class="field"><label>Claim type <span style="color:var(--danger)">*</span></label>
+              <select class="select"><option value="">Select type…</option><option selected>Warranty</option><option>Defect</option><option>Service redo</option><option>Exchange</option><option>Refund request</option></select>
+            </div>
+
+            <div class="field"><label>Description <span style="color:var(--danger)">*</span></label>
+              <textarea class="textarea" placeholder="Describe the customer's complaint…">Customer reports brake noise returning two weeks after front pad replacement. Requesting inspection under workmanship warranty.</textarea>
+            </div>
+
+            <hr class="divider" />
+            <p style="font-size:12.5px;color:var(--muted);margin:0">Link at least one of an invoice or a job card.</p>
+
+            <div class="field"><label>Invoice <span class="opt">(or job card below)</span></label>
+              <select class="select" id="invSel" onchange="toggleLines()"><option value="">None</option><option value="1" selected>INV-2039 — $4,011.50</option><option value="2">INV-2031 — $1,240.00</option></select>
+            </div>
+
+            <div class="field" id="liBlock">
+              <label>Affected line items <span class="opt">(optional)</span></label>
+              <div class="card" style="box-shadow:none">
+                <label class="li-pick"><input type="checkbox" class="checkbox" checked><span>Brake pads (front) — OEM</span><span class="amt">$555.00</span></label>
+                <label class="li-pick"><input type="checkbox" class="checkbox"><span>Fleet service — full</span><span class="amt">$1,260.00</span></label>
+                <label class="li-pick"><input type="checkbox" class="checkbox"><span>Labour — workshop 14.5h</span><span class="amt">$1,377.50</span></label>
+              </div>
+            </div>
+
+            <div class="field"><label>Job card <span class="opt">(or invoice above)</span></label>
+              <select class="select"><option value="">None</option><option selected>JC-1184 — KMR-218</option><option>JC-1179 — RVH-902</option></select>
+            </div>
+
+            <div class="modal-foot" style="border:none;padding:0;margin-top:4px">
+              <a class="btn btn-quiet" href="Claims.html">Cancel</a>
+              <button class="btn btn-primary" onclick="toast('Claim CLM-049 created.')">Create claim</button>
+            </div>
+          </div></section>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+<div class="toast ok" id="toast"></div>
+<script src="shell.js" data-active="" data-title="New claim"></script>
+<script>
+function toggleLines(){document.getElementById('liBlock').style.display=document.getElementById('invSel').value?'':'none';}
+let tt;function toast(m){const t=document.getElementById('toast');t.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><span>'+m+'</span>';t.classList.add('show');clearTimeout(tt);tt=setTimeout(()=>t.classList.remove('show'),2600);}
+</script>
+</body>
+</html>

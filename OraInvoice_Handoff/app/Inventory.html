@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Inventory">
+        <div class="page-head">
+          <div><div class="eyebrow">Stock</div><h1>Inventory</h1><p class="sub">480 SKUs · 14 low · 2 out of stock</p></div>
+          <div class="head-actions"><a class="btn btn-primary btn-sm" href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>Stock adjustment</a></div>
+        </div>
+        <div class="kpis"><div class="kpi"><div class="top"><span class="label">Stock value</span></div><div class="val" ><span class="c">$</span>84,200</div></div><div class="kpi"><div class="top"><span class="label">Low stock</span></div><div class="val" style="color:var(--warn)">14</div></div><div class="kpi"><div class="top"><span class="label">Out of stock</span></div><div class="val" style="color:var(--danger)">2</div></div><div class="kpi"><div class="top"><span class="label">On order</span></div><div class="val" >38</div></div></div>
+
+        <div class="toolbar">
+          <div class="search-input" style="flex:1;max-width:320px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 21l-5-5m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg><input placeholder="Search…" /></div>
+          <button class="filter-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 4h18M6 12h12M10 20h4"/></svg>Filters</button>
+          <div class="spacer"></div>
+          
+        </div>
+        <section class="card">
+          <div class="tbl-wrap"><table><thead><tr><th class="">Item</th><th class="">SKU</th><th class="r">On hand</th><th class="r">Reorder at</th><th class="r">On order</th><th class="">Status</th></tr></thead><tbody><tr class="" ><td class=" "><span class="cust">Brake Pads Front</span></td><td class=" "><span class="id">BRK-F22</span></td><td class="r "><span class="amt">14</span></td><td class="r "><span class="amt" style="color:var(--muted)">10</span></td><td class="r "><span class="amt" style="color:var(--muted)">0</span></td><td class=" "><span class="badge ok"><span class="b-dot"></span>In stock</span></td></tr><tr class="" ><td class=" "><span class="cust">Oil Filter — Toyota</span></td><td class=" "><span class="id">FLT-TY01</span></td><td class="r "><span class="amt" style="color:var(--warn)">8</span></td><td class="r "><span class="amt" style="color:var(--muted)">20</span></td><td class="r "><span class="amt" style="color:var(--muted)">50</span></td><td class=" "><span class="badge low"><span class="b-dot"></span>Low stock</span></td></tr><tr class="" ><td class=" "><span class="cust">Cambelt Kit — Ford</span></td><td class=" "><span class="id">CMB-FD3</span></td><td class="r "><span class="amt" style="color:var(--danger)">0</span></td><td class="r "><span class="amt" style="color:var(--muted)">4</span></td><td class="r "><span class="amt" style="color:var(--muted)">6</span></td><td class=" "><span class="badge out"><span class="b-dot"></span>Out of stock</span></td></tr><tr class="" ><td class=" "><span class="cust">Engine Oil 5W-30</span></td><td class=" "><span class="id">OIL-530</span></td><td class="r "><span class="amt">48</span></td><td class="r "><span class="amt" style="color:var(--muted)">20</span></td><td class="r "><span class="amt" style="color:var(--muted)">0</span></td><td class=" "><span class="badge ok"><span class="b-dot"></span>In stock</span></td></tr><tr class="" ><td class=" "><span class="cust">Spark Plugs ×4</span></td><td class=" "><span class="id">IGN-SP4</span></td><td class="r "><span class="amt" style="color:var(--warn)">6</span></td><td class="r "><span class="amt" style="color:var(--muted)">12</span></td><td class="r "><span class="amt" style="color:var(--muted)">24</span></td><td class=" "><span class="badge low"><span class="b-dot"></span>Low stock</span></td></tr></tbody></table></div>
+          <div class="pagination"><div class="info">Showing <span class="mono">1–5</span> of <span class="mono">480</span></div><div class="pg-btns"><button disabled>‹</button><button class="on">1</button><button>2</button><button>3</button><button>›</button></div></div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="inventory" data-title="Inventory" data-primary="Adjust"></script>
+<script>
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));t.classList.add('on');}));
+</script>
+</body>
+</html>

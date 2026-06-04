@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+  .swatch-row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .swatch { width: 40px; height: 40px; border-radius: 9px; cursor: pointer; border: 2px solid transparent; }
+  .swatch.on { border-color: var(--text); box-shadow: 0 0 0 2px var(--card), 0 0 0 4px var(--text); }
+  .preview { border: 1px solid var(--border); border-radius: var(--r-card); overflow: hidden; }
+  .pv-top { height: 54px; display: flex; align-items: center; gap: 11px; padding: 0 16px; color: #fff; }
+  .pv-logo { width: 30px; height: 30px; border-radius: 8px; background: rgba(255,255,255,.18); display: grid; place-items: center; font-weight: 700; }
+  .pv-body { padding: 20px; background: var(--canvas); }
+  .pv-btn { display: inline-flex; height: 36px; align-items: center; padding: 0 16px; border-radius: 9px; color: #fff; font-size: 13px; font-weight: 600; }
+  .drop { border: 1.5px dashed var(--border-strong); border-radius: var(--r-ctl); padding: 22px; text-align: center; color: var(--muted); }
+  .drop svg { width: 24px; height: 24px; color: var(--muted-2); }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page" data-screen-label="Admin · Branding">
+        <div class="page-head">
+          <div><div class="eyebrow">Platform admin</div><h1>Branding</h1><p class="sub">White-label appearance for the platform &amp; tenant portals</p></div>
+          <div class="head-actions"><button class="btn btn-ghost btn-sm">Reset</button><button class="btn btn-primary btn-sm">Save branding</button></div>
+        </div>
+        <div id="admin-nav" data-active="branding"></div>
+
+        <div class="detail-grid">
+          <div class="stack">
+            <section class="card"><div class="card-body">
+              <div class="section-label">Identity</div>
+              <div class="form-grid">
+                <div class="field"><label>Platform name</label><input class="input" value="OraInvoice" /></div>
+                <div class="field"><label>Support email</label><input class="input" value="support@orainvoice.co.nz" /></div>
+              </div>
+              <div class="field" style="margin-top:18px"><label>Logo</label><div class="drop"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 9l5-5 5 5M12 4v12"/></svg><div style="font-size:13px;margin-top:8px">Drop SVG/PNG or <b style="color:var(--accent)">browse</b></div><div style="font-size:11.5px;color:var(--muted-2);margin-top:3px">Recommended 240×64, transparent</div></div></div>
+            </div></section>
+
+            <section class="card"><div class="card-body">
+              <div class="section-label">Accent colour</div>
+              <div class="swatch-row" id="sw">
+                <span class="swatch on" style="background:#2F62F0" data-c="#2F62F0"></span>
+                <span class="swatch" style="background:#1F8A5B" data-c="#1F8A5B"></span>
+                <span class="swatch" style="background:#6D5AE6" data-c="#6D5AE6"></span>
+                <span class="swatch" style="background:#C8412F" data-c="#C8412F"></span>
+                <span class="swatch" style="background:#B5740F" data-c="#B5740F"></span>
+                <span class="swatch" style="background:#0B1220" data-c="#0B1220"></span>
+              </div>
+              <div class="field" style="margin-top:16px"><label>Custom hex</label><input class="input mono" id="hex" value="#2F62F0" /></div>
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-top:16px"><span style="font-size:13.5px;font-weight:500">Sidebar theme</span><div class="seg"><button class="on">Ink</button><button>Light</button></div></div>
+            </div></section>
+          </div>
+
+          <div class="stack">
+            <section class="card"><div class="card-body">
+              <div class="section-label">Live preview</div>
+              <div class="preview">
+                <div class="pv-top" id="pvtop" style="background:#2F62F0"><div class="pv-logo">O</div><b>OraInvoice</b></div>
+                <div class="pv-body"><div style="font-size:13px;color:var(--muted);margin-bottom:12px">Sign in to continue to your workshop.</div><span class="pv-btn" id="pvbtn" style="background:#2F62F0">Sign in</span></div>
+              </div>
+              <p style="font-size:12px;color:var(--muted);margin:14px 0 0">Tenants on Multi-site plans can override the accent and logo for their own customer portals.</p>
+            </div></section>
+            <section class="card"><div class="card-body">
+              <div class="section-label">Email footer</div>
+              <textarea class="textarea" rows="4">OraInvoice · 14 Hone Heke Rd, Kerikeri 0230 · support@orainvoice.co.nz</textarea>
+            </div></section>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="admin" data-title="Admin · Branding"></script>
+<script src="admin-nav.js"></script>
+<script>
+function applyColor(c){ document.getElementById('pvtop').style.background=c; document.getElementById('pvbtn').style.background=c; document.getElementById('hex').value=c; }
+document.querySelectorAll('#sw .swatch').forEach(s=>s.addEventListener('click',()=>{document.querySelectorAll('#sw .swatch').forEach(x=>x.classList.remove('on'));s.classList.add('on');applyColor(s.dataset.c);}));
+document.getElementById('hex').addEventListener('input',e=>{if(/^#[0-9a-f]{6}$/i.test(e.target.value)){document.getElementById('pvtop').style.background=e.target.value;document.getElementById('pvbtn').style.background=e.target.value;}});
+document.querySelectorAll('.seg button').forEach(b=>b.addEventListener('click',()=>{const p=b.parentElement;p.querySelectorAll('button').forEach(x=>x.classList.remove('on'));b.classList.add('on');}));
+</script>
+</body>
+</html>

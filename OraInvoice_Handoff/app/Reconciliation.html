@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+.rec{display:grid;grid-template-columns:1fr 1fr;gap:var(--gap)}@media(max-width:900px){.rec{grid-template-columns:1fr}}
+.rec-item{display:flex;align-items:center;gap:12px;padding:13px 16px;border:1px solid var(--border);border-radius:var(--r-ctl);margin-bottom:10px;background:var(--card)}
+.rec-item .amt{margin-left:auto;font-family:var(--mono);font-weight:600}
+</style>
+</head>
+<body>
+<div class="app"><div id="sidebar"></div><div class="main"><div id="topbar"></div>
+<main class="content"><div class="page page-wide" data-screen-label="Reconciliation">
+<div class="page-head"><div><div class="eyebrow">Money</div><h1>Reconciliation</h1><p class="sub">ASB Business · 14 statement lines to match</p></div></div>
+<div class="kpis"><div class="kpi"><div class="top"><span class="label">Unreconciled</span></div><div class="val" style="color:var(--warn)">14</div></div><div class="kpi"><div class="top"><span class="label">Matched today</span></div><div class="val" >28</div></div><div class="kpi"><div class="top"><span class="label">Statement balance</span></div><div class="val" ><span class="c">$</span>62,140</div></div><div class="kpi"><div class="top"><span class="label">In OraInvoice</span></div><div class="val" ><span class="c">$</span>62,140</div></div></div>
+  <div class="rec"><div><div class="section-label">Statement line</div>
+    <div class="rec-item"><span class="badge info"><span class="b-dot"></span>In</span><div><div style="font-size:13.5px;font-weight:600">Northland Freight</div><div style="font-size:12px;color:var(--muted)">14 Nov · ref INV-2039</div></div><span class="amt" style="color:var(--ok)">+$4,011.50</span></div>
+    <div class="rec-item"><span class="badge danger"><span class="b-dot"></span>Out</span><div><div style="font-size:13.5px;font-weight:600">Repco NZ</div><div style="font-size:12px;color:var(--muted)">12 Nov · ref PO-439</div></div><span class="amt" style="color:var(--danger)">−$3,640.00</span></div>
+  </div><div><div class="section-label">Suggested match</div>
+    <div class="rec-item" style="border-color:var(--accent);background:var(--accent-soft)"><div><div style="font-size:13.5px;font-weight:600">INV-2039 · Northland Freight</div><div style="font-size:12px;color:var(--muted)">Invoice payment</div></div><button class="btn btn-primary btn-sm" style="margin-left:auto">Match</button></div>
+    <div class="rec-item" style="border-color:var(--accent);background:var(--accent-soft)"><div><div style="font-size:13.5px;font-weight:600">PO-439 · Repco NZ</div><div style="font-size:12px;color:var(--muted)">Supplier payment</div></div><button class="btn btn-primary btn-sm" style="margin-left:auto">Match</button></div>
+  </div></div>
+</div></main></div></div>
+<script src="shell.js" data-active="banking" data-title="Reconciliation"></script>
+</body></html>

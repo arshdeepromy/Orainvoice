@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Bookings">
+        <div class="page-head">
+          <div><div class="eyebrow">Work</div><h1>Bookings</h1><p class="sub">12 upcoming · 6 today</p></div>
+          <div class="head-actions"><a class="btn btn-primary btn-sm" href="Schedule.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>New booking</a></div>
+        </div>
+        <div class="tabs"><div class="tab on">Upcoming <span class="n">12</span></div><div class="tab">Today <span class="n">6</span></div><div class="tab">Awaiting confirm <span class="n">2</span></div><div class="tab">Past</div></div>
+        <section class="card"><div class="tbl-wrap"><table>
+          <thead><tr><th>When</th><th>Service</th><th>Customer</th><th>Bay / Tech</th><th>Status</th></tr></thead><tbody>
+          <tr class="clickable"><td class="mono" style="color:var(--muted)">Today 9:00</td><td><span class="cust">WOF + Service</span></td><td>M. Taufa · Hilux</td><td class="mono" style="color:var(--muted)">Bay 1 · Dave</td><td><span class="badge active"><span class="b-dot"></span>Confirmed</span></td></tr>
+          <tr class="clickable"><td class="mono" style="color:var(--muted)">Today 10:30</td><td><span class="cust">Brake inspection</span></td><td>K. Williams · Corolla</td><td class="mono" style="color:var(--muted)">Bay 2 · Sina</td><td><span class="badge active"><span class="b-dot"></span>Confirmed</span></td></tr>
+          <tr class="clickable"><td class="mono" style="color:var(--muted)">Today 13:00</td><td><span class="cust">Diagnostic</span></td><td>L. Brown · Mazda</td><td class="mono" style="color:var(--muted)">Bay 1 · Tom</td><td><span class="badge pending"><span class="b-dot"></span>Awaiting</span></td></tr>
+          <tr class="clickable"><td class="mono" style="color:var(--muted)">14 Nov 8:00</td><td><span class="cust">Fleet service ×3</span></td><td>Northland Freight</td><td class="mono" style="color:var(--muted)">Bay 1–2</td><td><span class="badge active"><span class="b-dot"></span>Confirmed</span></td></tr>
+          <tr class="clickable"><td class="mono" style="color:var(--muted)">15 Nov 11:00</td><td><span class="cust">Tyre fitment ×4</span></td><td>R. Singh · Outback</td><td class="mono" style="color:var(--muted)">Bay 2 · Sina</td><td><span class="badge pending"><span class="b-dot"></span>Awaiting</span></td></tr>
+        </tbody></table></div></section>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="bookings" data-title="Bookings" data-primary="New booking"></script>
+<script>
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));t.classList.add('on');}));
+</script>
+</body>
+</html>

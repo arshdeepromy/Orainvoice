@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>.btn-block{width:100%;}</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Fleet account detail">
+        <div class="crumbs"><a href="FleetAccounts.html">Fleet accounts</a><span class="sep">/</span><span>Northland Freight</span><span class="sep">/</span><span style="color:var(--text)">Dean Whaitiri</span></div>
+        <div class="page-head">
+          <div class="row-flex" style="gap:14px">
+            <span class="avatar-sm" style="width:46px;height:46px;font-size:16px;background:linear-gradient(135deg,#2F62F0,#6D5AE6)">DW</span>
+            <div>
+              <h1 style="font-size:23px">Dean Whaitiri</h1>
+              <p class="sub" style="margin-top:3px">dean@northlandfreight.co.nz · <span class="badge active" style="margin-left:4px"><span class="b-dot"></span>Active</span> <span class="badge info" style="margin-left:2px">Fleet manager</span></p>
+            </div>
+          </div>
+          <div class="head-actions"><a class="btn btn-ghost btn-sm" href="FleetAccounts.html">← All accounts</a></div>
+        </div>
+
+        <div class="detail-grid">
+          <div class="stack">
+            <section class="card"><div class="card-body">
+              <div class="section-label">Account information</div>
+              <div class="meta-row"><span class="k">Email</span><span class="v">dean@northlandfreight.co.nz</span></div>
+              <div class="meta-row"><span class="k">Portal role</span><span class="v">Fleet manager</span></div>
+              <div class="meta-row"><span class="k">Status</span><span class="v"><span class="badge active"><span class="b-dot"></span>Active</span></span></div>
+              <div class="meta-row"><span class="k">Failed sign-in attempts</span><span class="v mono">0</span></div>
+              <div class="meta-row"><span class="k">Last sign-in</span><span class="v mono" style="font-weight:400;color:var(--muted)">2h ago · 04 Nov 2025, 9:14am</span></div>
+              <div class="meta-row"><span class="k">Account created</span><span class="v mono" style="font-weight:400;color:var(--muted)">12 Aug 2025</span></div>
+            </div></section>
+
+            <section class="card"><div class="card-body">
+              <div class="section-label">MFA methods</div>
+              <div class="meta-row"><span class="k" style="display:flex;align-items:center;gap:9px"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="var(--muted)" stroke-width="1.9"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/></svg>Authenticator app</span><span class="v"><span class="badge active"><span class="b-dot"></span>Verified</span></span></div>
+              <div class="meta-row"><span class="k" style="display:flex;align-items:center;gap:9px"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="var(--muted)" stroke-width="1.9"><path d="M3 8l9 6 9-6M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>Email backup codes</span><span class="v" style="color:var(--muted);font-weight:400">8 unused</span></div>
+            </div></section>
+          </div>
+
+          <div class="stack">
+            <section class="card"><div class="card-body">
+              <div class="section-label">Admin actions</div>
+              <div style="display:flex;flex-direction:column;gap:9px">
+                <button class="btn btn-ghost btn-block" style="justify-content:flex-start;color:var(--ok);border-color:var(--ok-soft)" onclick="toast('Account unlocked.')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 018-1"/></svg>Unlock account</button>
+                <button class="btn btn-ghost btn-block" style="justify-content:flex-start;color:var(--warn);border-color:var(--warn-soft)" onclick="toast('MFA re-enrolment forced.')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4v5h.6M20 20v-5h-.6m0 0a8 8 0 01-15.3-2m15.4 2H15"/></svg>Force MFA re-enrol</button>
+                <button class="btn btn-ghost btn-block" style="justify-content:flex-start;color:var(--accent);border-color:var(--accent-soft)" onclick="toast('Password reset email sent.')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8l9 6 9-6M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>Reset password</button>
+                <button class="btn btn-ghost btn-block" style="justify-content:flex-start;color:var(--purple);border-color:var(--purple-soft)" onclick="toast('Impersonation session opened in new tab.')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h6v6M10 14L21 3M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/></svg>Impersonate user</button>
+                <hr class="divider" style="margin:4px 0" />
+                <button class="btn btn-ghost btn-block" style="justify-content:flex-start;color:var(--danger);border-color:var(--danger-soft)" onclick="toast('Portal access revoked.')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>Revoke access</button>
+              </div>
+            </div></section>
+            <section class="card"><div class="card-body">
+              <div class="section-label">Fleet</div>
+              <div class="meta-row"><span class="k">Account</span><span class="v"><a href="FleetAccountDetail.html" style="color:var(--accent)">Northland Freight</a></span></div>
+              <div class="meta-row"><span class="k">Vehicles</span><span class="v mono">38</span></div>
+              <div class="meta-row"><span class="k">Other portal users</span><span class="v mono">3</span></div>
+            </div></section>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+<div class="toast ok" id="toast"></div>
+<script src="shell.js" data-active="" data-title="Fleet account"></script>
+<script>
+let tt;function toast(m){const t=document.getElementById('toast');t.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><span>'+m+'</span>';t.classList.add('show');clearTimeout(tt);tt=setTimeout(()=>t.classList.remove('show'),2600);}
+</script>
+</body>
+</html>

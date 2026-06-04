@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Help Centre · OraInvoice</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+  body { background: var(--card); }
+  .nav { position: sticky; top: 0; z-index: 30; background: rgba(255,255,255,.85); backdrop-filter: blur(10px); border-bottom: 1px solid var(--border); }
+  .nav .in { max-width: 1140px; margin: 0 auto; padding: 14px 24px; display: flex; align-items: center; gap: 12px; }
+  .nav .brand { display: flex; align-items: center; gap: 10px; } .nav .brand .m { width: 32px; height: 32px; border-radius: 9px; background: var(--accent); display: grid; place-items: center; color: #fff; } .nav .brand .m svg { width: 18px; height: 18px; }
+  .nav .brand .n { font-size: 16px; font-weight: 700; } .nav .brand .n .dim { color: var(--muted-2); font-weight: 500; }
+  .nav .cta { margin-left: auto; display: flex; gap: 10px; }
+  .hh { background: var(--sb-bg); background-image: radial-gradient(110% 100% at 50% 0%, rgba(47,98,240,.22), transparent 60%); color: #fff; padding: 56px 24px 60px; text-align: center; }
+  .hh h1 { font-size: 36px; font-weight: 700; letter-spacing: -.02em; }
+  .hh p { color: rgba(255,255,255,.66); font-size: 15.5px; margin: 12px 0 0; }
+  .hh .search { max-width: 540px; margin: 26px auto 0; display: flex; align-items: center; gap: 11px; background: var(--card); border-radius: 12px; padding: 4px 4px 4px 16px; }
+  .hh .search svg { width: 19px; height: 19px; color: var(--muted-2); } .hh .search input { flex: 1; border: none; outline: none; height: 46px; font-size: 15px; font-family: inherit; background: none; }
+  .wrap { max-width: 1080px; margin: -36px auto 0; padding: 0 24px 72px; position: relative; }
+  .cat-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 18px; } @media (max-width:880px){ .cat-grid { grid-template-columns: 1fr; } }
+  .cat { background: var(--card); border: 1px solid var(--border); border-radius: var(--r-card); box-shadow: var(--shadow-card); padding: 22px; }
+  .cat .ic { width: 42px; height: 42px; border-radius: 11px; display: grid; place-items: center; margin-bottom: 14px; } .cat .ic svg { width: 21px; height: 21px; }
+  .cat h3 { font-size: 15.5px; font-weight: 700; } .cat .c { font-size: 12px; color: var(--muted-2); margin-top: 2px; }
+  .cat ul { list-style: none; padding: 0; margin: 14px 0 0; display: flex; flex-direction: column; gap: 9px; }
+  .cat ul a { font-size: 13.5px; color: var(--muted); display: flex; align-items: center; gap: 8px; } .cat ul a:hover { color: var(--accent); }
+  .cat ul svg { width: 13px; height: 13px; color: var(--muted-2); }
+  .pop { margin-top: 40px; } .pop .lbl { font-family: var(--mono); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted-2); margin-bottom: 14px; }
+  .pop-list { background: var(--card); border: 1px solid var(--border); border-radius: var(--r-card); box-shadow: var(--shadow-card); overflow: hidden; }
+  .pop-list a { display: flex; align-items: center; justify-content: space-between; padding: 15px 20px; border-bottom: 1px solid var(--border); font-size: 14px; font-weight: 500; } .pop-list a:last-child { border: none; } .pop-list a:hover { background: var(--canvas); }
+  .pop-list a .meta { font-size: 12px; color: var(--muted-2); font-weight: 400; }
+  .footer { border-top: 1px solid var(--border); } .footer .in { max-width: 1140px; margin: 0 auto; padding: 28px 24px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; font-size: 12.5px; color: var(--muted); }
+  .footer .fl { display: flex; gap: 18px; } .footer .fl a:hover { color: var(--text); }
+</style>
+</head>
+<body>
+<div class="nav"><div class="in">
+  <a class="brand" href="LandingPage.html"><div class="m"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h7l5 5v11a2 2 0 01-2 2z"/></svg></div><div class="n"><b>Ora</b><span class="dim">Invoice</span></div></a>
+  <div class="cta"><a class="btn btn-ghost btn-sm" href="Login.html">Sign in</a><a class="btn btn-primary btn-sm" href="Signup.html">Start free trial</a></div>
+</div></div>
+
+<div class="hh">
+  <h1>How can we help?</h1>
+  <p>Guides, answers and tips for getting the most out of OraInvoice.</p>
+  <label class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 21l-5-5m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg><input placeholder="Search the help centre…" /></label>
+</div>
+
+<div class="wrap">
+  <div class="cat-grid">
+    <div class="cat"><div class="ic" style="background:var(--accent-soft);color:var(--accent)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9z"/></svg></div><h3>Getting started</h3><div class="c">8 articles</div><ul><li><a href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>Set up your workshop</a></li><li><a href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>Invite your team</a></li><li><a href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>Import customers</a></li></ul></div>
+    <div class="cat"><div class="ic" style="background:var(--ok-soft);color:var(--ok)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h7l5 5v11a2 2 0 01-2 2z"/></svg></div><h3>Invoicing &amp; payments</h3><div class="c">12 articles</div><ul><li><a href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>Create &amp; send an invoice</a></li><li><a href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>Take card payments</a></li><li><a href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>Set up GST</a></li></ul></div>
+    <div class="cat"><div class="ic" style="background:var(--warn-soft);color:var(--warn)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 7V3m8 4V3M3 11h18M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg></div><h3>Bookings &amp; jobs</h3><div class="c">9 articles</div><ul><li><a href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>The booking calendar</a></li><li><a href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>Build a job card</a></li><li><a href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>Staff scheduling</a></li></ul></div>
+    <div class="cat"><div class="ic" style="background:var(--purple-soft);color:var(--purple)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10"/></svg></div><h3>Inventory</h3><div class="c">6 articles</div><ul><li><a href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>Add parts &amp; stock</a></li><li><a href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>Purchase orders</a></li></ul></div>
+    <div class="cat"><div class="ic" style="background:var(--accent-soft);color:var(--accent)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/></svg></div><h3>Banking &amp; Xero</h3><div class="c">7 articles</div><ul><li><a href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>Connect your bank</a></li><li><a href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>Reconcile transactions</a></li></ul></div>
+    <div class="cat"><div class="ic" style="background:var(--danger-soft);color:var(--danger)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 15a2 2 0 100-4 2 2 0 000 4zm6-5V7a6 6 0 00-12 0v3M5 10h14a1 1 0 011 1v9a1 1 0 01-1 1H5a1 1 0 01-1-1v-9a1 1 0 011-1z"/></svg></div><h3>Account &amp; security</h3><div class="c">5 articles</div><ul><li><a href="PasskeySetup.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>Set up a passkey</a></li><li><a href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>Enable two-factor</a></li></ul></div>
+  </div>
+
+  <div class="pop">
+    <div class="lbl">Popular articles</div>
+    <div class="pop-list">
+      <a href="#">How do I take a card payment on an invoice?<span class="meta">2 min read</span></a>
+      <a href="#">Setting up GST for your business<span class="meta">4 min read</span></a>
+      <a href="#">Connecting OraInvoice to Xero<span class="meta">3 min read</span></a>
+      <a href="#">Creating your first job card<span class="meta">5 min read</span></a>
+      <a href="#">Inviting staff and setting permissions<span class="meta">3 min read</span></a>
+    </div>
+  </div>
+</div>
+
+<div class="footer"><div class="in"><span>© 2025 OraInvoice</span><div class="fl"><a href="LandingPage.html">Home</a><a href="Privacy.html">Privacy</a><a href="#">Contact support</a></div></div></div>
+</body>
+</html>

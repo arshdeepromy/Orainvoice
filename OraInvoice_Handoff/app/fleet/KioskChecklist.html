@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="../ds.css" />
+<link rel="stylesheet" href="fleet.css" />
+<title>Kiosk · Pre-trip checklist</title>
+<style>
+body { background:var(--ink); }
+.kiosk { min-height:100vh; display:flex; flex-direction:column; max-width:720px; margin:0 auto; padding:28px 22px 32px; }
+.k-top { display:flex; align-items:center; gap:12px; color:#fff; margin-bottom:8px; }
+.k-top .m { width:40px; height:40px; border-radius:11px; background:var(--accent); display:grid; place-items:center; }
+.k-top .t { font-size:17px; font-weight:700; }
+.k-top .t span { font-weight:500; opacity:.7; }
+.k-card { background:#fff; border-radius:18px; padding:26px; flex:1; display:flex; flex-direction:column; box-shadow:0 12px 40px rgba(0,0,0,.3); }
+.k-rego { display:flex; align-items:center; justify-content:space-between; padding-bottom:18px; border-bottom:1px solid var(--border); margin-bottom:8px; }
+.k-rego .r { font-family:var(--mono); font-size:30px; font-weight:600; letter-spacing:.02em; }
+.k-rego .v { font-size:14px; color:var(--muted); }
+.kitem { display:flex; align-items:center; gap:16px; padding:16px 0; border-bottom:1px solid var(--border); }
+.kitem .lab { flex:1; font-size:17px; font-weight:600; }
+.kitem .cat { font-family:var(--mono); font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted-2); }
+.kbtns { display:flex; gap:10px; }
+.kbtns button { width:74px; height:54px; border-radius:12px; border:2px solid var(--border); background:var(--card); font-size:15px; font-weight:700; color:var(--muted); }
+.kbtns button.pass.on { background:var(--ok); border-color:var(--ok); color:#fff; }
+.kbtns button.fail.on { background:var(--danger); border-color:var(--danger); color:#fff; }
+.k-foot { display:flex; gap:12px; margin-top:20px; }
+.k-foot .btn { height:60px; font-size:17px; border-radius:14px; flex:1; }
+.k-done { text-align:center; padding:40px 20px; display:none; }
+.k-done.on { display:block; }
+.k-list.hide { display:none; }
+</style>
+</head>
+<body>
+<div class="kiosk" data-screen-label="Kiosk pre-trip checklist">
+  <div class="k-top"><div class="m"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 11l1.5-4.5A2 2 0 018.4 5h7.2a2 2 0 011.9 1.5L19 11m-14 0h14"/></svg></div><div class="t">Fleet<span> Portal</span></div><div style="margin-left:auto;font-family:var(--mono);font-size:13px;opacity:.6">DEPOT KIOSK · BR-01</div></div>
+  <div class="k-card">
+    <div class="k-list" id="list">
+      <div class="k-rego"><div class="r">NPR-447</div><div class="v">2019 Isuzu NPR 400 · Driver: T. Edwards</div></div>
+      <div id="items"></div>
+      <div class="k-foot"><button class="btn btn-ghost" onclick="history.back()">Cancel</button><button class="btn btn-primary" onclick="submit()">Submit checklist</button></div>
+    </div>
+    <div class="k-done" id="done">
+      <div style="width:84px;height:84px;border-radius:50%;background:var(--ok-soft);display:grid;place-items:center;margin:0 auto 20px"><svg viewBox="0 0 24 24" width="44" height="44" fill="none" stroke="var(--ok)" stroke-width="2.2"><path d="M20 6L9 17l-5-5"/></svg></div>
+      <h1 style="font-size:26px">Checklist submitted</h1>
+      <p style="font-size:15px;color:var(--muted);margin:10px 0 0" id="doneMsg">Thanks Tane. Have a safe trip.</p>
+      <p class="mono" style="font-size:13px;color:var(--muted-2);margin-top:8px">Returning to start in 5s…</p>
+      <button class="btn btn-primary" style="height:56px;margin-top:24px;padding:0 28px" onclick="location.reload()">Start another</button>
+    </div>
+  </div>
+</div>
+<script>
+const ITEMS=[
+  {cat:'Lights',lab:'Headlights & indicators',v:null},
+  {cat:'Tyres',lab:'Tread & pressure',v:null},
+  {cat:'Brakes',lab:'Service & park brake',v:null},
+  {cat:'Fluids',lab:'Oil & coolant levels',v:null},
+  {cat:'Load',lab:'Restraints secure',v:null},
+];
+function render(){document.getElementById('items').innerHTML=ITEMS.map((it,i)=>`<div class="kitem">
+  <div><div class="cat">${it.cat}</div><div class="lab">${it.lab}</div></div>
+  <div class="kbtns"><button class="pass ${it.v==='pass'?'on':''}" onclick="setV(${i},'pass')">Pass</button><button class="fail ${it.v==='fail'?'on':''}" onclick="setV(${i},'fail')">Fail</button></div>
+</div>`).join('');}
+function setV(i,v){ITEMS[i].v=v;render();}
+function submit(){const fails=ITEMS.filter(i=>i.v==='fail').length;document.getElementById('list').classList.add('hide');document.getElementById('done').classList.add('on');document.getElementById('doneMsg').textContent=fails?`Logged with ${fails} failed item${fails>1?'s':''}. The workshop has been notified.`:'Thanks Tane. Have a safe trip.';}
+render();
+</script>
+</body>
+</html>

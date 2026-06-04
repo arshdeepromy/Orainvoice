@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" /><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin /><link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+</head>
+<body>
+<div class="app"><div id="sidebar"></div><div class="main"><div id="topbar"></div>
+<main class="content"><div class="page page-wide" data-screen-label="Report Builder">
+<div class="crumbs"><a href="Reports.html">Reports</a><span class="sep">/</span><span style="color:var(--text)">Report Builder</span></div>
+<div class="page-head"><div><div class="eyebrow">Reports</div><h1>Report Builder</h1><p class="sub">Build a custom report from your data</p></div><div class="head-actions"><button class="btn btn-ghost btn-sm">Save template</button><button class="btn btn-primary btn-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>Run &amp; export</button></div></div>
+<div class="detail-grid" style="grid-template-columns:340px 1fr">
+   <aside class="card" style="position:sticky;top:0"><div class="card-body stack" style="gap:18px">
+     <div class="field"><label>Data source</label><select class="select"><option>Invoices</option><option>Quotes</option><option>Jobs</option><option>Payments</option><option>Inventory movements</option><option>Time entries</option></select></div>
+     <div class="field"><label>Date range</label><select class="select"><option>This month</option><option>Last month</option><option>This quarter</option><option>Custom…</option></select></div>
+     <div><div class="section-label">Columns</div>
+       <label style="display:flex;align-items:center;gap:9px;padding:7px 0;font-size:13.5px"><input class="checkbox" type="checkbox" checked />Invoice number</label>
+       <label style="display:flex;align-items:center;gap:9px;padding:7px 0;font-size:13.5px"><input class="checkbox" type="checkbox" checked />Customer</label>
+       <label style="display:flex;align-items:center;gap:9px;padding:7px 0;font-size:13.5px"><input class="checkbox" type="checkbox" checked />Date</label>
+       <label style="display:flex;align-items:center;gap:9px;padding:7px 0;font-size:13.5px"><input class="checkbox" type="checkbox" checked />Status</label>
+       <label style="display:flex;align-items:center;gap:9px;padding:7px 0;font-size:13.5px"><input class="checkbox" type="checkbox" checked />Amount</label>
+       <label style="display:flex;align-items:center;gap:9px;padding:7px 0;font-size:13.5px;color:var(--muted)"><input class="checkbox" type="checkbox" />GST</label>
+       <label style="display:flex;align-items:center;gap:9px;padding:7px 0;font-size:13.5px;color:var(--muted)"><input class="checkbox" type="checkbox" />Branch</label>
+     </div>
+     <div class="field"><label>Group by</label><select class="select"><option>None</option><option>Customer</option><option>Status</option><option>Branch</option><option>Month</option></select></div>
+     <div class="field"><label>Filter — status</label><div style="display:flex;gap:7px;flex-wrap:wrap"><span class="chip on">Sent</span><span class="chip on">Paid</span><span class="chip">Draft</span><span class="chip on">Overdue</span></div></div>
+   </div></aside>
+   <section class="card"><div class="card-head"><h2>Preview</h2><span class="id">142 rows · live</span></div><div class="tbl-wrap"><table><thead><tr><th>Invoice</th><th>Customer</th><th>Date</th><th>Status</th><th class="r">Amount</th></tr></thead><tbody>
+   <tr><td><span class="id">INV-2061</span></td><td><span class="cust">Northland Freight</span></td><td><span class="mono" style="color:var(--muted)">28 May</span></td><td><span class="badge sent"><span class="b-dot"></span>Sent</span></td><td class="r"><span class="amt">$3,180</span></td></tr><tr><td><span class="id">INV-2055</span></td><td><span class="cust">Kerikeri Plumbing</span></td><td><span class="mono" style="color:var(--muted)">29 May</span></td><td><span class="badge draft"><span class="b-dot"></span>Draft</span></td><td class="r"><span class="amt">$2,960</span></td></tr><tr><td><span class="id">INV-2052</span></td><td><span class="cust">M. Taufa</span></td><td><span class="mono" style="color:var(--muted)">27 May</span></td><td><span class="badge sent"><span class="b-dot"></span>Sent</span></td><td class="r"><span class="amt">$1,640</span></td></tr><tr><td><span class="id">INV-2050</span></td><td><span class="cust">Whangarei Auto</span></td><td><span class="mono" style="color:var(--muted)">24 May</span></td><td><span class="badge sent"><span class="b-dot"></span>Sent</span></td><td class="r"><span class="amt">$4,420</span></td></tr><tr><td><span class="id">INV-2044</span></td><td><span class="cust">Bay Plumbing Ltd</span></td><td><span class="mono" style="color:var(--muted)">14 May</span></td><td><span class="badge overdue"><span class="b-dot"></span>Overdue</span></td><td class="r"><span class="amt">$2,480</span></td></tr><tr><td><span class="id">INV-2041</span></td><td><span class="cust">Coastal Builders</span></td><td><span class="mono" style="color:var(--muted)">8 May</span></td><td><span class="badge overdue"><span class="b-dot"></span>Overdue</span></td><td class="r"><span class="amt">$3,180</span></td></tr><tr><td><span class="id">INV-2039</span></td><td><span class="cust">Northland Freight</span></td><td><span class="mono" style="color:var(--muted)">2 May</span></td><td><span class="badge overdue"><span class="b-dot"></span>Overdue</span></td><td class="r"><span class="amt">$5,240</span></td></tr>
+   </tbody></table></div><div class="pagination"><div class="info">Showing <span class="mono">1–7</span> of <span class="mono">142</span></div><div class="pg-btns"><button disabled>‹</button><button class="on">1</button><button>2</button><button>3</button><button>›</button></div></div></section>
+   </div>
+</div></main></div></div>
+<script src="shell.js" data-active="reports" data-title="Report Builder"></script>
+<script>document.querySelectorAll('.seg button').forEach(b=>b.addEventListener('click',()=>{b.parentElement.querySelectorAll('button').forEach(x=>x.classList.remove('on'));b.classList.add('on');}));</script>
+</body></html>

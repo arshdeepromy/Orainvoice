@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="../ds.css" />
+<link rel="stylesheet" href="fleet.css" />
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Fleet portal checklists">
+        <div class="page-head"><div><h1>Checklists</h1><p class="sub">Pre-trip inspections &amp; templates</p></div></div>
+        <div class="tabs"><div class="tab on" data-t="sub">Submissions</div><div class="tab" data-t="tpl">Templates</div></div>
+
+        <div id="sub">
+          <section class="card" style="margin-bottom:var(--gap)"><div class="card-body">
+            <div class="section-label">Start a pre-trip checklist</div>
+            <p style="font-size:12.5px;color:var(--muted);margin:0 0 12px">Pick a vehicle to begin a new submission.</p>
+            <div style="display:flex;flex-wrap:wrap;gap:8px">
+              <a class="btn btn-ghost btn-sm" href="ChecklistSubmit.html">NPR-447</a>
+              <a class="btn btn-ghost btn-sm" href="ChecklistSubmit.html">NPR-220</a>
+              <a class="btn btn-ghost btn-sm" href="ChecklistSubmit.html">HBR-012</a>
+              <a class="btn btn-ghost btn-sm" href="ChecklistSubmit.html">HBR-440</a>
+              <a class="btn btn-ghost btn-sm" href="ChecklistSubmit.html">JDC-991</a>
+            </div>
+          </div></section>
+          <section class="card">
+            <div class="card-head"><h2>Submission history</h2></div>
+            <div class="tbl-wrap"><table>
+              <thead><tr><th>Vehicle</th><th>Driver</th><th>When</th><th class="r">Pass</th><th class="r">Fail</th><th>Status</th></tr></thead>
+              <tbody>
+                <tr class="clickable" onclick="location.href='ChecklistSubmit.html'"><td><span class="cust mono" style="font-weight:600">NPR-447</span></td><td>T. Edwards</td><td class="mono" style="color:var(--muted)">Today 6:42am</td><td class="r mono">18</td><td class="r mono" style="color:var(--danger)">3</td><td><span class="badge overdue"><span class="b-dot"></span>Failed</span></td></tr>
+                <tr class="clickable" onclick="location.href='ChecklistSubmit.html'"><td><span class="cust mono" style="font-weight:600">JDC-991</span></td><td>M. Reti</td><td class="mono" style="color:var(--muted)">Today 6:10am</td><td class="r mono">21</td><td class="r mono">0</td><td><span class="badge paid"><span class="b-dot"></span>Passed</span></td></tr>
+                <tr class="clickable" onclick="location.href='ChecklistSubmit.html'"><td><span class="cust mono" style="font-weight:600">HBR-012</span></td><td>S. Kaur</td><td class="mono" style="color:var(--muted)">In progress</td><td class="r mono">9</td><td class="r mono">—</td><td><span class="badge info"><span class="b-dot"></span>In progress</span></td></tr>
+              </tbody>
+            </table></div>
+          </section>
+        </div>
+
+        <div id="tpl" style="display:none">
+          <div style="display:flex;justify-content:flex-end;margin-bottom:14px"><button class="btn btn-primary btn-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>New template</button></div>
+          <section class="card"><div class="card-body" style="padding:8px 10px">
+            <div class="meta-row" style="padding:14px 12px"><div><div style="font-weight:600;font-size:13.5px">NZTA pre-trip inspection <span class="badge neutral" style="margin-left:6px">NZTA</span> <span class="badge info">Default</span></div><div style="font-size:12px;color:var(--muted);margin-top:2px">Standard heavy-vehicle daily check · 22 items</div></div><div style="display:flex;gap:10px"><button class="btn btn-quiet btn-sm">Clone</button></div></div>
+            <div class="meta-row" style="padding:14px 12px;border-bottom:none"><div><div style="font-weight:600;font-size:13.5px">Refrigerated unit check</div><div style="font-size:12px;color:var(--muted);margin-top:2px">Adds reefer temperature &amp; seal items · 28 items</div></div><div style="display:flex;gap:10px"><button class="btn btn-quiet btn-sm">Clone</button><button class="btn btn-quiet btn-sm">Edit</button><button class="btn btn-quiet btn-sm" style="color:var(--ok)">Set default</button></div></div>
+          </div></section>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="fleet-shell.js" data-active="checklists" data-title="Checklists"></script>
+<script>
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));t.classList.add('on');document.getElementById('sub').style.display=t.dataset.t==='sub'?'':'none';document.getElementById('tpl').style.display=t.dataset.t==='tpl'?'':'none';}));
+</script>
+</body>
+</html>

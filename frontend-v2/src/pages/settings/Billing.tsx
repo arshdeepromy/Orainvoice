@@ -1,0 +1,1782 @@
+import { useState, useEffect, Fragment } from 'react'
+import { loadStripe, type Stripe } from '@stripe/stripe-js'
+import { Elements } from '@stripe/react-stripe-js'
+import { Button, Badge, Modal, Spinner, AlertBanner, ToastContainer, useToast } from '@/components/ui'
+import { PaymentMethodManager } from '@/components/billing/PaymentMethodManager'
+import { CardForm } from '@/components/billing/CardForm'
+import { IntervalSelector } from '@/components/billing/IntervalSelector'
+import type { IntervalPricing } from '@/pages/auth/signup-types'
+import apiClient from '@/api/client'
+
+/* ── Types ── */
+
+interface PlanInfo {
+  name: string
+  monthly_price_nzd: number
+  user_seats: number
+  storage_quota_gb: number
+  carjam_lookups_included: number
+  enabled_modules: string[]
+  sms_included: boolean
+  sms_included_quota: number
+  per_sms_cost_nzd: number
+}
+
+interface CouponInfo {
+  code: string
+  discount_type: string
+  discount_value: number
+  duration_months: number | null
+  coupon_duration_cycles: number | null
+  effective_price_nzd: number
+  is_expired: boolean
+}
+
+interface PendingIntervalChange {
+  new_interval: string
+  previous_interval: string
+  new_effective_price: number
+  effective_at: string
+}
+
+interface BillingData {
+  plan?: PlanInfo
+  coupon?: CouponInfo | null
+  status: 'trial' | 'active' | 'grace_period' | 'suspended'
+  trial_ends_at: string | null
+  next_billing_date: string | null
+  billing_interval: string
+  interval_effective_price: number
+  equivalent_monthly_price: number
+  pending_interval_change: PendingIntervalChange | null
+  estimated_next_invoice?: {
+    plan_fee: number
+    storage_addons: number
+    carjam_overage: number
+    sms_overage: number
+    total: number
+    gst: number
+    processing_fee: number
+    total_incl: number
+  }
+  storage?: {
+    used_bytes: number
+    quota_gb: number
+    avg_invoice_bytes: number
+  }
+  carjam?: {
+    lookups_this_month: number
+    included: number
+  }
+  storage_addon_price_per_gb?: number
+  storage_addon_gb?: number | null
+  storage_addon_price_nzd?: number | null
+  storage_addon_package_name?: string | null
+  sms?: {
+    sent_this_month: number
+    included_quota: number
+    credits_remaining: number
+    per_sms_cost_nzd: number
+    overage_charge_nzd: number
+    sms_included: boolean
+  }
+}
+
+/* ── Billing Receipt type ── */
+
+interface BillingReceiptData {
+  id: string
+  billing_date: string
+  billing_interval: string
+  plan_name: string
+  plan_amount_cents: number
+  sms_overage_cents: number
+  carjam_overage_cents: number
+  storage_addon_cents: number
+  subtotal_excl_gst_cents: number
+  gst_amount_cents: number
+  processing_fee_cents: number
+  total_amount_cents: number
+  sms_overage_count: number
+  carjam_overage_count: number
+  storage_addon_gb: number
+  status: string
+  created_at: string
+}
+
+/* ── Helpers ── */
+
+function formatNZD(amount: number): string {
+  return new Intl.NumberFormat('en-NZ', { style: 'currency', currency: 'NZD' }).format(amount)
+}
+
+function formatDate(iso: string | null): string {
+  if (!iso) return '—'
+  return new Date(iso).toLocaleDateString('en-NZ', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 MB'
+  const gb = bytes / (1024 * 1024 * 1024)
+  if (gb >= 1) return `${gb.toFixed(2)} GB`
+  const mb = bytes / (1024 * 1024)
+  return `${mb.toFixed(1)} MB`
+}
+
+const INTERVAL_SUFFIX: Record<string, string> = {
+  weekly: '/wk',
+  fortnightly: '/2wk',
+  monthly: '/mo',
+  annual: '/yr',
+}
+
+const INTERVAL_LABEL: Record<string, string> = {
+  weekly: 'Weekly',
+  fortnightly: 'Fortnightly',
+  monthly: 'Monthly',
+  annual: 'Annual',
+}
+
+const INTERVAL_PERIODS_PER_YEAR: Record<string, number> = {
+  weekly: 52,
+  fortnightly: 26,
+  monthly: 12,
+  annual: 1,
+}
+
+function formatIntervalPrice(amount: number, interval: string): string {
+  return `${formatNZD(amount)}${INTERVAL_SUFFIX[interval] ?? '/mo'}`
+}
+
+function daysUntil(dateStr: string): number {
+  const target = new Date(dateStr)
+  const now = new Date()
+  return Math.max(0, Math.ceil((target.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)))
+}
+
+function storagePercentage(usedBytes: number, quotaGb: number): number {
+  if (quotaGb <= 0) return 0
+  const quotaBytes = quotaGb * 1024 * 1024 * 1024
+  return Math.min(100, Math.round((usedBytes / quotaBytes) * 100))
+}
+
+function storageBarColour(pct: number): string {
+  if (pct >= 90) return 'bg-danger'
+  if (pct >= 80) return 'bg-warn'
+  return 'bg-accent'
+}
+
+/* ── Trial Countdown ── */
+
+function TrialCountdown({ trialEndsAt }: { trialEndsAt: string }) {
+  const days = daysUntil(trialEndsAt)
+  const variant = days <= 3 ? 'warning' : 'info'
+
+  return (
+    <AlertBanner variant={variant} title="Free trial">
+      {days === 0
+        ? 'Your trial ends today. Your card will be charged when the trial ends.'
+        : days === 1
+          ? 'Your trial ends tomorrow. Your card will be charged when the trial ends.'
+          : `You have ${days} days left in your free trial (ends ${formatDate(trialEndsAt)}). Your card will be charged when the trial ends.`}
+    </AlertBanner>
+  )
+}
+
+/* ── Current Plan Card ── */
+
+function CurrentPlanCard({
+  plan,
+  status,
+  coupon,
+  billingInterval,
+  intervalEffectivePrice,
+  equivalentMonthlyPrice,
+  pendingIntervalChange,
+}: {
+  plan: PlanInfo | undefined
+  status: string
+  coupon?: CouponInfo | null
+  billingInterval: string
+  intervalEffectivePrice: number
+  equivalentMonthlyPrice: number
+  pendingIntervalChange: PendingIntervalChange | null
+}) {
+  if (!plan) {
+    return (
+      <div className="rounded-card border border-border p-5">
+        <h3 className="text-lg font-semibold text-text mb-3">Your plan</h3>
+        <p className="text-sm text-muted-2">Plan information not available</p>
+      </div>
+    )
+  }
+
+  const statusBadge: Record<string, { variant: 'success' | 'warn' | 'danger' | 'info'; label: string }> = {
+    trial: { variant: 'info', label: 'Trial' },
+    active: { variant: 'success', label: 'Active' },
+    grace_period: { variant: 'warn', label: 'Grace Period' },
+    suspended: { variant: 'danger', label: 'Suspended' },
+  }
+  const badge = statusBadge[status] ?? { variant: 'neutral' as const, label: status }
+
+  return (
+    <div className="rounded-card border border-border p-5">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-lg font-semibold text-text">Your plan</h3>
+        <Badge variant={badge.variant}>{badge.label}</Badge>
+      </div>
+      <p className="text-2xl font-bold text-text">
+        {plan.name}
+        <span className="text-base font-medium text-muted-2 ml-2">
+          ({INTERVAL_LABEL[billingInterval] ?? 'Monthly'})
+        </span>
+      </p>
+      {coupon && !coupon.is_expired ? (
+        <div className="mt-1">
+          <p className="text-muted-2 line-through text-sm mono">{formatIntervalPrice(intervalEffectivePrice, billingInterval)}</p>
+          <p className="text-ok font-semibold mono">{formatIntervalPrice(coupon.effective_price_nzd ?? 0, billingInterval)}</p>
+          {billingInterval !== 'monthly' && (coupon.effective_price_nzd ?? 0) > 0 && (
+            <p className="text-sm text-muted-2 mono">
+              {formatNZD((coupon.effective_price_nzd ?? 0) * (INTERVAL_PERIODS_PER_YEAR[billingInterval] ?? 12) / 12)}/mo equivalent
+            </p>
+          )}
+          <span className="inline-flex items-center gap-1 mt-1 rounded-full bg-ok-soft px-2.5 py-0.5 text-xs font-medium text-ok">
+            Coupon: {coupon.code} — {coupon.discount_type === 'percentage' ? `${coupon.discount_value}% off` : coupon.discount_type === 'fixed_amount' ? `${formatNZD(coupon.discount_value)} off` : 'Trial extension'}
+            {coupon.duration_months
+              ? billingInterval !== 'monthly' && coupon.coupon_duration_cycles != null
+                ? ` (${coupon.coupon_duration_cycles} billing cycle${coupon.coupon_duration_cycles !== 1 ? 's' : ''})`
+                : ` (${coupon.duration_months} month${coupon.duration_months > 1 ? 's' : ''})`
+              : ' (perpetual)'}
+          </span>
+        </div>
+      ) : (
+        <div className="mt-1">
+          <p className="text-muted mono">{formatIntervalPrice(intervalEffectivePrice, billingInterval)}</p>
+          {billingInterval !== 'monthly' && equivalentMonthlyPrice > 0 && (
+            <p className="text-sm text-muted-2 mono">{formatNZD(equivalentMonthlyPrice)}/mo equivalent</p>
+          )}
+        </div>
+      )}
+      {pendingIntervalChange && (
+        <div className="mt-3 rounded-ctl bg-warn-soft border border-warn p-3">
+          <p className="text-sm text-warn">
+            Changing from{' '}
+            <span className="font-medium">{INTERVAL_LABEL[pendingIntervalChange.previous_interval] ?? pendingIntervalChange.previous_interval}</span>
+            {' '}to{' '}
+            <span className="font-medium">{INTERVAL_LABEL[pendingIntervalChange.new_interval] ?? pendingIntervalChange.new_interval}</span>
+            {' '}({formatIntervalPrice(pendingIntervalChange.new_effective_price ?? 0, pendingIntervalChange.new_interval)})
+            {' '}on {formatDate(pendingIntervalChange.effective_at ?? null)}
+          </p>
+        </div>
+      )}
+      <ul className="mt-3 space-y-1 text-sm text-muted">
+        <li>Up to {plan.user_seats} users</li>
+        <li>{plan.storage_quota_gb} GB storage</li>
+        <li>{plan.carjam_lookups_included} Carjam lookups / month</li>
+        {plan.sms_included && (
+          <li>{plan.sms_included_quota > 0 ? `${plan.sms_included_quota} SMS / month` : 'SMS included (pay per use)'}</li>
+        )}
+      </ul>
+    </div>
+  )
+}
+
+/* ── Next Bill Estimate ── */
+
+function NextBillEstimate({
+  nextBillingDate,
+  estimate,
+  coupon,
+  addonGb,
+  addonPriceNzd,
+}: {
+  nextBillingDate: string | null
+  estimate: BillingData['estimated_next_invoice']
+  coupon?: CouponInfo | null
+  addonGb?: number | null
+  addonPriceNzd?: number | null
+}) {
+  if (!estimate) {
+    return (
+      <div className="rounded-card border border-border p-5">
+        <h3 className="text-lg font-semibold text-text mb-3">Your next bill</h3>
+        <p className="text-sm text-muted-2">Billing estimate not available</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="rounded-card border border-border p-5">
+      <h3 className="text-lg font-semibold text-text mb-3">Your next bill</h3>
+      {nextBillingDate && (
+        <p className="text-sm text-muted mb-3">Due on {formatDate(nextBillingDate)}</p>
+      )}
+      <div className="space-y-2 text-sm">
+        <div className="flex justify-between">
+          <span className="text-muted">Plan fee</span>
+          {coupon && !coupon.is_expired ? (
+            <span className="text-ok font-medium mono">{formatNZD(coupon.effective_price_nzd)}</span>
+          ) : (
+            <span className="text-text font-medium mono">{formatNZD(estimate.plan_fee)}</span>
+          )}
+        </div>
+        {addonGb != null && addonGb > 0 && addonPriceNzd != null && (
+          <div className="flex justify-between">
+            <span className="text-muted">Storage add-on ({addonGb} GB)</span>
+            <span className="text-text font-medium mono">{formatNZD(addonPriceNzd)}</span>
+          </div>
+        )}
+        {(!addonGb || !addonPriceNzd) && estimate.storage_addons > 0 && (
+          <div className="flex justify-between">
+            <span className="text-muted">Extra storage</span>
+            <span className="text-text font-medium mono">{formatNZD(estimate.storage_addons)}</span>
+          </div>
+        )}
+        {estimate.carjam_overage > 0 && (
+          <div className="flex justify-between">
+            <span className="text-muted">Carjam overage</span>
+            <span className="text-text font-medium mono">{formatNZD(estimate.carjam_overage)}</span>
+          </div>
+        )}
+        {estimate.sms_overage > 0 && (
+          <div className="flex justify-between">
+            <span className="text-muted">SMS overage</span>
+            <span className="text-text font-medium mono">{formatNZD(estimate.sms_overage)}</span>
+          </div>
+        )}
+        <hr className="border-border" />
+        <div className="flex justify-between">
+          <span className="text-muted">Subtotal (excl. GST)</span>
+          <span className="text-text font-medium mono">{formatNZD(estimate.total)}</span>
+        </div>
+        {estimate.gst > 0 && (
+          <div className="flex justify-between">
+            <span className="text-muted">GST (15%)</span>
+            <span className="text-text font-medium mono">{formatNZD(estimate.gst)}</span>
+          </div>
+        )}
+        {estimate.processing_fee > 0 && (
+          <div className="flex justify-between">
+            <span className="text-muted">Processing fee</span>
+            <span className="text-text font-medium mono">{formatNZD(estimate.processing_fee)}</span>
+          </div>
+        )}
+        <hr className="border-border" />
+        <div className="flex justify-between font-semibold">
+          <span className="text-text">Estimated total</span>
+          <span className="text-text mono">{formatNZD(estimate.total_incl)}</span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/* ── Storage Usage ── */
+
+function StorageUsage({
+  usedBytes,
+  quotaGb,
+  avgInvoiceBytes,
+  onPurchaseAddon,
+  addonGb,
+  addonPriceNzd,
+  addonPackageName,
+}: {
+  usedBytes: number
+  quotaGb: number
+  avgInvoiceBytes: number
+  onPurchaseAddon: () => void
+  addonGb?: number | null
+  addonPriceNzd?: number | null
+  addonPackageName?: string | null
+}) {
+  const pct = storagePercentage(usedBytes, quotaGb)
+  const barColour = storageBarColour(pct)
+  const remainingBytes = Math.max(0, quotaGb * 1024 * 1024 * 1024 - usedBytes)
+  const estimatedInvoicesRemaining =
+    avgInvoiceBytes > 0 ? Math.floor(remainingBytes / avgInvoiceBytes) : null
+  const baseQuotaGb = addonGb ? quotaGb - addonGb : quotaGb
+
+  return (
+    <div className="rounded-card border border-border p-5">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-lg font-semibold text-text">Storage</h3>
+        <Button size="sm" variant="ghost" onClick={onPurchaseAddon}>
+          Manage storage
+        </Button>
+      </div>
+      <div className="flex items-baseline gap-2 mb-2">
+        <span className="text-2xl font-bold text-text mono">{formatBytes(usedBytes)}</span>
+        <span className="text-sm text-muted-2">
+          of {addonGb ? `${quotaGb} GB used (${baseQuotaGb} GB plan + ${addonGb} GB add-on)` : `${quotaGb} GB used`}
+        </span>
+      </div>
+      {addonGb != null && addonGb > 0 && (
+        <p className="text-xs text-muted mb-2">
+          {addonPackageName ?? 'Custom'} add-on — {formatNZD(addonPriceNzd ?? 0)}/month
+        </p>
+      )}
+      <div
+        className="w-full h-3 bg-border rounded-full overflow-hidden"
+        role="progressbar"
+        aria-valuenow={pct}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-label={`Storage usage: ${pct}%`}
+      >
+        <div className={`h-full rounded-full transition-all ${barColour}`} style={{ width: `${pct}%` }} />
+      </div>
+      <p className="text-xs text-muted-2 mt-1">{pct}% used</p>
+      {estimatedInvoicesRemaining !== null && (
+        <p className="text-xs text-muted-2 mt-1">
+          Roughly {estimatedInvoicesRemaining.toLocaleString('en-NZ')} invoices worth of space remaining
+        </p>
+      )}
+      {pct >= 90 && (
+        <p className="text-xs text-danger mt-1 font-medium">
+          You're almost out of storage. Buy more to keep creating invoices.
+        </p>
+      )}
+      {pct >= 80 && pct < 90 && (
+        <p className="text-xs text-warn mt-1 font-medium">
+          Storage is getting full. Consider buying more soon.
+        </p>
+      )}
+    </div>
+  )
+}
+
+/* ── Carjam Usage ── */
+
+function CarjamUsage({ lookups, included }: { lookups: number; included: number }) {
+  const overage = Math.max(0, lookups - included)
+
+  return (
+    <div className="rounded-card border border-border p-5">
+      <h3 className="text-lg font-semibold text-text mb-3">Carjam lookups this month</h3>
+      <div className="flex items-baseline gap-2">
+        <span className="text-2xl font-bold text-text mono">{lookups}</span>
+        <span className="text-sm text-muted-2">of {included} included</span>
+      </div>
+      {overage > 0 && (
+        <p className="text-sm text-warn mt-2 font-medium">
+          {overage} extra {overage === 1 ? 'lookup' : 'lookups'} — overage charges will appear on your next bill.
+        </p>
+      )}
+    </div>
+  )
+}
+
+/* ── SMS Usage ── */
+
+function SmsUsageCard({
+  sentThisMonth,
+  includedQuota,
+  creditsRemaining,
+  perSmsCost,
+  smsIncluded,
+}: {
+  sentThisMonth: number
+  includedQuota: number
+  creditsRemaining: number
+  perSmsCost: number
+  smsIncluded: boolean
+}) {
+  if (!smsIncluded) {
+    return (
+      <div className="rounded-card border border-border p-5">
+        <h3 className="text-lg font-semibold text-text mb-3">SMS usage this month</h3>
+        <p className="text-sm text-muted-2">SMS is not included in your current plan.</p>
+      </div>
+    )
+  }
+
+  const beyondIncluded = Math.max(0, sentThisMonth - includedQuota)
+  const beyondCredits = Math.max(0, beyondIncluded - creditsRemaining)
+
+  return (
+    <div className="rounded-card border border-border p-5">
+      <h3 className="text-lg font-semibold text-text mb-3">SMS usage this month</h3>
+      <div className="flex items-baseline gap-2">
+        <span className="text-2xl font-bold text-text mono">{sentThisMonth}</span>
+        <span className="text-sm text-muted-2">of {includedQuota} included</span>
+      </div>
+      {creditsRemaining > 0 && (
+        <p className="text-sm text-muted mt-2">
+          {creditsRemaining} prepaid credits remaining
+        </p>
+      )}
+      {beyondCredits > 0 && (
+        <p className="text-sm text-warn mt-2 font-medium">
+          {beyondCredits} overage {beyondCredits === 1 ? 'message' : 'messages'} at {formatNZD(perSmsCost)} each — charges will appear on your next bill.
+        </p>
+      )}
+    </div>
+  )
+}
+
+/* ── Branch Cost Breakdown ── */
+
+interface BranchCostEntry {
+  branch_id: string
+  branch_name: string
+  is_hq: boolean
+  cost_per_cycle: number
+}
+
+interface BranchCostBreakdownData {
+  branches: BranchCostEntry[]
+  per_branch_cost: number
+  total_cost: number
+  branch_count: number
+  billing_interval: string
+  currency: string
+}
+
+function BranchCostBreakdown() {
+  const [data, setData] = useState<BranchCostBreakdownData | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    const controller = new AbortController()
+    const fetchBreakdown = async () => {
+      setLoading(true)
+      try {
+        const res = await apiClient.get<BranchCostBreakdownData>(
+          '/billing/branch-cost-breakdown',
+          { signal: controller.signal },
+        )
+        setData(res.data ?? null)
+      } catch (err: unknown) {
+        if (!(err as { name?: string })?.name?.includes('Cancel')) {
+          // Silently fail — section just won't render
+        }
+      } finally {
+        setLoading(false)
+      }
+    }
+    fetchBreakdown()
+    return () => controller.abort()
+  }, [])
+
+  if (loading) return null
+  if (!data || (data.branches ?? []).length <= 1) return null
+
+  const interval = data.billing_interval ?? 'monthly'
+  const suffix = INTERVAL_SUFFIX[interval] ?? '/mo'
+
+  return (
+    <div className="rounded-card border border-border p-5">
+      <h3 className="text-lg font-semibold text-text mb-3">Branch Cost Breakdown</h3>
+      <div className="overflow-x-auto">
+        <table className="min-w-full divide-y divide-border" role="grid">
+          <caption className="sr-only">Per-branch subscription cost breakdown</caption>
+          <thead className="bg-canvas">
+            <tr>
+              <th scope="col" className="mono px-4 py-3 text-left text-[10.5px] font-medium uppercase tracking-[0.08em] text-muted-2">Branch</th>
+              <th scope="col" className="mono px-4 py-3 text-right text-[10.5px] font-medium uppercase tracking-[0.08em] text-muted-2">Cost{suffix}</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-border bg-card">
+            {(data.branches ?? []).map((b) => (
+              <tr key={b.branch_id} className="border-b border-border last:border-b-0 hover:bg-canvas">
+                <td className="whitespace-nowrap px-4 py-3 text-sm text-text">
+                  {b.branch_name}
+                  {b.is_hq && (
+                    <Badge variant="info" className="ml-2">HQ</Badge>
+                  )}
+                </td>
+                <td className="mono whitespace-nowrap px-4 py-3 text-sm text-right tabular-nums text-text">
+                  {formatNZD(b.cost_per_cycle ?? 0)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            <tr className="bg-canvas">
+              <td className="px-4 py-3 text-sm font-semibold text-text">Total ({data.branch_count ?? 0} branches)</td>
+              <td className="mono px-4 py-3 text-sm text-right tabular-nums font-semibold text-text">
+                {formatNZD(data.total_cost ?? 0)}{suffix}
+              </td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+/* ── Billing Receipts ── */
+
+function BillingReceipts() {
+  const [receipts, setReceipts] = useState<BillingReceiptData[]>([])
+  const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(true)
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+
+  useEffect(() => {
+    const controller = new AbortController()
+    const fetchReceipts = async () => {
+      setLoading(true)
+      try {
+        const res = await apiClient.get<{ receipts: BillingReceiptData[]; total: number }>(
+          '/billing/receipts',
+          { signal: controller.signal },
+        )
+        setReceipts(res.data?.receipts ?? [])
+        setTotal(res.data?.total ?? 0)
+      } catch (err: unknown) {
+        if (!controller.signal.aborted) {
+          // Silently fail — section shows empty state
+        }
+      } finally {
+        if (!controller.signal.aborted) setLoading(false)
+      }
+    }
+    fetchReceipts()
+    return () => controller.abort()
+  }, [])
+
+  if (loading) {
+    return (
+      <div>
+        <h3 className="text-lg font-semibold text-text mb-3">Payment receipts</h3>
+        <div className="flex justify-center py-6">
+          <Spinner label="Loading receipts" />
+        </div>
+      </div>
+    )
+  }
+
+  if (receipts.length === 0) {
+    return (
+      <div>
+        <h3 className="text-lg font-semibold text-text mb-3">Payment receipts</h3>
+        <p className="text-sm text-muted-2">No payment receipts yet.</p>
+      </div>
+    )
+  }
+
+  return (
+    <div>
+      <h3 className="text-lg font-semibold text-text mb-3">
+        Payment receipts {total > 0 && <span className="text-sm font-normal text-muted-2">({total})</span>}
+      </h3>
+      <div className="overflow-x-auto rounded-card border border-border bg-card shadow-card">
+        <table className="min-w-full divide-y divide-border" role="grid">
+          <caption className="sr-only">Billing payment receipts</caption>
+          <thead className="bg-canvas">
+            <tr>
+              <th scope="col" className="mono px-4 py-3 text-left text-[10.5px] font-medium uppercase tracking-[0.08em] text-muted-2">Date</th>
+              <th scope="col" className="mono px-4 py-3 text-right text-[10.5px] font-medium uppercase tracking-[0.08em] text-muted-2">Amount</th>
+              <th scope="col" className="mono px-4 py-3 text-left text-[10.5px] font-medium uppercase tracking-[0.08em] text-muted-2">Status</th>
+              <th scope="col" className="mono px-4 py-3 text-center text-[10.5px] font-medium uppercase tracking-[0.08em] text-muted-2">Details</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-border bg-card">
+            {receipts.map((r) => {
+              const isExpanded = expandedId === r.id
+              const totalNzd = (r.total_amount_cents ?? 0) / 100
+              return (
+                <Fragment key={r.id}>
+                  <tr className="border-b border-border hover:bg-canvas">
+                    <td className="mono whitespace-nowrap px-4 py-3 text-sm text-text">
+                      {formatDate(r.billing_date ?? null)}
+                    </td>
+                    <td className="mono whitespace-nowrap px-4 py-3 text-sm text-right tabular-nums text-text">
+                      {formatNZD(totalNzd)}
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3 text-sm">
+                      <Badge variant={r.status === 'paid' ? 'success' : r.status === 'refunded' ? 'info' : 'danger'}>
+                        {r.status ?? 'unknown'}
+                      </Badge>
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3 text-sm text-center">
+                      <button
+                        onClick={() => setExpandedId(isExpanded ? null : r.id)}
+                        className="text-accent hover:text-accent-press text-sm font-medium"
+                        aria-expanded={isExpanded}
+                        aria-controls={`receipt-detail-${r.id}`}
+                      >
+                        {isExpanded ? 'Hide' : 'View'}
+                      </button>
+                    </td>
+                  </tr>
+                  {isExpanded && (
+                    <tr id={`receipt-detail-${r.id}`}>
+                      <td colSpan={4} className="px-4 py-4 bg-canvas">
+                        <div className="max-w-md space-y-1 text-sm">
+                          <div className="flex justify-between">
+                            <span className="text-muted">Plan ({r.plan_name ?? 'Unknown'})</span>
+                            <span className="mono tabular-nums text-text">{formatNZD((r.plan_amount_cents ?? 0) / 100)}</span>
+                          </div>
+                          {(r.sms_overage_cents ?? 0) > 0 && (
+                            <div className="flex justify-between">
+                              <span className="text-muted">SMS overage ({r.sms_overage_count ?? 0} messages)</span>
+                              <span className="mono tabular-nums text-text">{formatNZD((r.sms_overage_cents ?? 0) / 100)}</span>
+                            </div>
+                          )}
+                          {(r.carjam_overage_cents ?? 0) > 0 && (
+                            <div className="flex justify-between">
+                              <span className="text-muted">Carjam overage ({r.carjam_overage_count ?? 0} lookups)</span>
+                              <span className="mono tabular-nums text-text">{formatNZD((r.carjam_overage_cents ?? 0) / 100)}</span>
+                            </div>
+                          )}
+                          {(r.storage_addon_cents ?? 0) > 0 && (
+                            <div className="flex justify-between">
+                              <span className="text-muted">Storage add-on ({r.storage_addon_gb ?? 0} GB)</span>
+                              <span className="mono tabular-nums text-text">{formatNZD((r.storage_addon_cents ?? 0) / 100)}</span>
+                            </div>
+                          )}
+                          <hr className="border-border my-1" />
+                          <div className="flex justify-between">
+                            <span className="text-muted">Subtotal (excl. GST)</span>
+                            <span className="mono tabular-nums text-text">{formatNZD((r.subtotal_excl_gst_cents ?? 0) / 100)}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-muted">GST (15%)</span>
+                            <span className="mono tabular-nums text-text">{formatNZD((r.gst_amount_cents ?? 0) / 100)}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-muted">Processing fee</span>
+                            <span className="mono tabular-nums text-text">{formatNZD((r.processing_fee_cents ?? 0) / 100)}</span>
+                          </div>
+                          <hr className="border-border my-1" />
+                          <div className="flex justify-between font-semibold">
+                            <span className="text-text">Total</span>
+                            <span className="mono tabular-nums text-text">{formatNZD(totalNzd)}</span>
+                          </div>
+                          <p className="text-xs text-muted-2 pt-1">
+                            Interval: {INTERVAL_LABEL[r.billing_interval] ?? r.billing_interval ?? 'Monthly'}
+                          </p>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+/* ── Storage Manage Modal ── */
+
+interface StoragePackageOption {
+  id: string
+  name: string
+  storage_gb: number
+  price_nzd_per_month: number
+  description: string | null
+  is_active: boolean
+  sort_order: number
+}
+
+interface StorageAddonInfo {
+  id: string
+  package_name: string | null
+  quantity_gb: number
+  price_nzd_per_month: number
+  is_custom: boolean
+  purchased_at: string
+}
+
+interface StorageAddonStatus {
+  current_addon: StorageAddonInfo | null
+  available_packages: StoragePackageOption[]
+  fallback_price_per_gb_nzd: number
+  base_quota_gb: number
+  total_quota_gb: number
+  storage_used_gb: number
+}
+
+type ModalStep = 'select' | 'confirm' | 'remove-confirm'
+type ModalAction = 'purchase' | 'resize' | 'remove'
+
+function StorageManageModal({
+  open,
+  onClose,
+  onComplete,
+  addToast,
+}: {
+  open: boolean
+  onClose: () => void
+  onComplete: () => void
+  addToast: (variant: 'success' | 'error' | 'warning' | 'info', message: string) => void
+}) {
+  const [status, setStatus] = useState<StorageAddonStatus | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [step, setStep] = useState<ModalStep>('select')
+  const [selectedPackageId, setSelectedPackageId] = useState<string | null>(null)
+  const [customGb, setCustomGb] = useState<string>('')
+  const [useCustom, setUseCustom] = useState(false)
+
+  const fetchStatus = async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const res = await apiClient.get('/billing/storage-addon')
+      setStatus(res.data)
+    } catch {
+      setError('Failed to load storage options')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (open) {
+      fetchStatus()
+      setStep('select')
+      setSelectedPackageId(null)
+      setCustomGb('')
+      setUseCustom(false)
+    }
+  }, [open])
+
+  const selectedPackage = status?.available_packages.find((p) => p.id === selectedPackageId) ?? null
+  const customGbNum = parseInt(customGb, 10)
+  const validCustomGb = useCustom && !isNaN(customGbNum) && customGbNum > 0
+  const customPrice = validCustomGb ? customGbNum * (status?.fallback_price_per_gb_nzd ?? 0) : 0
+
+  const hasSelection = selectedPackageId != null || validCustomGb
+  const selectedGb = useCustom ? (validCustomGb ? customGbNum : 0) : (selectedPackage?.storage_gb ?? 0)
+  const selectedPrice = useCustom ? customPrice : (selectedPackage?.price_nzd_per_month ?? 0)
+  const selectedLabel = useCustom ? `Custom (${selectedGb} GB)` : (selectedPackage?.name ?? '')
+
+  const action: ModalAction = status?.current_addon ? 'resize' : 'purchase'
+  const newTotalQuota = (status?.base_quota_gb ?? 0) + selectedGb
+
+  const handleConfirm = async () => {
+    if (!status) return
+    setSubmitting(true)
+    setError(null)
+    try {
+      const body = useCustom ? { custom_gb: customGbNum } : { package_id: selectedPackageId }
+      if (action === 'purchase') {
+        await apiClient.post('/billing/storage-addon', body)
+        addToast('success', `Purchased ${selectedGb} GB storage add-on`)
+      } else {
+        await apiClient.put('/billing/storage-addon', body)
+        addToast('success', `Resized storage add-on to ${selectedGb} GB`)
+      }
+      onComplete()
+      onClose()
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Operation failed'
+      setError(msg)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const handleRemove = async () => {
+    setSubmitting(true)
+    setError(null)
+    try {
+      await apiClient.delete('/billing/storage-addon')
+      addToast('success', 'Storage add-on removed')
+      onComplete()
+      onClose()
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Failed to remove add-on'
+      setError(msg)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const title = step === 'remove-confirm'
+    ? 'Remove storage add-on'
+    : step === 'confirm'
+      ? (action === 'purchase' ? 'Confirm purchase' : 'Confirm resize')
+      : 'Manage storage'
+
+  return (
+    <Modal open={open} onClose={onClose} title={title} className="max-w-2xl">
+      <div className="space-y-4">
+        {loading && (
+          <div className="flex justify-center py-8">
+            <Spinner label="Loading storage options" />
+          </div>
+        )}
+
+        {error && <AlertBanner variant="error" title="Error">{error}</AlertBanner>}
+
+        {!loading && status && step === 'select' && (
+          <>
+            {/* Current add-on info */}
+            {status.current_addon && (
+              <div className="rounded-ctl bg-accent-soft p-4 mb-4">
+                <p className="text-sm font-medium text-accent">Current add-on</p>
+                <p className="text-sm text-accent mt-1">
+                  {status.current_addon.package_name ?? 'Custom'} — {status.current_addon.quantity_gb} GB at {formatNZD(status.current_addon.price_nzd_per_month)}/month
+                </p>
+              </div>
+            )}
+
+            {/* Package cards */}
+            <p className="text-sm text-muted">
+              {status.current_addon ? 'Select a new package to resize your add-on:' : 'Select a storage package:'}
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {status.available_packages.map((pkg) => (
+                <button
+                  key={pkg.id}
+                  onClick={() => { setSelectedPackageId(pkg.id); setUseCustom(false) }}
+                  className={`rounded-card border-2 p-4 text-left transition-colors ${
+                    selectedPackageId === pkg.id && !useCustom
+                      ? 'border-accent bg-accent-soft'
+                      : 'border-border hover:border-border-strong'
+                  }`}
+                >
+                  <p className="font-semibold text-text">{pkg.name}</p>
+                  <p className="text-sm text-muted mt-1">{pkg.storage_gb} GB</p>
+                  <p className="text-sm font-medium text-text mt-1 mono">{formatNZD(pkg.price_nzd_per_month)}/month</p>
+                  {pkg.description && <p className="text-xs text-muted-2 mt-1">{pkg.description}</p>}
+                </button>
+              ))}
+            </div>
+
+            {/* Custom option */}
+            <div
+              className={`rounded-card border-2 p-4 transition-colors ${
+                useCustom ? 'border-accent bg-accent-soft' : 'border-border'
+              }`}
+            >
+              <button
+                onClick={() => { setUseCustom(true); setSelectedPackageId(null) }}
+                className="w-full text-left"
+              >
+                <p className="font-semibold text-text">Custom amount</p>
+                <p className="text-xs text-muted-2">
+                  {formatNZD(status.fallback_price_per_gb_nzd)} per GB/month
+                </p>
+              </button>
+              {useCustom && (
+                <div className="mt-3 flex items-center gap-3">
+                  <label htmlFor="custom-gb-input" className="text-sm font-medium text-text">GB:</label>
+                  <input
+                    id="custom-gb-input"
+                    type="number"
+                    min="1"
+                    value={customGb}
+                    onChange={(e) => setCustomGb(e.target.value)}
+                    className="w-24 rounded-ctl border border-border bg-card px-3 py-2 text-sm text-text focus:border-accent focus:outline-none focus:shadow-[0_0_0_3px_var(--accent-soft)]"
+                    placeholder="e.g. 15"
+                  />
+                  {validCustomGb && (
+                    <span className="text-sm text-muted mono">{formatNZD(customPrice)}/month</span>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Actions */}
+            <div className="flex justify-between items-center pt-2">
+              <div>
+                {status.current_addon && (
+                  <Button variant="danger" size="sm" onClick={() => setStep('remove-confirm')}>
+                    Remove add-on
+                  </Button>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <Button variant="ghost" onClick={onClose}>Cancel</Button>
+                <Button disabled={!hasSelection} onClick={() => setStep('confirm')}>
+                  {status.current_addon ? 'Review resize' : 'Review purchase'}
+                </Button>
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* Confirmation step */}
+        {!loading && status && step === 'confirm' && (
+          <>
+            <div className="rounded-ctl bg-canvas p-4 space-y-2 text-sm">
+              <div className="flex justify-between">
+                <span className="text-muted">Package</span>
+                <span className="font-medium text-text">{selectedLabel}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted">Storage</span>
+                <span className="font-medium text-text">{selectedGb} GB</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted">Monthly charge</span>
+                <span className="font-medium text-text mono">{formatNZD(selectedPrice)}</span>
+              </div>
+              <hr className="border-border" />
+              <div className="flex justify-between">
+                <span className="text-muted">New total quota</span>
+                <span className="font-medium text-text">{newTotalQuota} GB</span>
+              </div>
+              {status.current_addon && (
+                <div className="flex justify-between">
+                  <span className="text-muted">Previous charge</span>
+                  <span className="text-muted-2 line-through mono">{formatNZD(status.current_addon.price_nzd_per_month)}</span>
+                </div>
+              )}
+            </div>
+            {status.current_addon && selectedGb < status.current_addon.quantity_gb && status.storage_used_gb > newTotalQuota && (
+              <AlertBanner variant="warning" title="Usage exceeds new quota">
+                Current usage ({status.storage_used_gb.toFixed(2)} GB) exceeds the new total quota ({newTotalQuota} GB). Free up space before downgrading.
+              </AlertBanner>
+            )}
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="ghost" onClick={() => setStep('select')}>Back</Button>
+              <Button onClick={handleConfirm} loading={submitting}>
+                {action === 'purchase' ? 'Confirm purchase' : 'Confirm resize'}
+              </Button>
+            </div>
+          </>
+        )}
+
+        {/* Remove confirmation step */}
+        {!loading && status && step === 'remove-confirm' && (
+          <>
+            <p className="text-sm text-muted">
+              This will remove your storage add-on and revert to your plan's base quota of {status.base_quota_gb} GB.
+            </p>
+            {status.storage_used_gb > status.base_quota_gb && (
+              <AlertBanner variant="warning" title="Usage exceeds base quota">
+                Current usage ({status.storage_used_gb.toFixed(2)} GB) exceeds the base quota ({status.base_quota_gb} GB). Free up space before removing the add-on.
+              </AlertBanner>
+            )}
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="ghost" onClick={() => setStep('select')}>Back</Button>
+              <Button
+                variant="danger"
+                onClick={handleRemove}
+                loading={submitting}
+                disabled={status.storage_used_gb > status.base_quota_gb}
+              >
+                Remove add-on
+              </Button>
+            </div>
+          </>
+        )}
+      </div>
+    </Modal>
+  )
+}
+
+/* ── Plan Change Modal ── */
+
+interface AvailablePlan {
+  id: string
+  name: string
+  monthly_price_nzd: number | string
+  user_seats: number
+  storage_quota_gb: number
+  carjam_lookups_included: number
+  trial_duration: number
+  intervals: IntervalPricing[]
+}
+
+function PlanChangeModal({
+  open,
+  onClose,
+  onComplete,
+  addToast,
+  currentPlanName,
+  currentPriceNzd,
+  currentInterval,
+}: {
+  open: boolean
+  onClose: () => void
+  onComplete: () => void
+  addToast: (type: 'success' | 'error' | 'info', msg: string) => void
+  currentPlanName: string
+  currentPriceNzd: number
+  currentInterval: string
+}) {
+  const [plans, setPlans] = useState<AvailablePlan[]>([])
+  const [loading, setLoading] = useState(true)
+  const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null)
+  const [selectedInterval, setSelectedInterval] = useState<string>(currentInterval || 'monthly')
+  const [submitting, setSubmitting] = useState(false)
+  const [result, setResult] = useState<{ success: boolean; message: string; warnings?: string[] } | null>(null)
+
+  useEffect(() => {
+    if (!open) return
+    setResult(null)
+    setSelectedPlanId(null)
+    setSelectedInterval(currentInterval || 'monthly')
+    setLoading(true)
+    apiClient.get<{ plans: AvailablePlan[] }>('/auth/plans')
+      .then(res => setPlans(res.data?.plans ?? []))
+      .catch(() => addToast('error', 'Failed to load available plans'))
+      .finally(() => setLoading(false))
+  }, [open, addToast, currentInterval])
+
+  // Collect all unique enabled intervals across all plans for the selector
+  const allIntervals: IntervalPricing[] = (() => {
+    const intervalMap = new Map<string, IntervalPricing>()
+    for (const plan of plans) {
+      for (const iv of plan.intervals ?? []) {
+        if (iv.enabled && !intervalMap.has(iv.interval)) {
+          intervalMap.set(iv.interval, iv)
+        }
+      }
+    }
+    return Array.from(intervalMap.values())
+  })()
+
+  // Helper: get interval pricing for a plan at the selected interval
+  function getPlanIntervalPricing(plan: AvailablePlan): IntervalPricing | undefined {
+    return (plan.intervals ?? []).find(
+      (iv) => iv.interval === selectedInterval && iv.enabled,
+    )
+  }
+
+  const selectedPlan = plans.find(p => p.id === selectedPlanId)
+  const selectedPlanPricing = selectedPlan ? getPlanIntervalPricing(selectedPlan) : undefined
+  const selectedPrice = selectedPlanPricing?.effective_price ?? 0
+  const isUpgrade = selectedPrice > currentPriceNzd
+  const isDowngrade = selectedPrice < currentPriceNzd
+
+  async function handleConfirm() {
+    if (!selectedPlanId) return
+    setSubmitting(true)
+    setResult(null)
+    try {
+      const endpoint = isUpgrade ? '/billing/upgrade' : '/billing/downgrade'
+      const res = await apiClient.post<{ success: boolean; message: string; warnings?: string[] }>(
+        endpoint,
+        { new_plan_id: selectedPlanId, billing_interval: selectedInterval },
+      )
+      setResult(res.data)
+      if (res.data?.success) {
+        addToast('success', res.data.message)
+        onComplete()
+      }
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      setResult({ success: false, message: detail ?? 'Failed to change plan' })
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Modal open={open} onClose={onClose} title="Change plan" className="max-w-lg">
+      <div className="space-y-4">
+        {loading ? (
+          <div className="flex justify-center py-8"><Spinner label="Loading plans..." /></div>
+        ) : (
+          <>
+            <p className="text-sm text-muted">
+              Current plan: <span className="font-semibold">{currentPlanName}</span> ({formatNZD(currentPriceNzd)}/mo)
+            </p>
+
+            {/* Interval selector */}
+            {allIntervals.length > 1 && (
+              <div className="flex justify-center">
+                <IntervalSelector
+                  intervals={allIntervals}
+                  selected={selectedInterval}
+                  onChange={(iv) => {
+                    setSelectedInterval(iv)
+                    // Clear selection if the currently selected plan doesn't support the new interval
+                    if (selectedPlan && !getPlanIntervalPricing({ ...selectedPlan, intervals: selectedPlan.intervals ?? [] })) {
+                      // Re-check after interval change — handled by render
+                    }
+                  }}
+                />
+              </div>
+            )}
+
+            <div className="space-y-2 max-h-64 overflow-y-auto">
+              {plans
+                .filter(p => p.name !== currentPlanName)
+                .map(plan => {
+                  const pricing = getPlanIntervalPricing(plan)
+                  const supportsInterval = !!pricing
+                  const price = pricing?.effective_price ?? 0
+                  const savings = pricing?.savings_amount ?? 0
+                  const equivalentMonthly = pricing?.equivalent_monthly ?? 0
+                  const up = price > currentPriceNzd
+
+                  return (
+                    <label
+                      key={plan.id}
+                      className={`flex items-center justify-between rounded-ctl border p-3 transition-colors ${
+                        !supportsInterval
+                          ? 'border-border bg-canvas opacity-50 cursor-not-allowed'
+                          : selectedPlanId === plan.id
+                            ? 'border-accent bg-accent-soft cursor-pointer'
+                            : 'border-border hover:border-border-strong cursor-pointer'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <input
+                          type="radio"
+                          name="change_plan"
+                          value={plan.id}
+                          checked={selectedPlanId === plan.id}
+                          onChange={() => setSelectedPlanId(plan.id)}
+                          disabled={!supportsInterval}
+                          className="h-4 w-4 text-accent"
+                        />
+                        <div>
+                          <span className="font-medium text-text">{plan.name}</span>
+                          {supportsInterval && (
+                            <span className={`ml-2 text-xs font-medium ${up ? 'text-ok' : 'text-warn'}`}>
+                              {up ? 'Upgrade' : 'Downgrade'}
+                            </span>
+                          )}
+                          {!supportsInterval && (
+                            <span className="ml-2 text-xs text-muted-2">
+                              Not available for {INTERVAL_LABEL[selectedInterval] ?? selectedInterval} billing
+                            </span>
+                          )}
+                          <div className="text-xs text-muted-2">
+                            {plan.user_seats} seats · {plan.storage_quota_gb} GB · {plan.carjam_lookups_included} Carjam lookups
+                          </div>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        {supportsInterval ? (
+                          <>
+                            <span className="text-sm font-semibold text-text mono">
+                              {formatIntervalPrice(price, selectedInterval)}
+                            </span>
+                            {savings > 0 && (
+                              <div className="text-xs text-ok mono">Save {formatNZD(savings)}</div>
+                            )}
+                            {selectedInterval !== 'monthly' && equivalentMonthly > 0 && (
+                              <div className="text-xs text-muted-2 mono">{formatNZD(equivalentMonthly)}/mo</div>
+                            )}
+                          </>
+                        ) : (
+                          <span className="text-xs text-muted-2">Unavailable</span>
+                        )}
+                      </div>
+                    </label>
+                  )
+                })}
+            </div>
+
+            {selectedPlan && selectedPlanPricing && (
+              <div className="rounded-ctl bg-canvas p-3 text-sm">
+                {isUpgrade ? (
+                  <p className="text-muted">
+                    Upgrading to <span className="font-semibold">{selectedPlan.name}</span> at{' '}
+                    {formatIntervalPrice(selectedPrice, selectedInterval)} takes effect immediately.
+                    A prorated charge will be applied for the remainder of this billing period.
+                  </p>
+                ) : (
+                  <p className="text-muted">
+                    Downgrading to <span className="font-semibold">{selectedPlan.name}</span> at{' '}
+                    {formatIntervalPrice(selectedPrice, selectedInterval)} takes effect at the start
+                    of your next billing period. You'll keep your current plan until then.
+                  </p>
+                )}
+              </div>
+            )}
+
+            {result && !result.success && (
+              <AlertBanner variant="error">{result.message}</AlertBanner>
+            )}
+            {result?.warnings && result.warnings.length > 0 && (
+              <AlertBanner variant="warning" title="Action required">
+                <ul className="list-disc pl-4 space-y-1">
+                  {(result.warnings ?? []).map((w, i) => <li key={i}>{w}</li>)}
+                </ul>
+              </AlertBanner>
+            )}
+            {result?.success && (
+              <AlertBanner variant="success">{result.message}</AlertBanner>
+            )}
+
+            <div className="flex gap-3 pt-2">
+              <Button
+                onClick={handleConfirm}
+                loading={submitting}
+                disabled={!selectedPlanId || !selectedPlanPricing || result?.success}
+              >
+                {isUpgrade ? 'Confirm upgrade' : isDowngrade ? 'Confirm downgrade' : 'Select a plan'}
+              </Button>
+              <Button variant="ghost" onClick={onClose}>Cancel</Button>
+            </div>
+          </>
+        )}
+      </div>
+    </Modal>
+  )
+}
+
+/* ── Interval Change Modal ── */
+
+interface AvailableIntervalsResponse {
+  current_interval: string
+  intervals: IntervalPricing[]
+}
+
+type IntervalModalStep = 'select' | 'confirm'
+
+function IntervalChangeModal({
+  open,
+  onClose,
+  onComplete,
+  addToast,
+  currentInterval,
+}: {
+  open: boolean
+  onClose: () => void
+  onComplete: () => void
+  addToast: (type: 'success' | 'error' | 'info', msg: string) => void
+  currentInterval: string
+}) {
+  const [intervals, setIntervals] = useState<IntervalPricing[]>([])
+  const [loading, setLoading] = useState(true)
+  const [selectedInterval, setSelectedInterval] = useState(currentInterval)
+  const [step, setStep] = useState<IntervalModalStep>('select')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const controller = new AbortController()
+    setStep('select')
+    setSelectedInterval(currentInterval)
+    setError(null)
+    setLoading(true)
+
+    const fetchIntervals = async () => {
+      try {
+        const res = await apiClient.get<AvailableIntervalsResponse>(
+          '/billing/available-intervals',
+          { signal: controller.signal },
+        )
+        setIntervals(res.data?.intervals ?? [])
+      } catch (err) {
+        if (!controller.signal.aborted) {
+          setError('Failed to load available intervals')
+        }
+      } finally {
+        if (!controller.signal.aborted) setLoading(false)
+      }
+    }
+    fetchIntervals()
+    return () => controller.abort()
+  }, [open, currentInterval])
+
+  const selectedPricing = intervals.find((i) => i.interval === selectedInterval)
+  const currentPricing = intervals.find((i) => i.interval === currentInterval)
+  const isSameInterval = selectedInterval === currentInterval
+
+  // Determine direction: longer interval = fewer periods/year = immediate
+  const currentPeriods = INTERVAL_PERIODS_PER_YEAR[currentInterval] ?? 12
+  const selectedPeriods = INTERVAL_PERIODS_PER_YEAR[selectedInterval] ?? 12
+  const isLongerInterval = selectedPeriods < currentPeriods
+  const isShorterInterval = selectedPeriods > currentPeriods
+
+  const handleConfirm = async () => {
+    if (isSameInterval) return
+    setSubmitting(true)
+    setError(null)
+    try {
+      const res = await apiClient.post<{
+        success: boolean
+        message: string
+        new_interval: string
+        new_effective_price: number
+        effective_immediately: boolean
+        effective_at: string | null
+      }>('/billing/change-interval', { billing_interval: selectedInterval })
+      if (res.data?.success) {
+        addToast('success', res.data.message ?? 'Billing interval changed')
+        onComplete()
+        onClose()
+      } else {
+        setError(res.data?.message ?? 'Failed to change interval')
+      }
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      setError(detail ?? 'Failed to change billing interval')
+      addToast('error', detail ?? 'Failed to change billing interval')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const title = step === 'confirm' ? 'Confirm interval change' : 'Change billing interval'
+
+  return (
+    <Modal open={open} onClose={onClose} title={title} className="max-w-lg">
+      <div className="space-y-4">
+        {loading && (
+          <div className="flex justify-center py-8">
+            <Spinner label="Loading available intervals" />
+          </div>
+        )}
+
+        {error && <AlertBanner variant="error" title="Error">{error}</AlertBanner>}
+
+        {!loading && intervals.length === 0 && !error && (
+          <p className="text-sm text-muted-2">No other intervals are available for your current plan.</p>
+        )}
+
+        {!loading && intervals.length > 0 && step === 'select' && (
+          <>
+            <p className="text-sm text-muted">
+              Current interval: <span className="font-semibold">{INTERVAL_LABEL[currentInterval] ?? currentInterval}</span>
+            </p>
+
+            <div className="flex justify-center">
+              <IntervalSelector
+                intervals={intervals}
+                selected={selectedInterval}
+                onChange={setSelectedInterval}
+                recommendedInterval="monthly"
+              />
+            </div>
+
+            {selectedPricing && (
+              <div className="rounded-ctl bg-canvas p-4 space-y-2 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-muted">Price</span>
+                  <span className="font-medium text-text mono">
+                    {formatIntervalPrice(selectedPricing.effective_price ?? 0, selectedInterval)}
+                  </span>
+                </div>
+                {selectedInterval !== 'monthly' && (selectedPricing.equivalent_monthly ?? 0) > 0 && (
+                  <div className="flex justify-between">
+                    <span className="text-muted">Equivalent monthly</span>
+                    <span className="text-muted mono">{formatNZD(selectedPricing.equivalent_monthly ?? 0)}/mo</span>
+                  </div>
+                )}
+                {(selectedPricing.savings_amount ?? 0) > 0 && (
+                  <div className="flex justify-between">
+                    <span className="text-muted">You save</span>
+                    <span className="font-medium text-ok mono">
+                      {formatNZD(selectedPricing.savings_amount ?? 0)} per {selectedInterval === 'annual' ? 'year' : 'cycle'}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="ghost" onClick={onClose}>Cancel</Button>
+              <Button disabled={isSameInterval} onClick={() => setStep('confirm')}>
+                Review change
+              </Button>
+            </div>
+          </>
+        )}
+
+        {!loading && step === 'confirm' && (
+          <>
+            <div className="rounded-ctl bg-canvas p-4 space-y-2 text-sm">
+              <div className="flex justify-between">
+                <span className="text-muted">From</span>
+                <span className="font-medium text-text">
+                  {INTERVAL_LABEL[currentInterval] ?? currentInterval}
+                  {currentPricing ? ` (${formatIntervalPrice(currentPricing.effective_price ?? 0, currentInterval)})` : ''}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted">To</span>
+                <span className="font-medium text-text">
+                  {INTERVAL_LABEL[selectedInterval] ?? selectedInterval}
+                  {selectedPricing ? ` (${formatIntervalPrice(selectedPricing.effective_price ?? 0, selectedInterval)})` : ''}
+                </span>
+              </div>
+            </div>
+
+            {isLongerInterval && (
+              <AlertBanner variant="info" title="Immediate change">
+                This change takes effect immediately. A prorated credit for your remaining{' '}
+                {INTERVAL_LABEL[currentInterval]?.toLowerCase() ?? 'current'} period will be applied to your new{' '}
+                {INTERVAL_LABEL[selectedInterval]?.toLowerCase() ?? 'selected'} billing cycle.
+              </AlertBanner>
+            )}
+
+            {isShorterInterval && (
+              <AlertBanner variant="info" title="Scheduled change">
+                This change takes effect at the end of your current billing period. You'll continue on your{' '}
+                {INTERVAL_LABEL[currentInterval]?.toLowerCase() ?? 'current'} plan until then.
+              </AlertBanner>
+            )}
+
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="ghost" onClick={() => setStep('select')}>Back</Button>
+              <Button onClick={handleConfirm} loading={submitting}>
+                Confirm change
+              </Button>
+            </div>
+          </>
+        )}
+      </div>
+    </Modal>
+  )
+}
+
+/* ── Main Billing Page ── */
+
+export function Billing() {
+  const [billing, setBilling] = useState<BillingData | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [addonOpen, setAddonOpen] = useState(false)
+  const [planChangeOpen, setPlanChangeOpen] = useState(false)
+  const [intervalChangeOpen, setIntervalChangeOpen] = useState(false)
+  const [stripePromise, setStripePromise] = useState<Promise<Stripe | null> | null>(null)
+  const [showCardForm, setShowCardForm] = useState(false)
+  const [pmRefreshKey, setPmRefreshKey] = useState(0)
+  const { toasts, addToast, dismissToast } = useToast()
+
+  // Load Stripe publishable key on mount
+  useEffect(() => {
+    async function loadStripeKey() {
+      try {
+        const res = await apiClient.get<{ publishable_key: string }>('/auth/stripe-publishable-key')
+        if (res.data.publishable_key) {
+          setStripePromise(loadStripe(res.data.publishable_key))
+        }
+      } catch {
+        // Stripe not configured — payment methods section will show a fallback
+      }
+    }
+    loadStripeKey()
+  }, [])
+
+  const fetchBilling = async () => {
+    setLoading(true)
+    try {
+      const billingRes = await apiClient.get('/billing')
+      // Transform flat backend response to the nested BillingData shape
+      const raw = billingRes.data
+      const transformed: BillingData = {
+        plan: {
+          name: raw.current_plan ?? 'Unknown',
+          monthly_price_nzd: Number(raw.plan_monthly_price_nzd ?? 0),
+          user_seats: raw.user_seats ?? 0,
+          storage_quota_gb: raw.storage_quota_gb ?? 0,
+          carjam_lookups_included: raw.carjam_lookups_included ?? 0,
+          enabled_modules: raw.enabled_modules ?? [],
+          sms_included: raw.sms_included ?? false,
+          sms_included_quota: raw.sms_included_quota ?? 0,
+          per_sms_cost_nzd: Number(raw.per_sms_cost_nzd ?? 0),
+        },
+        coupon: raw.active_coupon_code ? {
+          code: raw.active_coupon_code,
+          discount_type: raw.discount_type,
+          discount_value: Number(raw.discount_value ?? 0),
+          duration_months: raw.duration_months ?? null,
+          coupon_duration_cycles: raw.coupon_duration_cycles ?? null,
+          effective_price_nzd: Number(raw.effective_price_nzd ?? 0),
+          is_expired: raw.coupon_is_expired ?? false,
+        } : null,
+        status: raw.org_status ?? 'trial',
+        trial_ends_at: raw.trial_ends_at ?? null,
+        next_billing_date: raw.next_billing_date ?? null,
+        billing_interval: raw.billing_interval ?? 'monthly',
+        interval_effective_price: Number(raw.interval_effective_price ?? 0),
+        equivalent_monthly_price: Number(raw.equivalent_monthly_price ?? 0),
+        pending_interval_change: raw.pending_interval_change ?? null,
+        estimated_next_invoice: {
+          plan_fee: Number(raw.interval_effective_price ?? raw.plan_monthly_price_nzd ?? 0),
+          storage_addons: Number(raw.storage_addon_charge_nzd ?? 0),
+          carjam_overage: Number(raw.carjam_overage_charge_nzd ?? 0),
+          sms_overage: Number(raw.sms_overage_charge_nzd ?? 0),
+          total: Number(raw.estimated_next_invoice_nzd ?? 0),
+          gst: Number(raw.gst_amount_nzd ?? 0),
+          processing_fee: Number(raw.processing_fee_nzd ?? 0),
+          total_incl: Number(raw.estimated_total_incl_nzd ?? 0),
+        },
+        storage: {
+          used_bytes: (raw.storage_used_gb ?? 0) * 1024 * 1024 * 1024,
+          quota_gb: raw.storage_quota_gb ?? 0,
+          avg_invoice_bytes: raw.avg_invoice_bytes ?? 0,
+        },
+        carjam: {
+          lookups_this_month: raw.carjam_lookups_used ?? 0,
+          included: raw.carjam_lookups_included ?? 0,
+        },
+        storage_addon_gb: raw.storage_addon_gb ?? null,
+        storage_addon_price_nzd: raw.storage_addon_price_nzd ?? null,
+        storage_addon_package_name: raw.storage_addon_package_name ?? null,
+        sms: {
+          sent_this_month: raw.sms_sent_this_month ?? 0,
+          included_quota: raw.sms_included_quota ?? 0,
+          credits_remaining: raw.sms_credits_remaining ?? 0,
+          per_sms_cost_nzd: Number(raw.per_sms_cost_nzd ?? 0),
+          overage_charge_nzd: Number(raw.sms_overage_charge_nzd ?? 0),
+          sms_included: raw.sms_included ?? false,
+        },
+      }
+      setBilling(transformed)
+    } catch {
+      addToast('error', 'Failed to load billing information')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { fetchBilling() }, [])
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <Spinner label="Loading billing information" />
+      </div>
+    )
+  }
+
+  if (!billing) {
+    return (
+      <AlertBanner variant="error" title="Something went wrong">
+        We couldn't load your billing information. Please refresh the page or try again later.
+      </AlertBanner>
+    )
+  }
+
+  return (
+    <div>
+      <h1 className="text-xl font-semibold text-text mb-6">Billing</h1>
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
+
+      <div className="space-y-6 max-w-3xl">
+        {/* Trial countdown */}
+        {billing.status === 'trial' && billing.trial_ends_at && (
+          <TrialCountdown trialEndsAt={billing.trial_ends_at} />
+        )}
+
+        {/* Grace period warning */}
+        {billing.status === 'grace_period' && (
+          <AlertBanner variant="warning" title="Payment overdue">
+            Your payment is overdue. Please update your payment method to avoid losing access.
+          </AlertBanner>
+        )}
+
+        {/* Plan + Next bill side by side on larger screens */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <CurrentPlanCard
+            plan={billing.plan}
+            status={billing.status}
+            coupon={billing.coupon}
+            billingInterval={billing.billing_interval}
+            intervalEffectivePrice={billing.interval_effective_price}
+            equivalentMonthlyPrice={billing.equivalent_monthly_price}
+            pendingIntervalChange={billing.pending_interval_change}
+          />
+          <NextBillEstimate
+            nextBillingDate={billing.next_billing_date}
+            estimate={billing.estimated_next_invoice}
+            coupon={billing.coupon}
+            addonGb={billing.storage_addon_gb}
+            addonPriceNzd={billing.storage_addon_price_nzd}
+          />
+        </div>
+
+        {/* Usage cards */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {billing.storage && (
+            <StorageUsage
+              usedBytes={billing.storage.used_bytes}
+              quotaGb={billing.storage.quota_gb}
+              avgInvoiceBytes={billing.storage.avg_invoice_bytes}
+              onPurchaseAddon={() => setAddonOpen(true)}
+              addonGb={billing.storage_addon_gb}
+              addonPriceNzd={billing.storage_addon_price_nzd}
+              addonPackageName={billing.storage_addon_package_name}
+            />
+          )}
+          {billing.carjam && (
+            <CarjamUsage
+              lookups={billing.carjam.lookups_this_month}
+              included={billing.carjam.included}
+            />
+          )}
+          {billing.sms && (
+            <SmsUsageCard
+              sentThisMonth={billing.sms.sent_this_month}
+              includedQuota={billing.sms.included_quota}
+              creditsRemaining={billing.sms.credits_remaining}
+              perSmsCost={billing.sms.per_sms_cost_nzd}
+              smsIncluded={billing.sms.sms_included}
+            />
+          )}
+        </div>
+
+        {/* Actions */}
+        <div className="flex flex-wrap gap-3">
+          <Button onClick={() => setPlanChangeOpen(true)}>
+            Change plan
+          </Button>
+          <Button variant="ghost" onClick={() => setIntervalChangeOpen(true)}>
+            Change interval
+          </Button>
+        </div>
+
+        {/* Payment methods */}
+        {stripePromise ? (
+          <Elements stripe={stripePromise}>
+            <PaymentMethodManager
+              key={pmRefreshKey}
+              onAddCard={() => setShowCardForm(true)}
+              showAddForm={showCardForm}
+            />
+            {showCardForm && (
+              <CardForm
+                onSuccess={() => {
+                  setShowCardForm(false)
+                  setPmRefreshKey((k) => k + 1)
+                }}
+                onCancel={() => setShowCardForm(false)}
+              />
+            )}
+          </Elements>
+        ) : (
+          <div className="rounded-card border border-border p-5">
+            <h3 className="text-lg font-semibold text-text mb-3">Payment Methods</h3>
+            <p className="text-sm text-muted-2">Stripe is not configured. Payment method management is unavailable.</p>
+          </div>
+        )}
+
+        {/* Branch cost breakdown */}
+        <BranchCostBreakdown />
+
+        {/* Payment receipts */}
+        <BillingReceipts />
+      </div>
+
+      {/* Storage manage modal */}
+      <StorageManageModal
+        open={addonOpen}
+        onClose={() => setAddonOpen(false)}
+        onComplete={fetchBilling}
+        addToast={addToast}
+      />
+
+      {/* Plan change modal */}
+      <PlanChangeModal
+        open={planChangeOpen}
+        onClose={() => setPlanChangeOpen(false)}
+        onComplete={fetchBilling}
+        addToast={addToast}
+        currentPlanName={billing.plan?.name ?? 'Unknown'}
+        currentPriceNzd={billing.plan?.monthly_price_nzd ?? 0}
+        currentInterval={billing.billing_interval ?? 'monthly'}
+      />
+
+      {/* Interval change modal */}
+      <IntervalChangeModal
+        open={intervalChangeOpen}
+        onClose={() => setIntervalChangeOpen(false)}
+        onComplete={fetchBilling}
+        addToast={addToast}
+        currentInterval={billing.billing_interval}
+      />
+    </div>
+  )
+}

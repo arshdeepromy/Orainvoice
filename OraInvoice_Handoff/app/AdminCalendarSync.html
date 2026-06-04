@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page" data-screen-label="Admin · Calendar Sync">
+        <div class="page-head">
+          <div><div class="eyebrow">Platform admin</div><h1>Calendar sync</h1><p class="sub">Two-way booking sync with Google &amp; Microsoft calendars</p></div>
+          <div class="head-actions"><button class="btn btn-ghost btn-sm">Run full resync</button></div>
+        </div>
+        <div id="admin-nav" data-active="calendar"></div>
+
+        <div class="kpis">
+          <div class="kpi"><div class="top"><span class="label">Calendars linked</span><span class="ico blue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 7V3m8 4V3M3 11h18M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg></span></div><div class="val">512</div><div class="delta up"><span>↗ 24</span><span class="since">this month</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">Events synced (24h)</span><span class="ico green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4v5h.6M20 20v-5h-.6m0 0a8 8 0 01-15.3-2m15.4 2H15M4.6 9A8 8 0 0119.9 11M4.6 9H9"/></svg></span></div><div class="val">3,184</div><div class="delta"><span class="since">avg lag 4s</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">Conflicts</span><span class="ico amber"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4m0 4h.01M10.3 3.9l-8 14A2 2 0 004 21h16a2 2 0 001.7-3l-8-14a2 2 0 00-3.4 0z"/></svg></span></div><div class="val">7</div><div class="delta"><span class="since">need review</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">Failed syncs</span><span class="ico red"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></span></div><div class="val">3</div><div class="delta"><span class="since">token errors</span></div></div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 320px;gap:var(--gap);align-items:start">
+          <section class="card">
+            <div class="card-head"><h2>Linked calendars</h2><label class="search-input" style="height:34px;max-width:200px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 21l-5-5m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg><input placeholder="Search…" /></label></div>
+            <div class="tbl-wrap"><table>
+              <thead><tr><th>Staff / org</th><th>Provider</th><th>Direction</th><th>Last sync</th><th>Status</th></tr></thead>
+              <tbody>
+                <tr><td><div class="cell-2"><span class="cust">Dave Mceachern</span><span class="s">Kerikeri Motors</span></div></td><td>Google</td><td><span class="badge sent"><span class="b-dot"></span>Two-way</span></td><td class="mono" style="color:var(--muted)">1m ago</td><td><span class="badge active"><span class="b-dot"></span>OK</span></td></tr>
+                <tr><td><div class="cell-2"><span class="cust">Mere Wiki</span><span class="s">Coastline Marine</span></div></td><td>Outlook</td><td><span class="badge sent"><span class="b-dot"></span>Two-way</span></td><td class="mono" style="color:var(--muted)">6m ago</td><td><span class="badge active"><span class="b-dot"></span>OK</span></td></tr>
+                <tr><td><div class="cell-2"><span class="cust">Sina Faleolo</span><span class="s">Kerikeri Motors</span></div></td><td>Google</td><td><span class="badge neutral"><span class="b-dot"></span>One-way</span></td><td class="mono" style="color:var(--muted)">22m ago</td><td><span class="badge active"><span class="b-dot"></span>OK</span></td></tr>
+                <tr><td><div class="cell-2"><span class="cust">Hemi Ngata</span><span class="s">Kerikeri Motors</span></div></td><td>Google</td><td><span class="badge sent"><span class="b-dot"></span>Two-way</span></td><td class="mono" style="color:var(--muted)">Failed</td><td><span class="badge overdue"><span class="b-dot"></span>Reauth</span></td></tr>
+              </tbody>
+            </table></div>
+          </section>
+          <section class="card"><div class="card-body">
+            <div class="section-label">Global settings</div>
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border)"><span style="font-size:13.5px">Sync past events</span><button class="toggle" onclick="this.classList.toggle('on')"></button></div>
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border)"><span style="font-size:13.5px">Include customer name</span><button class="toggle on" onclick="this.classList.toggle('on')"></button></div>
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border)"><span style="font-size:13.5px">Block double-booking</span><button class="toggle on" onclick="this.classList.toggle('on')"></button></div>
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0"><span style="font-size:13.5px">Sync window</span><span class="mono" style="font-size:13px;color:var(--muted)">±90 days</span></div>
+          </div></section>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="admin" data-title="Admin · Calendar Sync"></script>
+<script src="admin-nav.js"></script>
+</body>
+</html>

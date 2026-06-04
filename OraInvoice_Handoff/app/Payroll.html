@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+.pr-bar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:16px 20px;border:1px solid var(--border);border-radius:var(--r-card);background:var(--card);box-shadow:var(--shadow-card);margin-bottom:var(--gap)}
+.pr-bar .seg-period{display:flex;align-items:center;gap:10px}
+.pr-bar .pdate{font-family:var(--mono);font-size:13px;font-weight:600}
+.pr-bar .step{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted-2)}
+.pr-steps{display:flex;align-items:center;gap:0;margin-left:auto}
+.pr-steps .s{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--muted)}
+.pr-steps .s .dot{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:11px;font-weight:600;background:var(--canvas);border:1px solid var(--border);color:var(--muted)}
+.pr-steps .s.done .dot{background:var(--ok-soft);border-color:transparent;color:var(--ok)}
+.pr-steps .s.on .dot{background:var(--accent);border-color:transparent;color:#fff}
+.pr-steps .s.on{color:var(--text);font-weight:600}
+.pr-steps .line{width:30px;height:1px;background:var(--border);margin:0 12px}
+@media(max-width:920px){.pr-steps{display:none}}
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Payroll">
+        <div class="page-head">
+          <div><div class="eyebrow">People</div><h1>Payroll</h1><p class="sub">Pay period · 19 May – 25 May 2026 · 14 employees</p></div>
+          <div class="head-actions">
+            <button class="btn btn-ghost btn-sm">Pay run history</button>
+            <button class="btn btn-primary btn-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>New pay run</button>
+          </div>
+        </div>
+
+        <div class="pr-bar">
+          <div class="seg-period">
+            <button class="icon-btn btn-sm" style="width:34px;height:34px" aria-label="Previous period"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg></button>
+            <div><div class="step">Weekly · draft</div><div class="pdate">19 – 25 May 2026</div></div>
+            <button class="icon-btn btn-sm" style="width:34px;height:34px" aria-label="Next period"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg></button>
+          </div>
+          <div class="pr-steps">
+            <div class="s done"><span class="dot"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" width="11" height="11"><path d="M20 6L9 17l-5-5"/></svg></span>Import hours</div>
+            <span class="line"></span>
+            <div class="s on"><span class="dot">2</span>Review</div>
+            <span class="line"></span>
+            <div class="s"><span class="dot">3</span>Approve</div>
+            <span class="line"></span>
+            <div class="s"><span class="dot">4</span>Pay &amp; file</div>
+          </div>
+        </div>
+
+        <div class="kpis">
+          <div class="kpi"><div class="top"><span class="label">Gross pay</span><span class="ico blue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg></span></div><div class="val"><span class="c">$</span>38,420</div><div class="delta up">↗ 2.1%<span class="since">vs last run</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">PAYE / tax</span><span class="ico amber"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M9 14l6-6m-5.5.5h.01m4.99 5h.01M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16l3.5-2 3.5 2 3.5-2 3.5 2z"/></svg></span></div><div class="val"><span class="c">$</span>7,884</div><div class="delta"><span class="since">20.5% effective</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">KiwiSaver + ACC</span><span class="ico purple"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span></div><div class="val"><span class="c">$</span>2,156</div><div class="delta"><span class="since">employee + employer</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">Net pay</span><span class="ico green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/></svg></span></div><div class="val"><span class="c">$</span>28,380</div><div class="delta"><span class="since">to 14 employees</span></div></div>
+        </div>
+
+        <div class="toolbar">
+          <div class="search-input"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 21l-5-5m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg><input placeholder="Search employees…" /></div>
+          <div class="seg"><button class="on">All</button><button>Employees</button><button>Contractors</button></div>
+          <div class="spacer"></div>
+          <button class="filter-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg>Adjust</button>
+          <button class="btn btn-ghost btn-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>Export</button>
+        </div>
+
+        <section class="card">
+          <div class="tbl-wrap"><table>
+            <thead><tr>
+              <th>Employee</th><th>Type</th><th class="r">Ord. hrs</th><th class="r">O/T</th><th class="r">Gross</th><th class="r">PAYE</th><th class="r">KiwiSaver</th><th class="r">Net</th><th>Status</th><th></th>
+            </tr></thead>
+            <tbody>
+              <tr class="clickable" onclick="location.href='PayslipDetail.html'">
+                <td><div class="row-flex"><span class="row-av" style="background:var(--accent-soft);color:var(--accent)">DM</span><div class="cell-2"><span class="cust">Dave Mceachern</span><span class="s">EMP-002 · Senior Technician</span></div></div></td>
+                <td><span class="badge neutral"><span class="b-dot"></span>Employee</span></td>
+                <td class="r"><span class="mono">40.0</span></td><td class="r"><span class="mono">6.5</span></td>
+                <td class="r"><span class="amt">3,412</span></td><td class="r"><span class="mono" style="color:var(--muted)">724</span></td><td class="r"><span class="mono" style="color:var(--muted)">102</span></td>
+                <td class="r"><span class="amt">2,486</span></td>
+                <td><span class="badge active"><span class="b-dot"></span>Ready</span></td>
+                <td class="r"><svg viewBox="0 0 24 24" fill="none" stroke="var(--muted-2)" stroke-width="2" width="16" height="16"><path d="M9 18l6-6-6-6"/></svg></td>
+              </tr>
+              <tr class="clickable" onclick="location.href='PayslipDetail.html'">
+                <td><div class="row-flex"><span class="row-av" style="background:var(--ok-soft);color:var(--ok)">SF</span><div class="cell-2"><span class="cust">Sina Faleolo</span><span class="s">EMP-005 · Technician</span></div></div></td>
+                <td><span class="badge neutral"><span class="b-dot"></span>Employee</span></td>
+                <td class="r"><span class="mono">40.0</span></td><td class="r"><span class="mono">2.0</span></td>
+                <td class="r"><span class="amt">2,790</span></td><td class="r"><span class="mono" style="color:var(--muted)">558</span></td><td class="r"><span class="mono" style="color:var(--muted)">84</span></td>
+                <td class="r"><span class="amt">2,088</span></td>
+                <td><span class="badge active"><span class="b-dot"></span>Ready</span></td>
+                <td class="r"><svg viewBox="0 0 24 24" fill="none" stroke="var(--muted-2)" stroke-width="2" width="16" height="16"><path d="M9 18l6-6-6-6"/></svg></td>
+              </tr>
+              <tr class="clickable" onclick="location.href='PayslipDetail.html'">
+                <td><div class="row-flex"><span class="row-av" style="background:var(--warn-soft);color:var(--warn)">TC</span><div class="cell-2"><span class="cust">Tom Cole</span><span class="s">EMP-008 · Apprentice</span></div></div></td>
+                <td><span class="badge neutral"><span class="b-dot"></span>Employee</span></td>
+                <td class="r"><span class="mono">38.5</span></td><td class="r"><span class="mono">0.0</span></td>
+                <td class="r"><span class="amt">1,386</span></td><td class="r"><span class="mono" style="color:var(--muted)">236</span></td><td class="r"><span class="mono" style="color:var(--muted)">42</span></td>
+                <td class="r"><span class="amt">1,094</span></td>
+                <td><span class="badge pending"><span class="b-dot"></span>Needs review</span></td>
+                <td class="r"><svg viewBox="0 0 24 24" fill="none" stroke="var(--muted-2)" stroke-width="2" width="16" height="16"><path d="M9 18l6-6-6-6"/></svg></td>
+              </tr>
+              <tr class="clickable" onclick="location.href='PayslipDetail.html'">
+                <td><div class="row-flex"><span class="row-av" style="background:var(--purple-soft);color:var(--purple)">RP</span><div class="cell-2"><span class="cust">Rangi Pita</span><span class="s">CON-101 · Panel Beater</span></div></div></td>
+                <td><span class="badge info"><span class="b-dot"></span>Contractor</span></td>
+                <td class="r"><span class="mono">—</span></td><td class="r"><span class="mono">—</span></td>
+                <td class="r"><span class="amt">2,200</span></td><td class="r"><span class="mono" style="color:var(--muted-2)">WT 440</span></td><td class="r"><span class="mono" style="color:var(--muted-2)">—</span></td>
+                <td class="r"><span class="amt">1,760</span></td>
+                <td><span class="badge active"><span class="b-dot"></span>Ready</span></td>
+                <td class="r"><svg viewBox="0 0 24 24" fill="none" stroke="var(--muted-2)" stroke-width="2" width="16" height="16"><path d="M9 18l6-6-6-6"/></svg></td>
+              </tr>
+              <tr class="clickable" onclick="location.href='PayslipDetail.html'">
+                <td><div class="row-flex"><span class="row-av">AM</span><div class="cell-2"><span class="cust">Aroha Morgan</span><span class="s">EMP-011 · Service Advisor</span></div></div></td>
+                <td><span class="badge neutral"><span class="b-dot"></span>Employee</span></td>
+                <td class="r"><span class="mono">40.0</span></td><td class="r"><span class="mono">0.0</span></td>
+                <td class="r"><span class="amt">2,100</span></td><td class="r"><span class="mono" style="color:var(--muted)">399</span></td><td class="r"><span class="mono" style="color:var(--muted)">63</span></td>
+                <td class="r"><span class="amt">1,638</span></td>
+                <td><span class="badge active"><span class="b-dot"></span>Ready</span></td>
+                <td class="r"><svg viewBox="0 0 24 24" fill="none" stroke="var(--muted-2)" stroke-width="2" width="16" height="16"><path d="M9 18l6-6-6-6"/></svg></td>
+              </tr>
+            </tbody>
+          </table></div>
+          <div class="pagination"><div class="info">Showing <span class="mono">1–5</span> of <span class="mono">14</span> employees · 2 need review before approval</div><div class="pg-btns"><button disabled>‹</button><button class="on">1</button><button>2</button><button>3</button><button>›</button></div></div>
+        </section>
+
+        <div style="display:flex;align-items:center;justify-content:flex-end;gap:12px;margin-top:var(--gap)">
+          <div style="margin-right:auto;font-size:13px;color:var(--muted)">Pay day <span class="mono" style="color:var(--text);font-weight:600">Thu 28 May</span> · IRD filing due same day</div>
+          <button class="btn btn-ghost">Save draft</button>
+          <button class="btn btn-primary"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg>Approve pay run</button>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="payroll" data-title="Payroll" data-primary="New pay run"></script>
+<script>
+document.querySelectorAll('.seg button').forEach(b=>b.addEventListener('click',()=>{b.parentElement.querySelectorAll('button').forEach(x=>x.classList.remove('on'));b.classList.add('on');}));
+</script>
+</body>
+</html>

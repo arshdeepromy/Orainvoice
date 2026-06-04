@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+  .lvl { font-family: var(--mono); font-size: 10.5px; font-weight: 600; letter-spacing: .04em; padding: 2px 7px; border-radius: 5px; }
+  .lvl.error { background: var(--danger-soft); color: var(--danger); }
+  .lvl.warn { background: var(--warn-soft); color: var(--warn); }
+  .lvl.info { background: var(--accent-soft); color: var(--accent); }
+  .msg { font-family: var(--mono); font-size: 12.5px; }
+  .err-row { cursor: pointer; }
+  .trace { background: #0E1626; color: #cbd5e1; font-family: var(--mono); font-size: 11.5px; padding: 14px 18px; border-radius: var(--r-ctl); white-space: pre-wrap; line-height: 1.6; margin-top: 4px; }
+  .trace .e { color: #fca5a5; } .trace .f { color: #94a3b8; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Admin · Error Log">
+        <div class="page-head">
+          <div><div class="eyebrow">Platform admin</div><h1>Error log</h1><p class="sub">Captured exceptions across API &amp; workers</p></div>
+          <div class="head-actions"><button class="btn btn-ghost btn-sm">Open in Sentry</button></div>
+        </div>
+        <div id="admin-nav" data-active="errors"></div>
+
+        <div class="kpis">
+          <div class="kpi"><div class="top"><span class="label">Errors (24h)</span><span class="ico red"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4m0 4h.01M10.3 3.9l-8 14A2 2 0 004 21h16a2 2 0 001.7-3l-8-14a2 2 0 00-3.4 0z"/></svg></span></div><div class="val">38</div><div class="delta down"><span>↘ 22%</span><span class="since">vs prev day</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">Error rate</span><span class="ico amber"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></span></div><div class="val">0.04<span class="c">%</span></div><div class="delta"><span class="since">of requests</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">Unresolved</span><span class="ico purple"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></span></div><div class="val">5</div><div class="delta"><span class="since">2 assigned</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">p95 latency</span><span class="ico green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9z"/></svg></span></div><div class="val">118<span class="c">ms</span></div><div class="delta"><span class="since">healthy</span></div></div>
+        </div>
+
+        <div class="toolbar">
+          <label class="search-input" style="flex:1;max-width:300px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 21l-5-5m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg><input type="text" placeholder="Search message or endpoint…" /></label>
+          <div class="seg"><button class="on">All</button><button>Error</button><button>Warn</button><button>Info</button></div>
+          <div class="spacer"></div>
+          <button class="filter-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 7V3m8 4V3M3 11h18M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>Last 24h</button>
+        </div>
+
+        <section class="card">
+          <div class="tbl-wrap"><table>
+            <thead><tr><th style="width:60px">Level</th><th>Message</th><th>Service</th><th>Count</th><th>Org</th><th class="r">Last seen</th></tr></thead>
+            <tbody id="rows"></tbody>
+          </table></div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="admin" data-title="Admin · Error Log"></script>
+<script src="admin-nav.js"></script>
+<script>
+const E = [
+  { lvl:'error', msg:'TypeError: cannot read property "total" of undefined', svc:'api · invoices', count:14, org:'FixIt NZ Ltd', t:'4m ago', trace:'at calcInvoiceTotal (invoices/total.ts:42)\nat InvoiceController.create (invoices/controller.ts:118)\nat /api/v2/invoices POST' },
+  { lvl:'error', msg:'StripeError: card_declined (insufficient_funds)', svc:'worker · billing', count:6, org:'Apex Tyres', t:'18m ago', trace:'at chargeSubscription (billing/charge.ts:77)\nat renewalCron.run (cron/renewals.ts:31)' },
+  { lvl:'warn', msg:'Xero rate limit reached, backing off', svc:'worker · xero-sync', count:9, org:'Apex Tyres', t:'22m ago', trace:'at XeroClient.request (integrations/xero/client.ts:204) — 429 Too Many Requests' },
+  { lvl:'error', msg:'Timeout connecting to SMS provider', svc:'worker · notifications', count:3, org:'—', t:'1h ago', trace:'at TwilioClient.send (sms/twilio.ts:55) — ETIMEDOUT after 10000ms' },
+  { lvl:'warn', msg:'Slow query: aged_receivables > 2000ms', svc:'api · reports', count:21, org:'North Panel & Paint', t:'2h ago', trace:'SELECT ... FROM invoices WHERE status = $1 — 2418ms' },
+  { lvl:'info', msg:'Deploy v1.13.0 completed', svc:'system', count:1, org:'—', t:'1d ago', trace:'release v1.13.0 · 0 failed health checks' },
+];
+const rows = document.getElementById('rows');
+rows.innerHTML = E.map((e,i)=>`
+  <tr class="err-row" onclick="document.getElementById('tr${i}').classList.toggle('hide')">
+    <td><span class="lvl ${e.lvl}">${e.lvl.toUpperCase()}</span></td>
+    <td><span class="msg">${e.msg}</span></td>
+    <td><span class="id">${e.svc}</span></td>
+    <td class="mono">${e.count}×</td>
+    <td><span style="color:var(--muted)">${e.org}</span></td>
+    <td class="r mono" style="color:var(--muted)">${e.t}</td>
+  </tr>
+  <tr id="tr${i}" class="hide"><td colspan="6" style="padding-top:0"><div class="trace"><span class="e">${e.msg}</span>\n<span class="f">${e.trace.replace(/\n/g,'\n')}</span></div></td></tr>
+`).join('');
+</script>
+<style>.hide{display:none}</style>
+</body>
+</html>

@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+.doc { background: var(--card); border: 1px solid var(--border); border-radius: var(--r-card); box-shadow: var(--shadow-card); padding: 40px; }
+.doc-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 34px; }
+.doc-brand { display: flex; align-items: center; gap: 12px; }
+.doc-brand .m { width: 40px; height: 40px; border-radius: 11px; background: var(--accent); display: grid; place-items: center; color: #fff; }
+.doc-brand .m svg { width: 22px; height: 22px; }
+.doc-brand .n { font-size: 18px; font-weight: 700; letter-spacing: -0.02em; }
+.doc-brand .a { font-size: 12.5px; color: var(--muted); line-height: 1.5; margin-top: 2px; }
+.doc-title { text-align: right; }
+.doc-title .lbl { font-family: var(--mono); font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted-2); }
+.doc-title .num { font-family: var(--mono); font-size: 22px; font-weight: 600; margin-top: 4px; }
+.doc-parties { display: grid; grid-template-columns: 1fr 1fr; gap: 30px; margin-bottom: 30px; }
+.party .lbl { font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted-2); margin-bottom: 8px; }
+.party .name { font-size: 15px; font-weight: 600; }
+.party .det { font-size: 13px; color: var(--muted); line-height: 1.6; margin-top: 3px; }
+.party.r { text-align: right; }
+.li-tbl { width: 100%; border-collapse: collapse; margin-bottom: 24px; }
+.li-tbl th { text-align: left; font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted-2); padding: 0 0 10px; border-bottom: 1.5px solid var(--border-strong); }
+.li-tbl th.r, .li-tbl td.r { text-align: right; }
+.li-tbl td { padding: 13px 0; border-bottom: 1px solid var(--border); font-size: 13.5px; vertical-align: top; }
+.li-tbl .desc { font-weight: 500; }
+.li-tbl .sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.doc-tot { display: flex; justify-content: flex-end; }
+.tot-box { width: 280px; }
+.tot-row { display: flex; justify-content: space-between; padding: 8px 0; font-size: 13.5px; }
+.tot-row .k { color: var(--muted); }
+.tot-row .v { font-family: var(--mono); font-weight: 500; }
+.tot-row.grand { border-top: 1.5px solid var(--border-strong); margin-top: 6px; padding-top: 12px; font-size: 17px; font-weight: 700; }
+.tot-row.grand .v { font-size: 17px; font-weight: 700; }
+.pay-banner { display: flex; align-items: center; gap: 12px; margin-top: 28px; padding: 14px 16px; background: var(--ok-soft); border-radius: var(--r-ctl); }
+.pay-banner svg { width: 20px; height: 20px; color: var(--ok); flex-shrink: 0; }
+.pay-banner .t { font-size: 13.5px; font-weight: 600; color: var(--ok); }
+.pay-banner .s { font-size: 12.5px; color: var(--muted); }
+.action-bar { display: flex; gap: 9px; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page" data-screen-label="Invoice detail">
+        <div class="crumbs"><a href="Invoices.html">Invoices</a><span class="sep">/</span><span style="color:var(--text)">INV-2039</span></div>
+        <div class="page-head">
+          <div>
+            <div style="display:flex;align-items:center;gap:12px"><h1>INV-2039</h1><span class="badge paid"><span class="b-dot"></span>Paid</span></div>
+            <p class="sub">Northland Freight · Issued 06 Nov 2025 · Paid 14 Nov 2025</p>
+          </div>
+          <div class="action-bar">
+            <button class="btn btn-ghost btn-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2M6 14h12v8H6z"/></svg>Print</button>
+            <button class="btn btn-ghost btn-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3"/></svg>PDF</button>
+            <button class="btn btn-ghost btn-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>Send</button>
+            <button class="btn btn-primary btn-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7m-1.5-9.5a2.1 2.1 0 113 3L12 19l-4 1 1-4 11.5-11.5z"/></svg>Edit</button>
+          </div>
+        </div>
+
+        <div class="detail-grid">
+          <!-- The document -->
+          <div class="doc">
+            <div class="doc-top">
+              <div class="doc-brand">
+                <div class="m"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg></div>
+                <div><div class="n">Kerikeri Motors</div><div class="a">14 Hone Heke Rd, Kerikeri 0230<br/>GST 102-845-771</div></div>
+              </div>
+              <div class="doc-title"><div class="lbl">Tax Invoice</div><div class="num">INV-2039</div></div>
+            </div>
+
+            <div class="doc-parties">
+              <div class="party"><div class="lbl">Billed to</div><div class="name">Northland Freight Ltd</div><div class="det">88 Port Rd, Whangarei 0110<br/>accounts@nlfreight.co.nz<br/>GST 118-220-904</div></div>
+              <div class="party r"><div class="lbl">Details</div><div class="det">Issued&nbsp;&nbsp;<b style="color:var(--text)">06 Nov 2025</b><br/>Due&nbsp;&nbsp;<b style="color:var(--text)">20 Nov 2025</b><br/>Job ref&nbsp;&nbsp;<b style="color:var(--text)">JC-1184</b></div></div>
+            </div>
+
+            <table class="li-tbl">
+              <thead><tr><th>Description</th><th class="r">Qty</th><th class="r">Unit</th><th class="r">GST</th><th class="r">Amount</th></tr></thead>
+              <tbody>
+                <tr><td><div class="desc">Fleet service — Isuzu NPR</div><div class="sub">Full service incl. filters & fluids</div></td><td class="r mono">3</td><td class="r mono">$420.00</td><td class="r mono">15%</td><td class="r mono">$1,260.00</td></tr>
+                <tr><td><div class="desc">Brake pads (front)</div><div class="sub">OEM · per axle set</div></td><td class="r mono">3</td><td class="r mono">$185.00</td><td class="r mono">15%</td><td class="r mono">$555.00</td></tr>
+                <tr><td><div class="desc">Engine oil 15W-40</div><div class="sub">Bulk · 20L</div></td><td class="r mono">2</td><td class="r mono">$148.00</td><td class="r mono">15%</td><td class="r mono">$296.00</td></tr>
+                <tr><td><div class="desc">Labour</div><div class="sub">Workshop · 14.5 hrs @ $95</div></td><td class="r mono">14.5</td><td class="r mono">$95.00</td><td class="r mono">15%</td><td class="r mono">$1,377.50</td></tr>
+              </tbody>
+            </table>
+
+            <div class="doc-tot"><div class="tot-box">
+              <div class="tot-row"><span class="k">Subtotal</span><span class="v">$3,488.50</span></div>
+              <div class="tot-row"><span class="k">GST 15%</span><span class="v">$523.28</span></div>
+              <div class="tot-row"><span class="k">Rounding</span><span class="v">−$0.28</span></div>
+              <div class="tot-row grand"><span class="k">Total NZD</span><span class="v">$4,011.50</span></div>
+            </div></div>
+
+            <div class="pay-banner">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+              <div><div class="t">Paid in full</div><div class="s">Bank transfer · 14 Nov 2025 · ref INV-2039</div></div>
+            </div>
+          </div>
+
+          <!-- Sidebar -->
+          <div class="stack">
+            <section class="card"><div class="card-body">
+              <div class="section-label">Summary</div>
+              <div class="meta-row"><span class="k">Status</span><span class="v"><span class="badge paid"><span class="b-dot"></span>Paid</span></span></div>
+              <div class="meta-row"><span class="k">Total</span><span class="v mono">$4,011.50</span></div>
+              <div class="meta-row"><span class="k">Paid</span><span class="v mono">$4,011.50</span></div>
+              <div class="meta-row"><span class="k">Balance</span><span class="v mono">$0.00</span></div>
+              <div class="meta-row"><span class="k">Customer</span><span class="v"><a href="CustomerDetail.html" style="color:var(--accent)">Northland Freight</a></span></div>
+              <div class="meta-row"><span class="k">Linked job</span><span class="v"><a href="JobCardDetail.html" style="color:var(--accent)">JC-1184</a></span></div>
+            </div></section>
+            <section class="card">
+              <div class="card-head"><h2>Activity</h2></div>
+              <div class="card-body">
+                <div class="timeline">
+                  <div class="tl-item accent"><div class="t">Payment received</div><div class="s">$4,011.50 · bank transfer</div><div class="time">14 Nov, 9:42am</div></div>
+                  <div class="tl-item"><div class="t">Invoice viewed</div><div class="s">by accounts@nlfreight.co.nz</div><div class="time">08 Nov, 2:15pm</div></div>
+                  <div class="tl-item"><div class="t">Invoice sent</div><div class="s">to accounts@nlfreight.co.nz</div><div class="time">06 Nov, 4:30pm</div></div>
+                  <div class="tl-item"><div class="t">Invoice created</div><div class="s">from job JC-1184 · by Arsh</div><div class="time">06 Nov, 4:28pm</div></div>
+                </div>
+              </div>
+            </section>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="invoices" data-title="Invoice INV-2039" data-primary="New invoice" data-primary-href="InvoiceCreate.html"></script>
+</body>
+</html>

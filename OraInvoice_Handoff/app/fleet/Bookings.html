@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="../ds.css" />
+<link rel="stylesheet" href="fleet.css" />
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Fleet portal bookings">
+        <div class="page-head"><div><h1>Service bookings</h1><p class="sub">Request and track workshop bookings for your fleet</p></div><div class="head-actions"><button class="btn btn-primary btn-sm" onclick="document.getElementById('m').classList.add('open')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>Request booking</button></div></div>
+        <div class="seg" style="margin-bottom:22px"><button class="on">Pending</button><button>Confirmed</button><button>Completed</button></div>
+        <section class="card"><div class="tbl-wrap"><table>
+          <thead><tr><th>Request</th><th>Vehicle</th><th>Service</th><th>Preferred date</th><th>Status</th></tr></thead>
+          <tbody>
+            <tr><td><span class="id">FB-88</span></td><td class="mono" style="font-weight:600">NPR-447</td><td>Brake inspection &amp; COF</td><td class="mono" style="color:var(--muted)">14 Nov</td><td><span class="badge pending"><span class="b-dot"></span>Pending</span></td></tr>
+            <tr><td><span class="id">FB-87</span></td><td class="mono" style="font-weight:600">JDC-991</td><td>WOF + service</td><td class="mono" style="color:var(--muted)">15 Nov</td><td><span class="badge info"><span class="b-dot"></span>Confirmed</span></td></tr>
+            <tr><td><span class="id">FB-85</span></td><td class="mono" style="font-weight:600">HBR-440</td><td>Cambelt replacement</td><td class="mono" style="color:var(--muted)">02 Nov</td><td><span class="badge completed"><span class="b-dot"></span>Completed</span></td></tr>
+          </tbody>
+        </table></div></section>
+      </div>
+    </main>
+  </div>
+</div>
+<div class="modal-scrim" id="m">
+  <div class="modal"><div class="modal-head"><h3>Request a booking</h3><button class="x" onclick="document.getElementById('m').classList.remove('open')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button></div>
+    <div class="modal-body"><div class="form-grid" style="grid-template-columns:1fr">
+      <div class="field"><label>Vehicle</label><select class="select"><option>NPR-447 · Isuzu NPR 400</option><option>NPR-220 · Isuzu NPR 300</option><option>HBR-012 · Hino 300</option></select></div>
+      <div class="field"><label>Service needed</label><input class="input" placeholder="e.g. WOF + brake inspection"></div>
+      <div class="field"><label>Preferred date</label><input class="input mono" value="14 / 11 / 2025"></div>
+      <div class="field"><label>Notes</label><textarea class="textarea" placeholder="Anything the workshop should know…"></textarea></div>
+    </div></div>
+    <div class="modal-foot"><button class="btn btn-quiet" onclick="document.getElementById('m').classList.remove('open')">Cancel</button><button class="btn btn-primary" onclick="document.getElementById('m').classList.remove('open');toast('Booking request sent.')">Send request</button></div>
+  </div>
+</div>
+<div class="toast ok" id="toast"></div>
+<script src="fleet-shell.js" data-active="bookings" data-title="Bookings"></script>
+<script>
+document.querySelectorAll('.seg button').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('.seg button').forEach(x=>x.classList.remove('on'));b.classList.add('on');}));
+document.querySelectorAll('.modal-scrim').forEach(s=>s.addEventListener('click',e=>{if(e.target===s)s.classList.remove('open');}));
+let tt;function toast(m){const t=document.getElementById('toast');t.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><span>'+m+'</span>';t.classList.add('show');clearTimeout(tt);tt=setTimeout(()=>t.classList.remove('show'),2400);}
+</script>
+</body>
+</html>

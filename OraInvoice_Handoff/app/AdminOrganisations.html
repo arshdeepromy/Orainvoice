@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+  .org-link { font-weight: 600; color: var(--accent); cursor: pointer; }
+  .org-link:hover { text-decoration: underline; }
+  .plan-pill { font-family: var(--mono); font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 20px; letter-spacing: .03em; }
+  .plan-pill.pro { background: var(--accent-soft); color: var(--accent); }
+  .plan-pill.multi { background: var(--purple-soft); color: var(--purple); }
+  .plan-pill.solo { background: #EEF0F4; color: var(--muted); }
+  .plan-pill.trial { background: var(--warn-soft); color: var(--warn); }
+  .mini-bar { width: 90px; height: 6px; border-radius: 20px; background: var(--border); overflow: hidden; }
+  .mini-bar > i { display: block; height: 100%; background: var(--accent); }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page page-wide" data-screen-label="Admin · Organisations">
+        <div class="page-head">
+          <div><div class="eyebrow">Platform admin</div><h1>Organisations</h1><p class="sub">Every tenant on the platform · 318 total</p></div>
+          <div class="head-actions">
+            <button class="btn btn-ghost btn-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14"/></svg>Export</button>
+            <button class="btn btn-primary btn-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>New organisation</button>
+          </div>
+        </div>
+
+        <div id="admin-nav" data-active="orgs"></div>
+
+        <div class="kpis">
+          <div class="kpi"><div class="top"><span class="label">Active orgs</span><span class="ico blue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21h18M5 21V7l8-4v18M19 21V11l-6-3"/></svg></span></div><div class="val">286</div><div class="delta up"><span>↗ 9</span><span class="since">this month</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">On trial</span><span class="ico amber"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></span></div><div class="val">24</div><div class="delta"><span class="since">8 ending this week</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">MRR</span><span class="ico green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg></span></div><div class="val"><span class="c">$</span>41.2<span class="c">k</span></div><div class="delta up"><span>↗ 6.4%</span><span class="since">vs last month</span></div></div>
+          <div class="kpi"><div class="top"><span class="label">Churned (30d)</span><span class="ico red"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></span></div><div class="val">3</div><div class="delta down"><span>1.0%</span><span class="since">churn rate</span></div></div>
+        </div>
+
+        <div class="toolbar">
+          <label class="search-input" style="flex:1;max-width:300px">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 21l-5-5m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+            <input id="search" type="text" placeholder="Search organisations…" />
+          </label>
+          <div class="seg" id="plan-seg">
+            <button class="on" data-f="">All plans</button>
+            <button data-f="solo">Solo</button>
+            <button data-f="pro">Pro</button>
+            <button data-f="multi">Multi-site</button>
+            <button data-f="trial">Trial</button>
+          </div>
+          <div class="spacer"></div>
+          <button class="filter-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M7 12h10M10 18h4"/></svg>Filters</button>
+        </div>
+
+        <section class="card">
+          <div class="tbl-wrap"><table>
+            <thead><tr><th>Organisation</th><th>Plan</th><th>Users</th><th>Seats used</th><th>Branch</th><th>MRR</th><th>Status</th><th class="r"></th></tr></thead>
+            <tbody id="rows"></tbody>
+          </table></div>
+          <div class="pagination">
+            <div class="info">Showing <span class="mono">1–10</span> of <span class="mono">318</span></div>
+            <div class="pg-btns"><button disabled>‹</button><button class="on">1</button><button>2</button><button>3</button><button>›</button></div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script src="shell.js" data-active="admin" data-title="Admin · Organisations"></script>
+<script src="admin-nav.js"></script>
+<script>
+const ORGS = [
+  { name:'Kerikeri Motors', id:'org_8f2a', plan:'pro', users:12, seats:12, cap:12, branch:'Kerikeri', mrr:'$79', status:'active', av:'#2F62F0' },
+  { name:'North Panel & Paint', id:'org_3c91', plan:'multi', users:34, seats:40, cap:50, branch:'4 branches', mrr:'$159', status:'active', av:'#6D5AE6' },
+  { name:'Sparky Co. Electrical', id:'org_77de', plan:'pro', users:8, seats:12, cap:12, branch:'Whangarei', mrr:'$79', status:'active', av:'#1F8A5B' },
+  { name:'BayPlumb Services', id:'org_a014', plan:'solo', users:1, seats:1, cap:1, branch:'Paihia', mrr:'$39', status:'active', av:'#B5740F' },
+  { name:'Tana Auto Electrical', id:'org_5b22', plan:'trial', users:3, seats:3, cap:12, branch:'Kaitaia', mrr:'$0', status:'trial', av:'#C8412F' },
+  { name:'FixIt NZ Ltd', id:'org_9e80', plan:'pro', users:9, seats:12, cap:12, branch:'Auckland', mrr:'$79', status:'active', av:'#2F62F0' },
+  { name:'Coastline Marine', id:'org_2f45', plan:'multi', users:21, seats:25, cap:50, branch:'3 branches', mrr:'$159', status:'active', av:'#6D5AE6' },
+  { name:'Hilltop Diesel', id:'org_6a18', plan:'solo', users:1, seats:1, cap:1, branch:'Kerikeri', mrr:'$39', status:'past_due', av:'#B5740F' },
+  { name:'Apex Tyres', id:'org_4d73', plan:'trial', users:2, seats:2, cap:12, branch:'Whangarei', mrr:'$0', status:'trial', av:'#1F8A5B' },
+  { name:'Westside Smash Repairs', id:'org_1c66', plan:'pro', users:11, seats:12, cap:12, branch:'Dargaville', mrr:'$79', status:'active', av:'#C8412F' },
+];
+const PLAN_LABEL = { solo:'Solo', pro:'Pro', multi:'Multi-site', trial:'Trial' };
+const STAT = { active:['active','Active'], trial:['warn','Trial'], past_due:['overdue','Past due'] };
+let filter = '';
+function render() {
+  const q = (document.getElementById('search').value || '').toLowerCase();
+  const list = ORGS.filter(o => (!filter || o.plan === filter) && o.name.toLowerCase().includes(q));
+  document.getElementById('rows').innerHTML = list.map(o => {
+    const pct = Math.round(o.seats / o.cap * 100);
+    const [sc, sl] = STAT[o.status];
+    return `<tr class="clickable" onclick="location.href='AdminOrgDetail.html'">
+      <td><div class="row-flex"><span class="avatar-sm" style="background:${o.av}">${o.name.split(' ').map(x=>x[0]).slice(0,2).join('')}</span><div class="cell-2"><span class="org-link">${o.name}</span><span class="s mono">${o.id}</span></div></div></td>
+      <td><span class="plan-pill ${o.plan}">${PLAN_LABEL[o.plan]}</span></td>
+      <td class="mono">${o.users}</td>
+      <td><div class="row-flex"><span class="mini-bar"><i style="width:${pct}%;background:${pct>=90?'var(--warn)':'var(--accent)'}"></i></span><span class="mono" style="font-size:12px;color:var(--muted)">${o.seats}/${o.cap}</span></div></td>
+      <td><span style="color:var(--muted)">${o.branch}</span></td>
+      <td class="amt">${o.mrr}</td>
+      <td><span class="badge ${sc}"><span class="b-dot"></span>${sl}</span></td>
+      <td class="r"><svg viewBox="0 0 24 24" width="16" fill="none" stroke="var(--muted-2)" stroke-width="2" style="vertical-align:middle"><path d="M9 18l6-6-6-6"/></svg></td>
+    </tr>`;
+  }).join('');
+}
+document.getElementById('search').addEventListener('input', render);
+document.querySelectorAll('#plan-seg button').forEach(b => b.addEventListener('click', () => {
+  document.querySelectorAll('#plan-seg button').forEach(x => x.classList.remove('on'));
+  b.classList.add('on'); filter = b.dataset.f; render();
+}));
+render();
+</script>
+</body>
+</html>

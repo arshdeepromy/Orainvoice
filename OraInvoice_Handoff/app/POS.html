@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+.pos { display: grid; grid-template-columns: 1fr 380px; height: 100%; }
+.pos-left { padding: var(--pad); overflow-y: auto; }
+.cat-row { display: flex; gap: 8px; margin-bottom: 18px; flex-wrap: wrap; }
+.cat { padding: 8px 15px; border-radius: 20px; border: 1px solid var(--border); background: var(--card); font-size: 13px; font-weight: 500; color: var(--muted); cursor: pointer; }
+.cat.on { background: var(--ink); color: #fff; border-color: var(--ink); }
+.prod-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+.prod { background: var(--card); border: 1px solid var(--border); border-radius: var(--r-card); padding: 15px; cursor: pointer; transition: border-color .14s, transform .05s; box-shadow: var(--shadow-card); }
+.prod:hover { border-color: var(--accent); }
+.prod:active { transform: scale(.98); }
+.prod .pico { width: 40px; height: 40px; border-radius: 11px; display: grid; place-items: center; margin-bottom: 12px; }
+.prod .pico svg { width: 20px; height: 20px; }
+.prod .pn { font-size: 13.5px; font-weight: 600; line-height: 1.3; }
+.prod .psku { font-family: var(--mono); font-size: 10.5px; color: var(--muted-2); margin-top: 3px; }
+.prod .pp { font-family: var(--mono); font-size: 15px; font-weight: 600; margin-top: 10px; }
+.prod .pstock { font-size: 11px; color: var(--ok); margin-top: 2px; }
+.cart { background: var(--card); border-left: 1px solid var(--border); display: flex; flex-direction: column; }
+.cart-head { padding: 18px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+.cart-head h2 { font-size: 16px; font-weight: 700; }
+.cart-items { flex: 1; overflow-y: auto; padding: 8px 0; }
+.citem { display: flex; align-items: center; gap: 12px; padding: 11px 20px; }
+.citem .ci-main { flex: 1; min-width: 0; }
+.citem .ci-n { font-size: 13.5px; font-weight: 600; }
+.citem .ci-s { font-family: var(--mono); font-size: 11.5px; color: var(--muted); margin-top: 1px; }
+.qty { display: flex; align-items: center; gap: 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.qty button { width: 26px; height: 28px; border: none; background: var(--card); color: var(--muted); font-size: 15px; }
+.qty button:hover { background: var(--canvas); color: var(--text); }
+.qty span { width: 30px; text-align: center; font-family: var(--mono); font-size: 13px; font-weight: 600; }
+.ci-amt { font-family: var(--mono); font-weight: 600; font-size: 13.5px; width: 64px; text-align: right; }
+.cart-foot { border-top: 1px solid var(--border); padding: 18px 20px; }
+.cf-row { display: flex; justify-content: space-between; padding: 5px 0; font-size: 13.5px; }
+.cf-row .k { color: var(--muted); } .cf-row .v { font-family: var(--mono); font-weight: 500; }
+.cf-row.grand { font-size: 22px; font-weight: 700; border-top: 1.5px solid var(--border-strong); margin-top: 8px; padding-top: 12px; }
+.cf-row.grand .v { font-size: 22px; }
+.pay-btns { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin-top: 16px; }
+.pay-btn { height: 52px; border-radius: var(--r-ctl); border: 1px solid var(--border); background: var(--card); font-size: 13.5px; font-weight: 600; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; }
+.pay-btn.cash:hover { border-color: var(--ok); color: var(--ok); }
+.pay-btn.card { grid-column: 1 / -1; background: var(--accent); color: #fff; border-color: var(--accent); height: 56px; font-size: 15px; box-shadow: 0 1px 2px rgba(16,24,40,.18), inset 0 1px 0 rgba(255,255,255,.14); }
+@media (max-width: 900px) { .pos { grid-template-columns: 1fr; } .cart { display: none; } }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content" style="overflow:hidden">
+      <div class="pos" data-screen-label="POS">
+        <div class="pos-left">
+          <div class="page-head" style="margin-bottom:16px">
+            <div><div class="eyebrow">Counter · BR-01</div><h1>Point of Sale</h1></div>
+            <div class="search-input" style="max-width:280px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 21l-5-5m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg><input placeholder="Scan or search SKU…" /></div>
+          </div>
+          <div class="cat-row"><div class="cat on">All</div><div class="cat">Oils & Fluids</div><div class="cat">Filters</div><div class="cat">Brakes</div><div class="cat">Tyres</div><div class="cat">Labour</div><div class="cat">Misc</div></div>
+          <div class="prod-grid" id="grid"></div>
+        </div>
+        <aside class="cart">
+          <div class="cart-head"><h2>Sale</h2><span class="badge neutral"><span class="b-dot"></span>Walk-in</span></div>
+          <div class="cart-items" id="cart"></div>
+          <div class="cart-foot">
+            <div class="cf-row"><span class="k">Subtotal</span><span class="v" id="sub">$0.00</span></div>
+            <div class="cf-row"><span class="k">GST 15%</span><span class="v" id="gst">$0.00</span></div>
+            <div class="cf-row grand"><span class="k">Total</span><span class="v" id="grand">$0.00</span></div>
+            <div class="pay-btns">
+              <button class="pay-btn cash"><span>Cash</span></button>
+              <button class="pay-btn">Account</button>
+              <button class="pay-btn card"><span>Card / EFTPOS</span></button>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="shell.js" data-active="pos" data-title="POS"></script>
+<script>
+function svg(d){return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="${d}"/></svg>`;}
+const ICO={oil:'M12 2v6m0 0l3 3m-3-3L9 8m-4 6a7 7 0 1014 0c0-3-2-5-4-7-1.5 2-3 3-4 5s-2 3-2 4z',filter:'M22 3H2l8 9.5V19l4 2v-8.5L22 3z',brake:'M12 2a10 10 0 100 20 10 10 0 000-20zm0 5a5 5 0 100 10 5 5 0 000-10z',tyre:'M12 2a10 10 0 100 20 10 10 0 000-20zm0 4a6 6 0 100 12 6 6 0 000-12z',labour:'M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.4-9.4a2 2 0 112.8 2.8L11.8 15H9v-2.8l8.6-8.6z'};
+const COL={oil:'green',filter:'blue',brake:'red',tyre:'amber',labour:'purple'};
+const P=[
+  {n:'Engine Oil 5W-30',sku:'OIL-530',p:62.00,k:'oil',st:'48 in stock'},
+  {n:'Oil Filter — Toyota',sku:'FLT-TY01',p:18.50,k:'filter',st:'120 in stock'},
+  {n:'Brake Pads Front',sku:'BRK-F22',p:185.00,k:'brake',st:'14 in stock'},
+  {n:'Tyre 205/55 R16',sku:'TYR-2055',p:149.00,k:'tyre',st:'32 in stock'},
+  {n:'Air Filter',sku:'FLT-AIR9',p:34.00,k:'filter',st:'56 in stock'},
+  {n:'Coolant 5L',sku:'OIL-CL5',p:42.00,k:'oil',st:'27 in stock'},
+  {n:'Labour — ½ hour',sku:'LAB-030',p:47.50,k:'labour',st:'—'},
+  {n:'Wiper Blades',sku:'MSC-WB2',p:29.00,k:'brake',st:'40 in stock'},
+  {n:'Spark Plugs ×4',sku:'IGN-SP4',p:56.00,k:'filter',st:'22 in stock'},
+];
+const CART=[{n:'Engine Oil 5W-30',sku:'OIL-530',p:62.00,q:2},{n:'Oil Filter — Toyota',sku:'FLT-TY01',p:18.50,q:1},{n:'Labour — ½ hour',sku:'LAB-030',p:47.50,q:3}];
+document.getElementById('grid').innerHTML=P.map((p,i)=>`<div class="prod" onclick="add(${i})"><div class="pico ${COL[p.k]}">${svg(ICO[p.k])}</div><div class="pn">${p.n}</div><div class="psku">${p.sku}</div><div class="pp">$${p.p.toFixed(2)}</div><div class="pstock">${p.st}</div></div>`).join('');
+function money(n){return '$'+n.toLocaleString('en-NZ',{minimumFractionDigits:2,maximumFractionDigits:2});}
+function renderCart(){
+  document.getElementById('cart').innerHTML=CART.map((c,i)=>`<div class="citem"><div class="ci-main"><div class="ci-n">${c.n}</div><div class="ci-s">${c.sku} · ${money(c.p)}</div></div><div class="qty"><button onclick="chg(${i},-1)">−</button><span>${c.q}</span><button onclick="chg(${i},1)">+</button></div><div class="ci-amt">${money(c.p*c.q)}</div></div>`).join('');
+  let sub=CART.reduce((s,c)=>s+c.p*c.q,0);const gst=sub*0.15;
+  document.getElementById('sub').textContent=money(sub);document.getElementById('gst').textContent=money(gst);document.getElementById('grand').textContent=money(sub+gst);
+}
+function add(i){const p=P[i];const e=CART.find(c=>c.sku===p.sku);if(e)e.q++;else CART.push({n:p.n,sku:p.sku,p:p.p,q:1});renderCart();}
+function chg(i,d){CART[i].q+=d;if(CART[i].q<=0)CART.splice(i,1);renderCart();}
+renderCart();
+document.querySelectorAll('.cat').forEach(c=>c.addEventListener('click',()=>{document.querySelectorAll('.cat').forEach(x=>x.classList.remove('on'));c.classList.add('on');}));
+</script>
+</body>
+</html>

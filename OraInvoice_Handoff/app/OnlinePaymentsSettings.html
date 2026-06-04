@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+.prow { display:flex; align-items:center; justify-content:space-between; gap:18px; padding:14px 0; border-bottom:1px solid var(--border); }
+.prow:last-child { border-bottom:none; }
+.prow .lab { font-size:13.5px; font-weight:500; }
+.prow .lab .d { font-size:12px; color:var(--muted); font-weight:400; margin-top:2px; }
+.prov { display:flex; align-items:center; gap:14px; padding:16px; border:1px solid var(--border); border-radius:var(--r-ctl); }
+.prov .logo { width:46px; height:46px; border-radius:11px; display:grid; place-items:center; font-weight:700; color:#fff; flex-shrink:0; }
+.method { display:flex; align-items:center; gap:12px; padding:13px 15px; border:1px solid var(--border); border-radius:var(--r-ctl); margin-bottom:9px; }
+.method .mi { width:40px; height:28px; border-radius:6px; background:var(--canvas); border:1px solid var(--border); display:grid; place-items:center; font-family:var(--mono); font-size:9px; font-weight:600; color:var(--muted); }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="sidebar"></div>
+  <div class="main">
+    <div id="topbar"></div>
+    <main class="content">
+      <div class="page" data-screen-label="Online payments settings">
+        <div class="crumbs"><a href="Settings.html">Settings</a><span class="sep">/</span><span style="color:var(--text)">Online payments</span></div>
+        <div class="page-head">
+          <div><div class="eyebrow">Settings</div><h1>Online payments</h1><p class="sub">Let customers pay invoices online by card, bank transfer or QR</p></div>
+          <div class="head-actions"><button class="btn btn-primary btn-sm" onclick="toast('Payment settings saved.')">Save changes</button></div>
+        </div>
+
+        <div style="max-width:760px;display:flex;flex-direction:column;gap:var(--gap)">
+          <section class="card">
+            <div class="card-head"><h2>Payment provider</h2><span class="badge active"><span class="b-dot"></span>Connected</span></div>
+            <div class="card-body" style="display:flex;flex-direction:column;gap:14px">
+              <div class="prov">
+                <span class="logo" style="background:#635BFF">S</span>
+                <div style="flex:1"><div style="font-size:14px;font-weight:600">Stripe</div><div style="font-size:12.5px;color:var(--muted)">acct_1Q8f…7Hd2 · NZD payouts to ANZ ••4471</div></div>
+                <button class="btn btn-ghost btn-sm">Manage</button>
+              </div>
+              <div class="prov" style="opacity:.85">
+                <span class="logo" style="background:#0B1220">W</span>
+                <div style="flex:1"><div style="font-size:14px;font-weight:600">Windcave</div><div style="font-size:12.5px;color:var(--muted)">Not connected · NZ-based card processing</div></div>
+                <button class="btn btn-ghost btn-sm">Connect</button>
+              </div>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-head"><h2>Accepted payment methods</h2></div>
+            <div class="card-body">
+              <div class="method"><span class="mi">CARD</span><div style="flex:1"><div style="font-size:13.5px;font-weight:600">Credit &amp; debit card</div><div style="font-size:12px;color:var(--muted)">Visa, Mastercard, Amex</div></div><button class="toggle on" onclick="this.classList.toggle('on')"></button></div>
+              <div class="method"><span class="mi">BANK</span><div style="flex:1"><div style="font-size:13.5px;font-weight:600">Bank transfer (POLi / account2account)</div><div style="font-size:12px;color:var(--muted)">Direct from customer's bank</div></div><button class="toggle on" onclick="this.classList.toggle('on')"></button></div>
+              <div class="method"><span class="mi">QR</span><div style="flex:1"><div style="font-size:13.5px;font-weight:600">QR code at counter</div><div style="font-size:12px;color:var(--muted)">Scan-to-pay on the customer's phone</div></div><button class="toggle on" onclick="this.classList.toggle('on')"></button></div>
+              <div class="method"><span class="mi">A&nbsp;L</span><div style="flex:1"><div style="font-size:13.5px;font-weight:600">Afterpay</div><div style="font-size:12px;color:var(--muted)">Buy-now-pay-later · 4 instalments</div></div><button class="toggle" onclick="this.classList.toggle('on')"></button></div>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-head"><h2>Surcharges</h2></div>
+            <div class="card-body" style="padding-top:6px">
+              <div class="prow"><div class="lab">Pass card fees to customer<div class="d">Adds a surcharge line to online card payments</div></div><button class="toggle on" onclick="this.classList.toggle('on')"></button></div>
+              <div class="prow"><div class="lab">Card surcharge rate</div><div class="input-group" style="width:120px"><input class="mono" value="1.9" style="text-align:right"><span class="pre" style="border-left:1px solid var(--border);border-right:none">%</span></div></div>
+              <div class="prow"><div class="lab">Minimum surcharge</div><div class="input-group" style="width:120px"><span class="pre">$</span><input class="mono" value="0.50"></div></div>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-head"><h2>Payout &amp; statements</h2></div>
+            <div class="card-body">
+              <div class="form-grid">
+                <div class="field"><label>Payout schedule</label><select class="select"><option>Daily (rolling)</option><option selected>Weekly · Mondays</option><option>Monthly</option></select></div>
+                <div class="field"><label>Statement descriptor</label><input class="input" value="KERIKERI MOTORS" maxlength="22"><div class="hint">Shows on the customer's bank statement (22 char max)</div></div>
+                <div class="field full"><label>Payment confirmation email</label><input class="input" value="accounts@kerikerimotors.co.nz"></div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+<div class="toast ok" id="toast"></div>
+<script src="shell.js" data-active="settings" data-title="Online payments"></script>
+<script>
+let tt;function toast(m){const t=document.getElementById('toast');t.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg><span>'+m+'</span>';t.classList.add('show');clearTimeout(tt);tt=setTimeout(()=>t.classList.remove('show'),2600);}
+</script>
+</body>
+</html>

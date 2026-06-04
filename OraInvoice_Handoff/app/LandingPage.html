@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en-NZ">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>OraInvoice · Workshop management for NZ trades</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="ds.css" />
+<style>
+  body { background: var(--card); }
+  .nav { position: sticky; top: 0; z-index: 30; background: rgba(255,255,255,.85); backdrop-filter: blur(10px); border-bottom: 1px solid var(--border); }
+  .nav .in { max-width: 1140px; margin: 0 auto; padding: 14px 24px; display: flex; align-items: center; gap: 28px; }
+  .nav .brand { display: flex; align-items: center; gap: 10px; }
+  .nav .brand .m { width: 32px; height: 32px; border-radius: 9px; background: var(--accent); display: grid; place-items: center; color: #fff; }
+  .nav .brand .m svg { width: 18px; height: 18px; }
+  .nav .brand .n { font-size: 16px; font-weight: 700; } .nav .brand .n .dim { color: var(--muted-2); font-weight: 500; }
+  .nav .links { display: flex; gap: 4px; margin-left: 8px; }
+  .nav .links a { padding: 8px 13px; border-radius: 8px; font-size: 13.5px; font-weight: 500; color: var(--muted); }
+  .nav .links a:hover { background: var(--canvas); color: var(--text); }
+  .nav .cta { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+  @media (max-width: 760px) { .nav .links { display: none; } }
+
+  .hero { max-width: 1140px; margin: 0 auto; padding: 72px 24px 56px; text-align: center; }
+  .hero .pill { display: inline-flex; align-items: center; gap: 8px; padding: 6px 13px; border-radius: 20px; background: var(--accent-soft); color: var(--accent); font-size: 12.5px; font-weight: 600; }
+  .hero h1 { font-size: 52px; font-weight: 700; letter-spacing: -.03em; line-height: 1.05; margin: 22px auto 0; max-width: 16ch; }
+  .hero h1 .grad { background: linear-gradient(120deg, var(--accent), var(--purple)); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+  .hero p { font-size: 18px; color: var(--muted); line-height: 1.6; margin: 22px auto 0; max-width: 56ch; }
+  .hero .actions { display: flex; gap: 12px; justify-content: center; margin-top: 30px; }
+  .hero .trust { display: flex; gap: 26px; justify-content: center; margin-top: 26px; font-size: 12.5px; color: var(--muted-2); flex-wrap: wrap; }
+  .hero .trust span { display: inline-flex; align-items: center; gap: 7px; }
+  .hero .trust svg { width: 15px; height: 15px; color: var(--ok); }
+  @media (max-width: 620px) { .hero h1 { font-size: 36px; } .hero { padding-top: 48px; } }
+
+  .shot { max-width: 1100px; margin: 0 auto; padding: 0 24px; }
+  .shot-frame { border: 1px solid var(--border); border-radius: 18px; overflow: hidden; box-shadow: 0 30px 80px -30px rgba(11,18,32,.4); background: var(--canvas); }
+  .shot-bar { height: 38px; background: var(--card); border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 7px; padding: 0 14px; }
+  .shot-bar i { width: 11px; height: 11px; border-radius: 50%; background: var(--border-strong); }
+  .shot-body { display: grid; grid-template-columns: 200px 1fr; height: 420px; }
+  .shot-sb { background: var(--sb-bg); padding: 16px 12px; }
+  .shot-sb .sl { height: 9px; border-radius: 4px; background: rgba(255,255,255,.07); margin-bottom: 11px; }
+  .shot-sb .sl.a { background: rgba(127,160,255,.35); width: 70%; }
+  .shot-main { padding: 24px; }
+  .shot-kpis { display: grid; grid-template-columns: repeat(4,1fr); gap: 14px; margin-bottom: 18px; }
+  .shot-kpi { border: 1px solid var(--border); border-radius: 12px; background: var(--card); padding: 14px; }
+  .shot-kpi .a { height: 8px; width: 50%; border-radius: 4px; background: var(--border-strong); margin-bottom: 12px; }
+  .shot-kpi .b { height: 18px; width: 70%; border-radius: 5px; background: var(--ink); }
+  .shot-chart { border: 1px solid var(--border); border-radius: 12px; background: var(--card); height: 200px; padding: 16px; display: flex; align-items: flex-end; gap: 10px; }
+  .shot-chart i { flex: 1; border-radius: 5px 5px 0 0; background: linear-gradient(var(--accent), var(--accent-soft)); }
+
+  .logos { max-width: 1000px; margin: 56px auto 0; padding: 0 24px; text-align: center; }
+  .logos .lbl { font-family: var(--mono); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted-2); }
+  .logos .row { display: flex; flex-wrap: wrap; justify-content: center; gap: 36px; margin-top: 18px; }
+  .logos .row b { font-size: 17px; font-weight: 700; color: var(--muted-2); letter-spacing: -.01em; }
+
+  .section { max-width: 1140px; margin: 0 auto; padding: 88px 24px; }
+  .section-head { text-align: center; max-width: 60ch; margin: 0 auto 48px; }
+  .section-head .eyebrow { justify-content: center; }
+  .section-head h2 { font-size: 36px; font-weight: 700; letter-spacing: -.02em; margin: 12px 0 0; }
+  .section-head p { font-size: 16px; color: var(--muted); margin: 14px 0 0; line-height: 1.6; }
+  .feat-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 20px; }
+  .feat { border: 1px solid var(--border); border-radius: var(--r-card); padding: 26px; transition: border-color .15s, box-shadow .15s; }
+  .feat:hover { border-color: var(--border-strong); box-shadow: var(--shadow-card); }
+  .feat .ic { width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center; margin-bottom: 16px; }
+  .feat .ic svg { width: 22px; height: 22px; }
+  .feat h3 { font-size: 17px; font-weight: 700; }
+  .feat p { font-size: 13.5px; color: var(--muted); line-height: 1.6; margin: 8px 0 0; }
+  @media (max-width: 880px) { .feat-grid { grid-template-columns: 1fr; } .section { padding: 56px 24px; } .shot-body { grid-template-columns: 1fr; } .shot-sb { display: none; } }
+
+  .price-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 20px; align-items: start; }
+  .pc { border: 1.5px solid var(--border); border-radius: var(--r-card); padding: 28px; position: relative; }
+  .pc.feat-plan { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+  .pc .pop { position: absolute; top: -12px; left: 50%; transform: translateX(-50%); background: var(--accent); color: #fff; font-size: 11px; font-weight: 600; font-family: var(--mono); letter-spacing: .05em; text-transform: uppercase; padding: 4px 12px; border-radius: 20px; }
+  .pc .pn { font-size: 16px; font-weight: 700; }
+  .pc .pp { font-family: var(--mono); font-size: 38px; font-weight: 600; letter-spacing: -.02em; margin: 12px 0 2px; }
+  .pc .pp small { font-size: 15px; color: var(--muted-2); font-weight: 500; }
+  .pc .pd { font-size: 13px; color: var(--muted); }
+  .pc ul { list-style: none; padding: 0; margin: 20px 0 24px; display: flex; flex-direction: column; gap: 11px; }
+  .pc ul li { font-size: 13.5px; display: flex; gap: 9px; align-items: flex-start; }
+  .pc ul li svg { width: 17px; height: 17px; color: var(--ok); flex-shrink: 0; margin-top: 1px; }
+  @media (max-width: 880px) { .price-grid { grid-template-columns: 1fr; } }
+
+  .cta-band { background: var(--sb-bg); background-image: radial-gradient(100% 120% at 50% 0%, rgba(47,98,240,.25), transparent 60%); border-radius: 24px; max-width: 1140px; margin: 0 auto 88px; padding: 64px 24px; text-align: center; color: #fff; }
+  .cta-band h2 { font-size: 36px; font-weight: 700; letter-spacing: -.02em; }
+  .cta-band p { color: rgba(255,255,255,.66); font-size: 16px; margin: 14px auto 0; max-width: 50ch; }
+  .footer { border-top: 1px solid var(--border); }
+  .footer .in { max-width: 1140px; margin: 0 auto; padding: 32px 24px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px; font-size: 12.5px; color: var(--muted); }
+  .footer .fl { display: flex; gap: 18px; } .footer .fl a:hover { color: var(--text); }
+  .eyebrow { display: inline-flex; }
+</style>
+</head>
+<body>
+<div class="nav"><div class="in">
+  <div class="brand"><div class="m"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h7l5 5v11a2 2 0 01-2 2z"/></svg></div><div class="n"><b>Ora</b><span class="dim">Invoice</span></div></div>
+  <div class="links"><a href="#features">Features</a><a href="#pricing">Pricing</a><a href="#">Trades</a><a href="#">Support</a></div>
+  <div class="cta"><a class="btn btn-ghost btn-sm" href="Login.html">Sign in</a><a class="btn btn-primary btn-sm" href="Signup.html">Start free trial</a></div>
+</div></div>
+
+<section class="hero">
+  <span class="pill"><svg viewBox="0 0 24 24" width="14" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 13l4 4L19 7"/></svg>Now with bank feeds &amp; Xero sync</span>
+  <h1>The workshop platform that <span class="grad">runs the whole job</span>.</h1>
+  <p>From booking to invoice to GST return — OraInvoice gives Kiwi workshops and trades one place to quote, schedule, track jobs, and get paid faster.</p>
+  <div class="actions">
+    <a class="btn btn-primary btn-lg" href="Signup.html">Start your free 14-day trial</a>
+    <a class="btn btn-ghost btn-lg" href="Dashboard.html"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 5v14l11-7z"/></svg>See it in action</a>
+  </div>
+  <div class="trust">
+    <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg>No card to start</span>
+    <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg>2,400+ NZ workshops</span>
+    <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg>GST &amp; IRD ready</span>
+  </div>
+</section>
+
+<div class="shot"><div class="shot-frame">
+  <div class="shot-bar"><i></i><i></i><i></i></div>
+  <div class="shot-body">
+    <div class="shot-sb"><div class="sl a"></div><div class="sl"></div><div class="sl"></div><div class="sl"></div><div class="sl" style="width:60%"></div><div class="sl"></div><div class="sl" style="width:80%"></div></div>
+    <div class="shot-main">
+      <div class="shot-kpis"><div class="shot-kpi"><div class="a"></div><div class="b"></div></div><div class="shot-kpi"><div class="a"></div><div class="b"></div></div><div class="shot-kpi"><div class="a"></div><div class="b"></div></div><div class="shot-kpi"><div class="a"></div><div class="b"></div></div></div>
+      <div class="shot-chart"><i style="height:45%"></i><i style="height:62%"></i><i style="height:55%"></i><i style="height:78%"></i><i style="height:70%"></i><i style="height:88%"></i><i style="height:95%"></i><i style="height:80%"></i><i style="height:100%"></i><i style="height:72%"></i></div>
+    </div>
+  </div>
+</div></div>
+
+<div class="logos"><div class="lbl">Trusted by workshops &amp; trades across Aotearoa</div>
+  <div class="row"><b>Kerikeri Motors</b><b>North Panel</b><b>Sparky Co.</b><b>BayPlumb</b><b>Tana Auto</b><b>FixIt NZ</b></div>
+</div>
+
+<section class="section" id="features">
+  <div class="section-head">
+    <span class="eyebrow" style="color:var(--accent)">Everything in one place</span>
+    <h2>Built for the way workshops actually work.</h2>
+    <p>Stop stitching together five apps and a spreadsheet. OraInvoice handles the whole job, start to finish.</p>
+  </div>
+  <div class="feat-grid">
+    <div class="feat"><div class="ic" style="background:var(--accent-soft);color:var(--accent)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h7l5 5v11a2 2 0 01-2 2z"/></svg></div><h3>Invoicing &amp; quotes</h3><p>GST-ready tax invoices and quotes in seconds. Send, track opens, and take card or bank payment online.</p></div>
+    <div class="feat"><div class="ic" style="background:var(--warn-soft);color:var(--warn)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.4-9.4a2 2 0 112.8 2.8L11.8 15H9v-2.8z"/></svg></div><h3>Job cards &amp; time</h3><p>Track every job from booking to sign-off. Log parts, labour and technician time against each vehicle.</p></div>
+    <div class="feat"><div class="ic" style="background:var(--purple-soft);color:var(--purple)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 7V3m8 4V3M3 11h18M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg></div><h3>Bookings &amp; scheduling</h3><p>An online booking calendar customers actually use, plus staff rosters and a clear view of bay capacity.</p></div>
+    <div class="feat"><div class="ic" style="background:var(--ok-soft);color:var(--ok)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10"/></svg></div><h3>Inventory &amp; parts</h3><p>Live stock levels, supplier purchase orders, and parts that flow straight onto the job and invoice.</p></div>
+    <div class="feat"><div class="ic" style="background:var(--accent-soft);color:var(--accent)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/></svg></div><h3>Banking &amp; GST</h3><p>Connect your bank, reconcile in a click, and file GST with confidence. Two-way Xero sync included.</p></div>
+    <div class="feat"><div class="ic" style="background:var(--danger-soft);color:var(--danger)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2"/></svg></div><h3>Reports that matter</h3><p>See revenue, technician productivity, aged receivables and job profitability — without exporting a thing.</p></div>
+  </div>
+</section>
+
+<section class="section" id="pricing" style="padding-top:0">
+  <div class="section-head">
+    <span class="eyebrow" style="color:var(--accent)">Simple pricing</span>
+    <h2>Plans that grow with your workshop.</h2>
+    <p>Start free for 14 days. No setup fees, no lock-in contracts. Prices in NZD, GST exclusive.</p>
+  </div>
+  <div class="price-grid">
+    <div class="pc"><div class="pn">Solo</div><div class="pp">$39<small>/mo</small></div><div class="pd">Owner-operators &amp; sole traders</div>
+      <ul><li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg>1 user · 1 branch</li><li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg>Invoices, quotes &amp; payments</li><li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg>GST returns</li></ul>
+      <a class="btn btn-ghost btn-block" href="Signup.html" style="width:100%">Start free trial</a>
+    </div>
+    <div class="pc feat-plan"><span class="pop">Most popular</span><div class="pn">Pro</div><div class="pp">$79<small>/mo</small></div><div class="pd">Growing workshops &amp; small teams</div>
+      <ul><li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg>Up to 12 users</li><li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg>Job cards, bookings &amp; time</li><li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg>Inventory &amp; purchase orders</li><li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg>Bank feeds &amp; Xero sync</li></ul>
+      <a class="btn btn-primary btn-block" href="Signup.html" style="width:100%">Start free trial</a>
+    </div>
+    <div class="pc"><div class="pn">Multi-site</div><div class="pp">$159<small>/mo</small></div><div class="pd">Franchises &amp; multi-branch groups</div>
+      <ul><li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg>Unlimited users &amp; branches</li><li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg>Roles &amp; branch permissions</li><li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg>Consolidated reporting</li><li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6L9 17l-5-5"/></svg>Priority support</li></ul>
+      <a class="btn btn-ghost btn-block" href="Signup.html" style="width:100%">Talk to sales</a>
+    </div>
+  </div>
+</section>
+
+<div class="cta-band">
+  <h2>Ready to run a tidier workshop?</h2>
+  <p>Set up in minutes and see where your time and money are really going. Free for 14 days.</p>
+  <div style="display:flex;gap:12px;justify-content:center;margin-top:26px;flex-wrap:wrap"><a class="btn btn-primary btn-lg" href="Signup.html">Start free trial</a><a class="btn btn-ghost btn-lg" href="Login.html" style="background:rgba(255,255,255,.08);color:#fff;border-color:rgba(255,255,255,.16)">Sign in</a></div>
+</div>
+
+<div class="footer"><div class="in">
+  <div class="brand" style="display:flex;align-items:center;gap:9px"><div style="width:26px;height:26px;border-radius:7px;background:var(--accent);display:grid;place-items:center;color:#fff"><svg viewBox="0 0 24 24" width="15" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h7l5 5v11a2 2 0 01-2 2z"/></svg></div><span style="font-weight:600;color:var(--text)">OraInvoice</span> · © 2025</div>
+  <div class="fl"><a href="#">Privacy</a><a href="#">Terms</a><a href="#">Security</a><a href="#">Status</a><a href="#">Contact</a></div>
+</div></div>
+</body>
+</html>
