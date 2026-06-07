@@ -279,6 +279,12 @@ class PpsrSearchResult(BaseModel):
     owner_check_type: str | None = None
     owner_check_match: bool | None = None
     owner_check_ref: str | None = None
+    # ``owner_check_submitted`` carries the verification details that were
+    # actually sent to CarJam for the check (sourced from the persisted
+    # ``options_json`` column). Only the fields relevant to the chosen
+    # ``owner_check_type`` are populated; values are echoed back as-is so
+    # the UI / PDF can render exactly what the user supplied.
+    owner_check_submitted: dict | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

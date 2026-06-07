@@ -70,37 +70,48 @@ p {
 /* ------------------------------------------------------------------
  * Running header — pinned to the @page top-center slot via
  * `position: running()`.
+ *
+ * Layout:
+ *   * If the org has a logo it sits on the LEFT at a generous size
+ *     (24 mm tall) so it's the visual anchor of every page.
+ *   * The org-name + address block sits to the right of the logo (or
+ *     fills the row when no logo is present), right-aligned so the
+ *     header still looks balanced when the logo cell is empty.
  * --------------------------------------------------------------- */
 
 .report-header {
   position: running(reportHeader);
   display: flex;
-  align-items: flex-start;
-  gap: 4mm;
-  padding-bottom: 2mm;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6mm;
+  padding-bottom: 3mm;
   border-bottom: 0.4pt solid #999;
   font-size: 9pt;
 }
 
 .report-header img.logo {
-  max-height: 16mm;
-  max-width: 36mm;
+  max-height: 22mm;
+  max-width: 50mm;
   object-fit: contain;
+  flex-shrink: 0;
 }
 
 .report-header .org-block {
-  flex: 1;
-  line-height: 1.35;
+  text-align: right;
+  line-height: 1.4;
 }
 
 .report-header .org-name {
   font-weight: 700;
-  font-size: 11pt;
+  font-size: 12pt;
+  color: #111;
+  margin-bottom: 0.5mm;
 }
 
 .report-header .org-line {
   font-size: 8.5pt;
-  color: #444;
+  color: #555;
 }
 
 /* ------------------------------------------------------------------
@@ -273,4 +284,17 @@ table.lines th {
   color: #555;
   white-space: pre-wrap;
   line-height: 1.4;
+}
+
+/* ------------------------------------------------------------------
+ * Ownership-verification provenance line — small, italic, sits
+ * directly under the pass/fail banner inside the section.
+ * --------------------------------------------------------------- */
+
+.provenance-line {
+  margin-top: 3mm;
+  font-size: 8.5pt;
+  color: #555;
+  line-height: 1.45;
+  font-style: italic;
 }

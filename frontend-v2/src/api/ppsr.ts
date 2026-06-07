@@ -127,6 +127,12 @@ export interface PpsrSearchResult {
   owner_check_type?: 'person_names' | 'person_dl' | 'company' | string | null
   owner_check_match?: boolean | null
   owner_check_ref?: string | null
+  /**
+   * The verification details the caller actually submitted to CarJam
+   * for this owner check (sourced from the persisted `options_json`).
+   * Only the fields relevant to `owner_check_type` are populated.
+   */
+  owner_check_submitted?: Record<string, unknown> | null
 }
 
 /**

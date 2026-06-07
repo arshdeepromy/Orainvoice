@@ -42,10 +42,17 @@ def resolve_logo_for_pdf(org) -> str | None:
         except Exception:
             logger.warning("Failed to base64-encode org logo, skipping")
 
-    # 2. Absolute URL from settings (e.g. legacy external URL)
+    # 2. Absolute URL or inline data URI from settings.
+    #    `data:image/...;base64,...` URIs are produced by the setup-wizard
+    #    when the org pastes / drops a logo image; WeasyPrint inlines them
+    #    natively (no HTTP fetch required), so they're a perfectly valid
+    #    source for the PDF header. Without this branch, orgs that uploaded
+    #    a logo via the wizard end up with text-only PDF headers.
     settings = getattr(org, "settings", None) or {}
     raw_url = settings.get("logo_url") or ""
-    if raw_url.startswith("http"):
+    if isinstance(raw_url, str) and (
+        raw_url.startswith("http") or raw_url.startswith("data:")
+    ):
         return raw_url
 
     # 3. No usable logo

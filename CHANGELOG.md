@@ -4,6 +4,27 @@ All notable changes to OraInvoice are documented in this file.
 
 ---
 
+## [1.22.0]
+
+### Fixed — CarJam Ownership Check polish
+
+- **Ownership check now hits the correct CarJam endpoint.** The owner_check call was being sent to `/api/car/` (the regular vehicle endpoint), which returned a vehicle response with no `owner_check` block and surfaced as `carjam_upstream_error`. Now correctly POSTs to `/api/owner-check/` per the CarJam developer docs.
+- **No more phantom "Match: Unknown" banner.** Owner-check-only searches no longer render a money-owing banner on the result panel or PDF — the report shows a neutral "No PPSR money-owing check performed" notice instead. The PPSR history table likewise shows a slate "No PPSR performed" pill in the Match column for owner-check-only rows. PPSR rows are unchanged.
+- **Verification details + provenance on the result panel.** The ownership-check card now carries the rego, the verification method (name / driver licence / company), every detail the user submitted to CarJam, the CarJam reference id, and an italic provenance line citing CarJam → NZ Motor Vehicle Register / Waka Kotahi NZTA.
+- **PDF export carries the same.** The exported PDF gains a dedicated "Ownership Verification" section with the rego prominently displayed, method, submitted details table, pass/fail banner, CarJam reference, and a NZTA provenance paragraph. Footer disclaimer updated to mention the Motor Vehicle Register.
+- **Workshop logo in PDF header.** Logos stored as `data:image/...` URIs in `settings.logo_url` (the wizard upload path) are now correctly inlined into the PDF header. Previously only `http(s)://` URLs and BYTEA blobs were accepted, so wizard-uploaded logos rendered as text only. Header layout retuned: bigger logo cell, right-aligned org block. Benefits every PDF that uses `resolve_logo_for_pdf` (invoices, quotes, payslips, PPSR).
+- **Single basic-vehicle fetch per search.** Owner-check-only searches now make one supplementary `lookup_vehicle` call so the report includes year/make/model/colour. PPSR + owner-check searches still make exactly two calls (one PPSR which already piggybacks `basic=1`, one owner_check) — never duplicated.
+
+### Frontend build
+
+- **`tsc -b` typecheck is now clean for production builds.** Two pre-existing test-file errors (`StaffList.test.tsx` unused `within` import and `OverviewTab.account.test.tsx` post-mock tuple destructuring) were blocking the static `vite build` on Pi PROD; the dev/standby Vite-dev stacks didn't catch them because they never run `tsc -b` in the boot path.
+
+### Deployment
+
+- **Pi PROD frontend-v2 served on port 8998 alongside legacy on 8999.** New `docker-compose.pi-v2.yml` + `nginx/nginx.pi-v2.conf` add a one-shot `frontend-v2-build` (vite build into `frontend_v2_pi_dist` named volume) and a lightweight `nginx-v2` (~50 MB RAM) that serves the static SPA with `Cache-Control: public, max-age=31536000, immutable` on hashed assets and `no-cache` on `index.html`. Cutover is at the Cloudflare Tunnel ingress layer; legacy `:8999` keeps running for instant rollback.
+
+---
+
 ## [1.21.0]
 
 ### Added — CarJam Ownership Check (owner_check)

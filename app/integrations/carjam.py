@@ -1430,7 +1430,7 @@ class CarjamClient:
             **per_type,
         }
 
-        url = f"{self._base_url}/api/car/"
+        url = f"{self._base_url}/api/owner-check/"
         log_params = {k: ("<redacted>" if k == "key" else v) for k, v in params.items()}
         logger.info("Carjam owner_check API call: URL=%s, params=%s", url, log_params)
 

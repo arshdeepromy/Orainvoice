@@ -135,6 +135,38 @@ function ownerCheckTypeLabel(type: string | null | undefined): string {
   return OWNER_CHECK_TYPE_LABELS[type] ?? 'Ownership check'
 }
 
+/**
+ * Project the submitted owner-check inputs into ordered `{label, value}`
+ * rows for display. Only the fields relevant to `type` are surfaced;
+ * unknown / missing inputs are skipped.
+ */
+function buildOwnerCheckRows(
+  type: string | null | undefined,
+  submitted: Record<string, unknown> | null | undefined,
+): Array<{ label: string; value: string }> {
+  if (!type || !submitted || typeof submitted !== 'object') return []
+  const get = (k: string): string => {
+    const v = (submitted as Record<string, unknown>)[k]
+    return typeof v === 'string' && v.trim().length > 0 ? v.trim() : ''
+  }
+  const rows: Array<{ label: string; value: string }> = []
+  if (type === 'person_names') {
+    const ln = get('owner_last_name')
+    const fn = get('owner_first_name')
+    const dob = get('owner_dob')
+    if (ln) rows.push({ label: 'Last name', value: ln })
+    if (fn) rows.push({ label: 'First name', value: fn })
+    if (dob) rows.push({ label: 'Date of birth', value: dob })
+  } else if (type === 'person_dl') {
+    const dl = get('owner_driver_licence')
+    if (dl) rows.push({ label: 'Driver licence number', value: dl })
+  } else if (type === 'company') {
+    const cn = get('owner_company_name')
+    if (cn) rows.push({ label: 'Company name', value: cn })
+  }
+  return rows
+}
+
 // ===========================================================================
 // Card / panel base classes (design.md §6.0)
 // ===========================================================================
@@ -178,7 +210,9 @@ export function PpsrResultPanel({
   const ownerCheckType = result?.owner_check_type ?? null
   const ownerCheckMatch = result?.owner_check_match ?? null
   const ownerCheckRef = result?.owner_check_ref ?? null
+  const ownerCheckSubmitted = result?.owner_check_submitted ?? null
   const hasOwnerCheck = ownerCheckType != null && ownerCheckMatch != null
+  const submittedRows = buildOwnerCheckRows(ownerCheckType, ownerCheckSubmitted)
 
   const style = styleForMatch(match)
   const cachedAtLabel = formatCachedAt(cachedAtIso)
@@ -188,13 +222,22 @@ export function PpsrResultPanel({
   const hasFinancingStatements = ppsrDetails.length > 0
   const hasWarnings = warnings.length > 0
 
+  // A PPSR money-owing check actually ran iff the row has a match code
+  // (Y/PY/M/PM/U/N), any financing statements, any warnings, or is a
+  // confirmed not_found result. Owner-check-only searches have none of
+  // these — for those we render a "No PPSR performed" notice instead
+  // of a misleading "Unknown" traffic-light banner.
+  const ppsrCheckRan =
+    !!match || hasFinancingStatements || hasWarnings || notFound
+
   return (
     <section
       className="space-y-4"
       aria-label="PPSR search result"
       data-testid="ppsr-result-panel"
     >
-      {/* 1. Money-owing banner ------------------------------------------- */}
+      {/* 1. Money-owing banner — only when a PPSR check actually ran. */}
+      {ppsrCheckRan ? (
       <div
         role="status"
         aria-live="polite"
@@ -242,6 +285,28 @@ export function PpsrResultPanel({
           </div>
         )}
       </div>
+      ) : (
+        <div
+          role="status"
+          aria-live="polite"
+          className="flex items-center justify-between gap-3 rounded-card border border-border bg-canvas px-4 py-2.5 text-sm text-muted"
+          data-testid="ppsr-no-ppsr-performed"
+        >
+          <span className="inline-flex items-center gap-2">
+            <span aria-hidden="true">ℹ</span>
+            <span>No PPSR money-owing check performed for this search.</span>
+          </span>
+          {cached && (
+            <span
+              className="inline-flex items-center gap-1 rounded-full border border-accent/40 bg-accent-soft px-2.5 py-0.5 text-xs font-medium text-accent"
+              data-testid="ppsr-cached-badge"
+            >
+              <span aria-hidden="true">ℹ</span>
+              Cached{cachedAtLabel ? ` at ${cachedAtLabel}` : ''}
+            </span>
+          )}
+        </div>
+      )}
 
       {/* 3. Basic vehicle summary ---------------------------------------- */}
       {basic && (
@@ -267,33 +332,77 @@ export function PpsrResultPanel({
 
       {/* 3b. Ownership check result -------------------------------------- */}
       {hasOwnerCheck && (
-        <div
-          className={`flex items-start gap-3 rounded-card border-2 p-4 ${
-            ownerCheckMatch
-              ? 'bg-ok-soft text-ok border-ok/40'
-              : 'bg-danger-soft text-danger border-danger/40'
-          }`}
-          role="status"
-          aria-live="polite"
-          data-testid="ppsr-owner-check"
-        >
-          <span className="text-2xl leading-none" aria-hidden="true">
-            {ownerCheckMatch ? '✅' : '❌'}
-          </span>
-          <div className="space-y-0.5">
-            <p className="text-base font-semibold">
-              {ownerCheckMatch ? 'Ownership confirmed' : 'Ownership not confirmed'}
-            </p>
-            <p className="text-sm opacity-90">
-              {ownerCheckMatch
-                ? 'The supplied details match the current registered owner.'
-                : 'The supplied details do not match the current registered owner.'}
-            </p>
-            <p className="text-xs opacity-75">
-              Check type: {ownerCheckTypeLabel(ownerCheckType)}
-              {ownerCheckRef ? ` · Ref: ${ownerCheckRef}` : ''}
-            </p>
+        <div className={CARD} data-testid="ppsr-owner-check">
+          <div className="flex items-center justify-between gap-3">
+            <h3 className={SECTION_TITLE}>Ownership Verification</h3>
+            <span
+              className="mono inline-flex items-center rounded-full border border-border bg-canvas px-2.5 py-0.5 text-xs font-medium text-muted"
+              aria-label={`Vehicle plate ${result?.rego ?? ''}`}
+            >
+              {result?.rego ?? '—'}
+            </span>
           </div>
+
+          {/* Pass/fail banner — primary visual outcome */}
+          <div
+            className={`mt-3 flex items-start gap-3 rounded-card border-2 p-4 ${
+              ownerCheckMatch
+                ? 'bg-ok-soft text-ok border-ok/40'
+                : 'bg-danger-soft text-danger border-danger/40'
+            }`}
+            role="status"
+            aria-live="polite"
+          >
+            <span className="text-2xl leading-none" aria-hidden="true">
+              {ownerCheckMatch ? '✅' : '❌'}
+            </span>
+            <div className="space-y-0.5">
+              <p className="text-base font-semibold">
+                {ownerCheckMatch ? 'Ownership confirmed' : 'Ownership not confirmed'}
+              </p>
+              <p className="text-sm opacity-90">
+                {ownerCheckMatch
+                  ? 'The supplied details match the current registered owner.'
+                  : 'The supplied details do not match the current registered owner.'}
+              </p>
+            </div>
+          </div>
+
+          {/* Method + submitted details — what we asked CarJam to verify */}
+          <dl className="mt-4 grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2">
+            <div className="flex flex-col gap-0.5 sm:col-span-2">
+              <dt className="text-xs font-medium uppercase tracking-wide text-muted-2">
+                Verification method
+              </dt>
+              <dd className="text-sm text-text">
+                {ownerCheckTypeLabel(ownerCheckType)}
+              </dd>
+            </div>
+            {submittedRows.map((row) => (
+              <div key={row.label} className="flex flex-col gap-0.5">
+                <dt className="text-xs font-medium uppercase tracking-wide text-muted-2">
+                  {row.label}
+                </dt>
+                <dd className="text-sm text-text break-words">{row.value}</dd>
+              </div>
+            ))}
+            {ownerCheckRef && (
+              <div className="flex flex-col gap-0.5 sm:col-span-2">
+                <dt className="text-xs font-medium uppercase tracking-wide text-muted-2">
+                  CarJam reference
+                </dt>
+                <dd className="mono text-sm text-text">{ownerCheckRef}</dd>
+              </div>
+            )}
+          </dl>
+
+          {/* Provenance — cite CarJam → NZTA Motor Vehicle Register */}
+          <p className="mt-4 border-t border-border pt-3 text-xs italic text-muted-2">
+            Verified via the CarJam API, accessing the official New Zealand
+            Motor Vehicle Register administered by Waka Kotahi NZ Transport
+            Agency (NZTA). Match reflects whether the supplied details
+            correspond to the current registered owner at the time of search.
+          </p>
         </div>
       )}
 

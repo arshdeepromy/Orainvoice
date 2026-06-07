@@ -46,6 +46,7 @@ from app.core.audit import write_audit_log
 from app.core.encryption import envelope_decrypt_str, envelope_encrypt
 from app.core.modules import ModuleService
 from app.integrations.carjam import (
+    CarjamError,
     CarjamNotFoundError,
     CarjamOwnerCheckNotAllowedError,
     CarjamOwnerCheckResponse,
@@ -384,6 +385,45 @@ class PpsrService:
                 except CarjamRateLimitError:
                     raise
 
+            # 7c. Basic vehicle data — fetched ONCE per search regardless of
+            #     which CarJam products were requested. The PPSR call already
+            #     piggybacks ``basic=1`` so we get vehicle info for free; an
+            #     owner-check-only search hits a separate CarJam endpoint that
+            #     returns no vehicle data, so we make a single supplementary
+            #     ``lookup_vehicle`` call to populate ``basic`` for reporting.
+            #
+            #     This keeps the report self-contained (year/make/model/colour
+            #     on every PDF + side-panel) and never duplicates the basic
+            #     fetch when both PPSR and owner-check are requested.
+            basic_supplement: dict[str, Any] | None = None
+            if owner_check_resp is not None and carjam_resp is None:
+                try:
+                    vehicle_data = await client.lookup_vehicle(rego_norm)
+                except CarjamNotFoundError:
+                    # Owner-check succeeded but the vehicle endpoint says
+                    # no record — leave basic empty rather than fail the
+                    # whole search; the owner-check result is still useful.
+                    basic_supplement = None
+                except CarjamRateLimitError:
+                    raise
+                except CarjamError as exc:
+                    # Don't fail the search on a basic-lookup hiccup —
+                    # log and continue with a None basic block.
+                    logger.warning(
+                        "Basic vehicle lookup failed during owner-check-only "
+                        "search for rego=%s: %s",
+                        rego_norm,
+                        exc,
+                    )
+                    basic_supplement = None
+                else:
+                    basic_supplement = {
+                        k: v
+                        for k, v in vehicle_data.__dict__.items()
+                        if k not in {"raw_xml", "raw_json"}
+                        and v is not None
+                    }
+
             # 8. Resolve vehicle link (read-only — G23).
             ov_id, gv_id = await self._resolve_vehicle_link(org_id, rego_norm)
 
@@ -394,6 +434,11 @@ class PpsrService:
                 payload_obj = _to_serialisable(carjam_resp)
             else:
                 payload_obj = {}
+                # Owner-check-only search: fold in the basic vehicle data
+                # we just fetched so the PDF + cached re-fetch can render
+                # year/make/model/colour exactly like a PPSR search would.
+                if basic_supplement:
+                    payload_obj["basic"] = basic_supplement
             if owner_check_resp is not None:
                 payload_obj["owner_check"] = {
                     "type": owner_check_resp.check_type,
@@ -500,7 +545,7 @@ class PpsrService:
                 },
             )
 
-            return self._build_fresh_result(search, carjam_resp)
+            return self._build_fresh_result(search, carjam_resp, basic_supplement)
 
     # ------------------------------------------------------------------
     # History + detail + admin
@@ -632,6 +677,9 @@ class PpsrService:
             owner_check_type=row.owner_check_type,
             owner_check_match=row.owner_check_match,
             owner_check_ref=row.owner_check_ref,
+            owner_check_submitted=PpsrService._extract_owner_check_submitted(
+                row.options_json, row.owner_check_type,
+            ),
         )
 
     async def forget_search(
@@ -978,6 +1026,38 @@ class PpsrService:
             return None
 
     @staticmethod
+    def _extract_owner_check_submitted(
+        options_json: Any,
+        owner_check_type: str | None,
+    ) -> dict | None:
+        """Project the relevant per-type input fields from ``options_json``.
+
+        Only the inputs that match the ``owner_check_type`` are surfaced
+        — keeps the response payload tight and avoids leaking unrelated
+        toggle flags into the UI / PDF.
+        """
+
+        if not owner_check_type or not isinstance(options_json, dict):
+            return None
+        out: dict[str, Any] = {"type": owner_check_type}
+        if owner_check_type == "person_names":
+            for k in ("owner_last_name", "owner_first_name", "owner_dob"):
+                v = options_json.get(k)
+                if isinstance(v, str) and v.strip():
+                    out[k] = v.strip()
+        elif owner_check_type == "person_dl":
+            v = options_json.get("owner_driver_licence")
+            if isinstance(v, str) and v.strip():
+                out["owner_driver_licence"] = v.strip()
+        elif owner_check_type == "company":
+            v = options_json.get("owner_company_name")
+            if isinstance(v, str) and v.strip():
+                out["owner_company_name"] = v.strip()
+        # If only the type was supplied (no real inputs), still return the
+        # bare type so the UI can show the method even on a recovered row.
+        return out
+
+    @staticmethod
     def _build_cached_result(row: PpsrSearch) -> PpsrSearchResult:
         """Build a ``PpsrSearchResult`` from a cached ORM row.
 
@@ -1002,13 +1082,23 @@ class PpsrService:
             owner_check_type=row.owner_check_type,
             owner_check_match=row.owner_check_match,
             owner_check_ref=row.owner_check_ref,
+            owner_check_submitted=PpsrService._extract_owner_check_submitted(
+                row.options_json, row.owner_check_type,
+            ),
         )
 
     @staticmethod
     def _build_fresh_result(
         row: PpsrSearch,
         carjam_resp: CarjamPpsrResponse | None,
+        basic_supplement: dict | None = None,
     ) -> PpsrSearchResult:
+        # The PPSR call already returns ``basic`` inside ``carjam_resp``;
+        # only fall back to the supplementary basic-only lookup when no
+        # PPSR call ran (owner-check-only searches).
+        basic_block = (
+            carjam_resp.basic if carjam_resp else None
+        ) or basic_supplement
         return PpsrSearchResult(
             search_id=row.id,
             rego=row.rego,
@@ -1022,13 +1112,16 @@ class PpsrService:
             ownership_history=carjam_resp.ownership_history if carjam_resp else None,
             current_owner=carjam_resp.current_owner if carjam_resp else None,
             warnings=list(carjam_resp.warnings or []) if carjam_resp else [],
-            basic=carjam_resp.basic if carjam_resp else None,
+            basic=basic_block,
             not_found=row.not_found,
             charges_cents=row.charges_cents,
             carjam_request_id=row.carjam_request_id,
             owner_check_type=row.owner_check_type,
             owner_check_match=row.owner_check_match,
             owner_check_ref=row.owner_check_ref,
+            owner_check_submitted=PpsrService._extract_owner_check_submitted(
+                row.options_json, row.owner_check_type,
+            ),
         )
 
 

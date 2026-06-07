@@ -301,6 +301,15 @@ export function PpsrHistoryTable({
             {(items ?? []).map((row) => {
               const chip = chipForMatch(row?.match ?? null)
               const isForgotten = row?.forgotten_at != null
+              // A PPSR money-owing check actually ran iff the row has a
+              // match code, statements, warnings, or is a confirmed
+              // not_found result. Owner-check-only searches show "No
+              // PPSR performed" instead of an "Unknown" pill.
+              const ppsrCheckRan =
+                !!row?.match ||
+                (row?.statement_count ?? 0) > 0 ||
+                row?.has_warnings === true ||
+                row?.not_found === true
               const userLabel =
                 (row as unknown as { user_display_name?: string | null })
                   ?.user_display_name ??
@@ -331,13 +340,22 @@ export function PpsrHistoryTable({
                     {row?.rego ?? '—'}
                   </td>
                   <td className="px-4 py-2 text-sm">
-                    <span
-                      className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium ${chip.className}`}
-                      aria-label={chip.label}
-                    >
-                      <span aria-hidden="true">{chip.glyph}</span>
-                      {chip.label}
-                    </span>
+                    {ppsrCheckRan ? (
+                      <span
+                        className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium ${chip.className}`}
+                        aria-label={chip.label}
+                      >
+                        <span aria-hidden="true">{chip.glyph}</span>
+                        {chip.label}
+                      </span>
+                    ) : (
+                      <span
+                        className="inline-flex items-center rounded-full border border-border-strong bg-canvas px-2.5 py-0.5 text-xs font-medium text-muted-2"
+                        aria-label="No PPSR check performed"
+                      >
+                        No PPSR performed
+                      </span>
+                    )}
                     {isForgotten && (
                       <span
                         className="ml-2 inline-flex items-center rounded-full border border-border-strong bg-canvas px-2 py-0.5 text-xs font-medium text-muted"

@@ -57,9 +57,11 @@
   </table>
 
   {#- ============================================================ -#}
-  {#- Money-owing banner — colour driven by `match` (CSS class)     -#}
+  {#- Money-owing banner — colour driven by `match` (CSS class).    -#}
+  {#- Skipped entirely on owner-check-only searches (no PPSR call). -#}
   {#- ============================================================ -#}
 
+  {% if money_owing %}
   <div class="banner {{ money_owing.css_class }}">
     <div class="banner-headline">{{ money_owing.headline }}</div>
     {% if money_owing.description %}
@@ -69,6 +71,7 @@
       <div class="banner-meta">Match code: {{ money_owing.match }} · Statements: {{ search.statement_count }}</div>
     {% endif %}
   </div>
+  {% endif %}
 
   {#- ============================================================ -#}
   {#- Vehicle summary (basic block from CarJam idh)                 -#}
@@ -157,6 +160,60 @@
   {% endif %}
 
   {#- ============================================================ -#}
+  {#- Ownership Verification (CarJam ``owner_check`` API product)   -#}
+  {#- Renders the verification method, the inputs the user actually -#}
+  {#- submitted, the pass/fail outcome, the CarJam audit ref, and a -#}
+  {#- provenance line citing CarJam → NZ Motor Vehicle Register.    -#}
+  {#- ============================================================ -#}
+
+  {% if ownership_check %}
+  <section class="section">
+    <h2>Ownership Verification</h2>
+    <table class="meta-grid">
+      <tr>
+        <td class="label">Vehicle plate</td>
+        <td class="value rego-value">{{ search.rego }}</td>
+        <td class="label">Verification method</td>
+        <td class="value">{{ ownership_check.method }}</td>
+      </tr>
+      {% if ownership_check.ref %}
+      <tr>
+        <td class="label">Reference</td>
+        <td class="value" colspan="3">{{ ownership_check.ref }}</td>
+      </tr>
+      {% endif %}
+    </table>
+
+    {% if ownership_check.submitted %}
+    <h3>Details submitted for verification</h3>
+    <table class="kv-table">
+      {% for row in ownership_check.submitted %}
+      <tr>
+        <td class="label">{{ row.label }}</td>
+        <td colspan="3">{{ row.value }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% endif %}
+
+    <div class="banner {{ ownership_check.match_css }}">
+      <div class="banner-headline">{{ ownership_check.match_label }}</div>
+      {% if ownership_check.match_description %}
+        <div class="banner-description">{{ ownership_check.match_description }}</div>
+      {% endif %}
+    </div>
+
+    <p class="provenance-line">
+      This ownership check was performed via the CarJam API, accessing the
+      official New Zealand Motor Vehicle Register administered by Waka Kotahi
+      NZ Transport Agency (NZTA). The match flag reflects whether the
+      details supplied above correspond to the current registered owner at
+      the time of this search.
+    </p>
+  </section>
+  {% endif %}
+
+  {#- ============================================================ -#}
   {#- Ownership history (gated on s241 lookup)                     -#}
   {#- ============================================================ -#}
 
@@ -214,8 +271,10 @@
 
   <div class="disclaimer">
     This PPSR report was generated via the CarJam API on {{ search.created_at_display }}.
-    It is current as at the search time only. Independent legal advice should be sought
-    before acting on this information.
+    CarJam is a licensed reseller of vehicle data sourced from the New Zealand Motor
+    Vehicle Register (administered by Waka Kotahi NZ Transport Agency) and the PPSR.
+    Information is current as at the search time only. Independent legal advice should
+    be sought before acting on this information.
   </div>
 
 </body>

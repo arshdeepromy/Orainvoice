@@ -733,7 +733,7 @@ class TestPpsrCounterResetSharedBoundary:
 # cap, surfacing as ``carjam_upstream_error``.
 
 
-from app.integrations.carjam import CarjamOwnerCheckResponse
+from app.integrations.carjam import CarjamOwnerCheckResponse, CarjamVehicleData
 
 
 class _FakeCarjamClientWithOwnerCheck:
@@ -742,6 +742,7 @@ class _FakeCarjamClientWithOwnerCheck:
     def __init__(self) -> None:
         self.ppsr_calls: list[dict] = []
         self.owner_check_calls: list[dict] = []
+        self.vehicle_calls: list[dict] = []
 
     async def lookup_ppsr(self, rego: str, **kwargs: Any) -> CarjamPpsrResponse:
         self.ppsr_calls.append({"rego": rego, **kwargs})
@@ -759,6 +760,21 @@ class _FakeCarjamClientWithOwnerCheck:
             charges_cents=155,
             raw_response="{}",
             requested_options={},
+        )
+
+    async def lookup_vehicle(self, rego: str) -> CarjamVehicleData:
+        # Owner-check-only searches make a single basic-vehicle call so
+        # the report can render year/make/model/colour. The PPSR path
+        # already includes basic data via ``lookup_ppsr`` so this is
+        # never called when ``ppsr_calls`` is non-empty.
+        self.vehicle_calls.append({"rego": rego})
+        return CarjamVehicleData(
+            rego=rego,
+            lookup_type="basic",
+            make="TOYOTA",
+            model="NOAH",
+            year=2014,
+            colour="GREY",
         )
 
 

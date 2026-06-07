@@ -110,6 +110,94 @@ _MATCH_HEADLINE = {
 
 
 # ---------------------------------------------------------------------------
+# Ownership-check (CarJam ``owner_check`` API product) presentation labels
+# ---------------------------------------------------------------------------
+
+# Human-readable labels for the verification method (mirrors the UI).
+_OWNER_CHECK_TYPE_LABELS: dict[str, str] = {
+    "person_names": "Person (name)",
+    "person_dl": "Driver's licence",
+    "company": "Company",
+}
+
+# Human-readable labels for each submitted field, by check type.
+_OWNER_CHECK_FIELD_LABELS: dict[str, dict[str, str]] = {
+    "person_names": {
+        "owner_last_name": "Last name",
+        "owner_first_name": "First name",
+        "owner_dob": "Date of birth",
+    },
+    "person_dl": {
+        "owner_driver_licence": "Driver licence number",
+    },
+    "company": {
+        "owner_company_name": "Company name",
+    },
+}
+
+
+def _build_ownership_check_ctx(
+    search: PpsrSearch, options_json: Any,
+) -> dict[str, Any] | None:
+    """Build the ``ownership_check`` context for the PDF template.
+
+    Returns ``None`` when no owner check was run for this search. When
+    a check was run, surfaces:
+
+      * ``method`` — human-readable check-type label
+      * ``method_code`` — raw enum value (for tests / debugging)
+      * ``submitted`` — list of ``{label, value}`` rows for the inputs
+        the user provided (only the fields relevant to the check type)
+      * ``match`` / ``match_label`` / ``match_css`` — pass/fail outcome
+      * ``ref`` — CarJam reference id (for audit traceability)
+    """
+
+    check_type = getattr(search, "owner_check_type", None)
+    match_val = getattr(search, "owner_check_match", None)
+    ref = getattr(search, "owner_check_ref", None)
+    if not check_type and match_val is None and not ref:
+        return None
+
+    submitted: list[dict[str, str]] = []
+    field_labels = _OWNER_CHECK_FIELD_LABELS.get(check_type or "", {})
+    if isinstance(options_json, dict):
+        for key, label in field_labels.items():
+            v = options_json.get(key)
+            if isinstance(v, str) and v.strip():
+                submitted.append({"label": label, "value": v.strip()})
+
+    if match_val is True:
+        match_label = "Ownership confirmed"
+        match_css = "banner-green"
+        match_description = (
+            "The supplied details match the current registered owner of this "
+            "vehicle in the NZ Motor Vehicle Register."
+        )
+    elif match_val is False:
+        match_label = "Ownership not confirmed"
+        match_css = "banner-red"
+        match_description = (
+            "The supplied details do NOT match the current registered owner "
+            "in the NZ Motor Vehicle Register."
+        )
+    else:
+        match_label = "Ownership check inconclusive"
+        match_css = "banner-grey"
+        match_description = ""
+
+    return {
+        "method": _OWNER_CHECK_TYPE_LABELS.get(check_type or "", "Ownership check"),
+        "method_code": check_type or "",
+        "submitted": submitted,
+        "match": match_val,
+        "match_label": match_label,
+        "match_css": match_css,
+        "match_description": match_description,
+        "ref": ref or "",
+    }
+
+
+# ---------------------------------------------------------------------------
 # Org context builder (design.md §4.3a — `settings` JSONB only, no columns)
 # ---------------------------------------------------------------------------
 
@@ -295,11 +383,26 @@ async def render_pdf(
     searcher_ctx = _build_searcher_ctx(user)
 
     # ---- Pull structured sections out of the decrypted payload ----
+    # A PPSR check ran iff the persisted payload includes the
+    # ``money_owing`` block (the PPSR call returns it; an owner-check-only
+    # search persists no such block). We use this as the gate to decide
+    # whether to render the money-owing banner — without it we'd emit a
+    # spurious "Match: Unknown" banner on owner-check-only searches.
     money_owing_raw = decrypted.get("money_owing")
-    money_owing_ctx = _build_money_owing_ctx(
-        money_owing_raw,
-        not_found=bool(getattr(search, "not_found", False)),
-    )
+    ppsr_check_ran = isinstance(money_owing_raw, dict) and bool(money_owing_raw)
+    money_owing_ctx: dict[str, Any] | None = None
+    if ppsr_check_ran:
+        money_owing_ctx = _build_money_owing_ctx(
+            money_owing_raw,
+            not_found=bool(getattr(search, "not_found", False)),
+        )
+    elif bool(getattr(search, "not_found", False)):
+        # Vehicle-not-found case still needs the placeholder banner so the
+        # report explains why no PPSR data is shown.
+        money_owing_ctx = _build_money_owing_ctx(
+            None,
+            not_found=True,
+        )
 
     basic = decrypted.get("basic") if isinstance(decrypted.get("basic"), dict) else {}
     ppsr_details = list(decrypted.get("ppsr_details") or [])
@@ -309,6 +412,14 @@ async def render_pdf(
         decrypted.get("current_owner"), dict,
     ) else None
     has_ownership = bool(ownership_history) or current_owner is not None
+
+    # Build the CarJam ``owner_check`` context (None when no check was
+    # run for this search). Reads the persisted ``options_json`` so the
+    # exact inputs the user submitted are echoed back into the PDF for
+    # audit / dispute resolution.
+    ownership_check_ctx = _build_ownership_check_ctx(
+        search, getattr(search, "options_json", None),
+    )
 
     # ---- Inline CSS so the template is self-contained ----
     css_path = _TEMPLATE_DIR / _CSS_FILE
@@ -342,6 +453,7 @@ async def render_pdf(
         ownership_history=ownership_history,
         current_owner=current_owner,
         has_ownership=has_ownership,
+        ownership_check=ownership_check_ctx,
         inline_css=inline_css,
     )
 
