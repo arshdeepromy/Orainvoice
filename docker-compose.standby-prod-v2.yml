@@ -1,0 +1,55 @@
+# =============================================================================
+# docker-compose.standby-prod-v2.yml  —  serve frontend-v2 on the Prod Standby
+# -----------------------------------------------------------------------------
+# Layer this on top of docker-compose.standby-prod.yml so the local Prod
+# Standby (project: invoicing-standby-prod, gateway: http://localhost:8082)
+# serves the REDESIGN (frontend-v2) instead of the archived legacy `frontend/`.
+#
+# Mirrors the DEV setup (docker-compose.dev-v2.yml + nginx.dev-v2.conf): a Vite
+# dev server for frontend-v2 behind the standby nginx gateway, with the source
+# bind-mounted for hot reload.
+#
+# USAGE:
+#   docker compose -p invoicing-standby-prod \
+#     -f docker-compose.standby-prod.yml \
+#     -f docker-compose.standby-prod-v2.yml \
+#     up -d --remove-orphans postgres redis app frontend-v2 nginx
+#
+# Note we OMIT the legacy `frontend` service from the `up` list so the archived
+# SPA does not run. The standby app/db/redis are unchanged.
+# =============================================================================
+
+services:
+  # Repoint the standby gateway at the v2 config (frontend-v2 at root) and make
+  # it depend on the redesign dev server instead of the legacy frontend build.
+  nginx:
+    volumes:
+      - ./nginx/nginx.dev-v2.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - app
+      - frontend-v2
+
+  # Redesigned SPA (frontend-v2) — Vite dev server on :5174, reached by nginx
+  # as http://frontend-v2:5174 on the standby compose network.
+  frontend-v2:
+    image: node:22-alpine
+    working_dir: /app
+    restart: unless-stopped
+    command: >
+      sh -c "if [ ! -d node_modules/vite ]; then (npm ci || npm install); fi &&
+             npm run dev -- --host 0.0.0.0 --port 5174"
+    environment:
+      - API_PROXY=http://app:8000
+      # HMR websocket travels through the standby gateway on host port 8082.
+      - HMR_HOST=localhost
+      - HMR_CLIENT_PORT=8082
+      - HMR_PROTOCOL=ws
+      - CHOKIDAR_USEPOLLING=true
+    volumes:
+      - ./frontend-v2:/app:delegated
+      - sbprod_frontend_v2_node_modules:/app/node_modules
+    expose:
+      - "5174"
+
+volumes:
+  sbprod_frontend_v2_node_modules:
