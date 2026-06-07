@@ -415,6 +415,28 @@ async def get_billing_dashboard(
     carjam_overage = max(0, carjam_used - carjam_included)
     carjam_overage_charge = carjam_overage * _CARJAM_OVERAGE_RATE_NZD
 
+    # PPSR overage charge — usage-based, mirroring Carjam. PPSR lookups are
+    # never hard-blocked when the module is enabled; usage beyond the plan's
+    # included quota is billed at the configured ``ppsr_per_check_cost_nzd``.
+    ppsr_included = plan.ppsr_lookups_included if plan else 0
+    ppsr_used = org.ppsr_lookups_this_month or 0
+    ppsr_overage = max(0, ppsr_used - ppsr_included)
+    ppsr_overage_charge = 0.0
+    if ppsr_overage > 0:
+        from app.modules.admin.service import get_carjam_ppsr_per_check_cost
+        ppsr_per_check_cost = await get_carjam_ppsr_per_check_cost(db)
+        ppsr_overage_charge = ppsr_overage * ppsr_per_check_cost
+
+    # Ownership (owner_check) overage charge — usage-based, mirroring PPSR.
+    owner_check_included = plan.owner_check_lookups_included if plan else 0
+    owner_check_used = org.owner_check_lookups_this_month or 0
+    owner_check_overage = max(0, owner_check_used - owner_check_included)
+    owner_check_overage_charge = 0.0
+    if owner_check_overage > 0:
+        from app.modules.admin.service import get_carjam_owner_check_per_check_cost
+        owner_check_cost = await get_carjam_owner_check_per_check_cost(db)
+        owner_check_overage_charge = owner_check_overage * owner_check_cost
+
     # SMS usage
     sms_included = plan.sms_included if plan else False
     sms_included_quota = plan.sms_included_quota if plan else 0
@@ -438,7 +460,7 @@ async def get_billing_dashboard(
 
     # Estimated next invoice — use interval effective price (computed below)
     # Placeholder; will be recalculated after interval pricing is computed.
-    estimated_total = plan_price + storage_addon_charge + carjam_overage_charge + sms_overage_charge
+    estimated_total = plan_price + storage_addon_charge + carjam_overage_charge + ppsr_overage_charge + owner_check_overage_charge + sms_overage_charge
 
     # Active coupon for this org
     active_coupon_code = None
@@ -478,7 +500,7 @@ async def get_billing_dashboard(
     equiv_monthly = compute_equivalent_monthly(interval_eff_price, current_interval)
 
     # Recalculate estimated total using the interval effective price (not raw monthly base)
-    estimated_total = float(interval_eff_price) + storage_addon_charge + carjam_overage_charge + sms_overage_charge
+    estimated_total = float(interval_eff_price) + storage_addon_charge + carjam_overage_charge + ppsr_overage_charge + owner_check_overage_charge + sms_overage_charge
 
     # Apply coupon discount on top of the interval effective price (Req 11.1, 11.2)
     if coupon_row:
@@ -498,7 +520,7 @@ async def get_billing_dashboard(
             float(interval_eff_price), discount_type, discount_value, coupon_is_expired,
         )
         # Use coupon-adjusted price for the estimated total
-        estimated_total = effective_price_nzd + storage_addon_charge + carjam_overage_charge + sms_overage_charge
+        estimated_total = effective_price_nzd + storage_addon_charge + carjam_overage_charge + ppsr_overage_charge + owner_check_overage_charge + sms_overage_charge
 
     # Past invoices from Stripe
     past_invoices: list[SubscriptionInvoiceResponse] = []
@@ -546,6 +568,12 @@ async def get_billing_dashboard(
         carjam_overage_charge_nzd=round(carjam_overage_charge, 2),
         carjam_lookups_used=carjam_used,
         carjam_lookups_included=carjam_included,
+        ppsr_overage_charge_nzd=round(ppsr_overage_charge, 2),
+        ppsr_lookups_used=ppsr_used,
+        ppsr_lookups_included=ppsr_included,
+        owner_check_overage_charge_nzd=round(owner_check_overage_charge, 2),
+        owner_check_lookups_used=owner_check_used,
+        owner_check_lookups_included=owner_check_included,
         storage_used_gb=round(storage_used_gb, 4),
         storage_quota_gb=org.storage_quota_gb,
         user_seats=plan.user_seats if plan else 0,
@@ -737,6 +765,8 @@ async def list_billing_receipts(
                 plan_amount_cents=r.plan_amount_cents,
                 sms_overage_cents=r.sms_overage_cents,
                 carjam_overage_cents=r.carjam_overage_cents,
+                ppsr_overage_cents=r.ppsr_overage_cents,
+                owner_check_overage_cents=r.owner_check_overage_cents,
                 storage_addon_cents=r.storage_addon_cents,
                 subtotal_excl_gst_cents=r.subtotal_excl_gst_cents,
                 gst_amount_cents=r.gst_amount_cents,
@@ -744,6 +774,8 @@ async def list_billing_receipts(
                 total_amount_cents=r.total_amount_cents,
                 sms_overage_count=r.sms_overage_count,
                 carjam_overage_count=r.carjam_overage_count,
+                ppsr_overage_count=r.ppsr_overage_count,
+                owner_check_overage_count=r.owner_check_overage_count,
                 storage_addon_gb=r.storage_addon_gb,
                 status=r.status,
                 created_at=r.created_at,

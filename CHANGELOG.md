@@ -4,6 +4,32 @@ All notable changes to OraInvoice are documented in this file.
 
 ---
 
+## [1.21.0]
+
+### Added — CarJam Ownership Check (owner_check)
+
+- **Ownership check on the PPSR search page.** A dedicated "Ownership check" option verifies a supplied identity against the current registered owner in the NZ Motor Vehicle Register via CarJam's `owner_check` API product. Three check types with dynamic per-type fields: person by name (last name + first name or DOB), person by NZ driver licence, or company name. Result is shown as a green "Ownership confirmed" / red "Ownership not confirmed" banner on the result panel and a Confirmed / Not confirmed chip in the search-history table.
+- **Separate product, separate request.** The `owner_check` product is independent from the PPSR / money-owing vehicle query. An ownership-check-only search no longer fires a PPSR lookup at all, so it never consumes the PPSR budget or hits the PPSR monthly cap. When both are requested they run as the two distinct CarJam products they are.
+- **Usage-based billing parity with PPSR.** New per-org `owner_check_lookups_this_month` counter against `subscription_plans.owner_check_lookups_included`; usage beyond the included quota is billed at the configurable `owner_check_per_check_cost_nzd`. Counter resets at the billing-cycle boundary alongside PPSR / CarJam. Receipts carry `owner_check_overage_cents` / `owner_check_overage_count`.
+- **Global Admin pricing field.** "Ownership check per-check cost (NZD)" on the CarJam integration page, with a dedicated inline Save button (mirrors the PPSR per-check cost field).
+- **Billing page tracking.** "Ownership checks this month" usage card and an "Ownership check overage" line on the next-bill estimate and past receipts, surfaced alongside the PPSR tracker.
+- **Plan editor.** Subscription plans expose an "Ownership checks" included-quota field.
+
+### Migrations
+
+- `0216_ppsr_owner_check` — adds `owner_check_type` / `owner_check_match` / `owner_check_ref` to `ppsr_searches`.
+- `0217_owner_check_billing` — adds `owner_check_lookups_this_month` (organisations), `owner_check_lookups_included` (subscription_plans), and `owner_check_overage_cents` / `owner_check_overage_count` (billing_receipts).
+
+---
+
+## [1.20.0]
+
+### Added
+
+- Send Email composer modal (web + mobile) — review and edit subject, body, recipients, and attachments before sending invoices, quotes, statements, and reminders.
+
+---
+
 ## [1.19.0]
 
 ### Added — PPSR Vehicle Checks Module

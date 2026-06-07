@@ -190,7 +190,9 @@ async def save_onboarding(
         403: {"description": "Org role required"},
     },
     summary="Get organisation settings and branding",
-    dependencies=[require_role("org_admin", "salesperson", "location_manager", "kiosk")],
+    # staff_member included so the org app shell (TenantContext branding) can
+    # load for staff — every authenticated role needs read access to branding.
+    dependencies=[require_role("org_admin", "salesperson", "location_manager", "kiosk", "staff_member")],
 )
 async def get_settings(
     request: Request,
@@ -325,7 +327,9 @@ async def update_settings(
         403: {"description": "Org role required"},
     },
     summary="List organisation branches",
-    dependencies=[require_role("org_admin", "salesperson")],
+    # staff_member included so the org app shell (BranchContext) can load the
+    # branch list for staff.
+    dependencies=[require_role("org_admin", "salesperson", "staff_member")],
 )
 async def get_branches(
     request: Request,
@@ -2015,3 +2019,120 @@ async def get_portal_analytics_endpoint(
 
     result = await get_portal_analytics(org_uuid)
     return result
+
+
+
+# ---------------------------------------------------------------------------
+# Clock-in / Overtime policy (R6 + G1 + G8 + G17)
+# ---------------------------------------------------------------------------
+# Settings → People → Clock-in Policy. The frontend hits these via
+# ``/api/v2/org/clock-in-policy`` (the org router is mounted under both
+# /api/v1/org and /api/v2/org in app/main.py).
+#
+# The two underlying JSONB columns + the typed ``overtime_handling`` enum
+# already exist on ``organisations`` (migration 0207); these endpoints just
+# expose the read/write surface the People settings page needs.
+
+
+from app.modules.organisations.schemas import (  # noqa: E402
+    ClockInPolicyResponse,
+    ClockInPolicyUpdateRequest,
+)
+from app.modules.organisations.service import (  # noqa: E402
+    get_clock_in_policy,
+    update_clock_in_policy,
+)
+
+
+@router.get(
+    "/clock-in-policy",
+    response_model=ClockInPolicyResponse,
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Org context / role required"},
+        404: {"description": "Organisation not found"},
+    },
+    summary="Get the org's clock-in + overtime policy",
+    dependencies=[require_role("org_admin", "salesperson", "location_manager")],
+)
+async def get_clock_in_policy_endpoint(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    org_id = getattr(request.state, "org_id", None)
+    if not org_id:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+    try:
+        org_uuid = uuid.UUID(org_id)
+    except (ValueError, TypeError):
+        return JSONResponse(
+            status_code=400, content={"detail": "Invalid org_id format"}
+        )
+    try:
+        data = await get_clock_in_policy(db, org_id=org_uuid)
+    except ValueError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    return ClockInPolicyResponse(**data)
+
+
+@router.put(
+    "/clock-in-policy",
+    response_model=ClockInPolicyResponse,
+    responses={
+        400: {"description": "Validation error"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org_Admin role required"},
+        404: {"description": "Organisation not found"},
+    },
+    summary="Update the org's clock-in + overtime policy",
+    dependencies=[require_role("org_admin")],
+)
+async def update_clock_in_policy_endpoint(
+    payload: ClockInPolicyUpdateRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    org_id = getattr(request.state, "org_id", None)
+    user_id = getattr(request.state, "user_id", None)
+    ip_address = getattr(request.state, "client_ip", None)
+
+    if not org_id:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+    try:
+        org_uuid = uuid.UUID(org_id)
+        user_uuid = uuid.UUID(user_id) if user_id else uuid.uuid4()
+    except (ValueError, TypeError):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid org_id or user_id format"},
+        )
+
+    # Pydantic v2 model_dump with exclude_unset gives only the keys the
+    # client actually sent — we then drop None values from the nested
+    # dicts so an explicit `null` on a nested field isn't mistaken for
+    # "set to null". The service already merges field-by-field so any
+    # nested key the client omitted keeps its existing value.
+    body = payload.model_dump(exclude_unset=True)
+    nested_clock = body.get("clock_in_policy")
+    nested_ot = body.get("overtime_policy")
+
+    try:
+        result = await update_clock_in_policy(
+            db,
+            org_id=org_uuid,
+            user_id=user_uuid,
+            ip_address=ip_address,
+            clock_in_policy=nested_clock if nested_clock is not None else None,
+            overtime_policy=nested_ot if nested_ot is not None else None,
+            overtime_handling=body.get("overtime_handling"),
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return ClockInPolicyResponse(**result)

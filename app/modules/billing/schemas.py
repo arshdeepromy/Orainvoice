@@ -110,6 +110,24 @@ class BillingDashboardResponse(BaseModel):
     carjam_lookups_included: int = Field(
         default=0, description="Carjam lookups included in plan"
     )
+    ppsr_overage_charge_nzd: float = Field(
+        default=0.0, description="PPSR overage charges accrued"
+    )
+    ppsr_lookups_used: int = Field(
+        default=0, description="PPSR lookups used this month"
+    )
+    ppsr_lookups_included: int = Field(
+        default=0, description="PPSR lookups included in plan"
+    )
+    owner_check_overage_charge_nzd: float = Field(
+        default=0.0, description="Ownership (owner_check) overage charges accrued"
+    )
+    owner_check_lookups_used: int = Field(
+        default=0, description="Ownership checks used this month"
+    )
+    owner_check_lookups_included: int = Field(
+        default=0, description="Ownership checks included in plan"
+    )
     storage_used_gb: float = Field(default=0.0, description="Storage used in GB")
     storage_quota_gb: int = Field(default=0, description="Total storage quota in GB")
     user_seats: int = Field(default=0, description="User seats included in plan")
@@ -518,6 +536,8 @@ class BillingReceiptResponse(BaseModel):
     plan_amount_cents: int
     sms_overage_cents: int = 0
     carjam_overage_cents: int = 0
+    ppsr_overage_cents: int = 0
+    owner_check_overage_cents: int = 0
     storage_addon_cents: int = 0
     subtotal_excl_gst_cents: int
     gst_amount_cents: int
@@ -525,6 +545,8 @@ class BillingReceiptResponse(BaseModel):
     total_amount_cents: int
     sms_overage_count: int = 0
     carjam_overage_count: int = 0
+    ppsr_overage_count: int = 0
+    owner_check_overage_count: int = 0
     storage_addon_gb: int = 0
     status: str
     created_at: datetime

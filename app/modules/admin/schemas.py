@@ -260,6 +260,12 @@ class CarjamConfigRequest(BaseModel):
     abcd_per_lookup_cost_nzd: float | None = Field(
         None, ge=0, description="Cost per ABCD (lower-cost) Carjam lookup in NZD"
     )
+    ppsr_per_check_cost_nzd: float | None = Field(
+        None, ge=0, description="Cost per PPSR (security interest) check in NZD"
+    )
+    owner_check_per_check_cost_nzd: float | None = Field(
+        None, ge=0, description="Cost per CarJam ownership (owner_check) check in NZD"
+    )
     global_rate_limit_per_minute: int | None = Field(
         None, gt=0, description="Maximum Carjam API calls per minute (platform-wide)"
     )
@@ -291,6 +297,8 @@ class CarjamConfigResponse(BaseModel):
     endpoint_url: str
     per_lookup_cost_nzd: float
     abcd_per_lookup_cost_nzd: float = 0.05
+    ppsr_per_check_cost_nzd: float = 2.00
+    owner_check_per_check_cost_nzd: float = 2.00
     global_rate_limit_per_minute: int
     api_key_last4: str = Field(
         ..., description="Last 4 chars of API key for display"
@@ -460,6 +468,9 @@ class PlanCreateRequest(BaseModel):
     ppsr_hidden_plate_lookups_included: int = Field(
         default=0, ge=0, description="PPSR hidden-plate lookups included per month"
     )
+    owner_check_lookups_included: int = Field(
+        default=0, ge=0, description="Ownership (owner_check) checks included per month"
+    )
     enabled_modules: list[str] = Field(default_factory=list, description="List of enabled feature modules")
     is_public: bool = Field(default=True, description="Visible on public signup page")
     storage_tier_pricing: list[StorageTierPricing] = Field(
@@ -493,6 +504,9 @@ class PlanUpdateRequest(BaseModel):
     ppsr_hidden_plate_lookups_included: int | None = Field(
         None, ge=0, description="PPSR hidden-plate lookups included per month"
     )
+    owner_check_lookups_included: int | None = Field(
+        None, ge=0, description="Ownership (owner_check) checks included per month"
+    )
     enabled_modules: list[str] | None = Field(None, description="List of enabled feature modules")
     is_public: bool | None = Field(None, description="Visible on public signup page")
     storage_tier_pricing: list[StorageTierPricing] | None = Field(
@@ -525,6 +539,7 @@ class PlanResponse(BaseModel):
     carjam_lookups_included: int
     ppsr_lookups_included: int = 0
     ppsr_hidden_plate_lookups_included: int = 0
+    owner_check_lookups_included: int = 0
     enabled_modules: list[str]
     is_public: bool
     is_archived: bool

@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db_session
 from app.modules.auth.rbac import require_role
+from app.modules.email_compose.schemas import QuoteSendOverrideRequest
 from app.modules.quotes.schemas import (
     QuoteCancelRequest,
     QuoteConvertResponse,
@@ -416,10 +417,13 @@ async def cancel_quote_endpoint(
     "/{quote_id}/send",
     response_model=QuoteSendResponse,
     responses={
-        400: {"description": "Quote cannot be sent in current status"},
+        400: {"description": "Quote cannot be sent / invalid attachment selection"},
         401: {"description": "Authentication required"},
         403: {"description": "Org role required"},
         404: {"description": "Quote not found"},
+        413: {"description": "Email too large"},
+        502: {"description": "Email provider authentication failed"},
+        503: {"description": "Delivery temporarily failed"},
     },
     summary="Send quote to customer",
     dependencies=[require_role("org_admin", "salesperson")],
@@ -427,20 +431,67 @@ async def cancel_quote_endpoint(
 async def send_quote_endpoint(
     quote_id: uuid.UUID,
     request: Request,
+    payload: QuoteSendOverrideRequest | None = None,
     db: AsyncSession = Depends(get_db_session),
 ):
     """Generate a branded PDF quote and email it to the customer.
 
     Transitions the quote from Draft to Sent status.
 
-    Requirements: 58.3
+    Backward compatible with a plain no-body call (byte-equivalent default
+    send). Also accepts the Send Email Modal override payload
+    (``recipients``/``cc``/``bcc``/``subject``/``body_html``/``attachments``/
+    ``subject_was_edited``/``body_was_edited``/``override_blocklist``).
+    ``override_blocklist`` is org_admin-gated (R13.5); attachment-token misses
+    map to 400; send failures map their ``failure_kind`` to the right HTTP
+    status (R8.5–R8.8).
+
+    Requirements: 58.3, 2.4, 7.6, 8.1, 8.3, 8.4, 8.5, 8.6, 8.7, 8.8, 8.9,
+                  8.10, 9.3, 11.2, 11.3, 11.5
     """
+    from app.modules.email_compose.service import (
+        EmailSendFailure,
+        InvalidAttachmentSelection,
+    )
+
     org_uuid, user_uuid, ip_address = _extract_org_context(request)
     if not org_uuid or not user_uuid:
         return JSONResponse(
             status_code=403,
             content={"detail": "Organisation context required"},
         )
+
+    recipients = None
+    cc = None
+    bcc = None
+    subject = None
+    body_html = None
+    attachments = None
+    subject_was_edited = False
+    body_was_edited = False
+    override_blocklist = False
+    if payload is not None:
+        recipients = payload.recipients
+        cc = payload.cc
+        bcc = payload.bcc
+        subject = payload.subject
+        body_html = payload.body_html
+        attachments = payload.attachments
+        subject_was_edited = payload.subject_was_edited
+        body_was_edited = payload.body_was_edited
+        override_blocklist = payload.override_blocklist
+
+    # Honour override_blocklist only for org_admin (R13.5).
+    if override_blocklist:
+        role = getattr(request.state, "role", None)
+        if role != "org_admin":
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "detail": "Only an organisation admin can override the "
+                    "bounce blocklist."
+                },
+            )
 
     try:
         result = await send_quote(
@@ -450,8 +501,29 @@ async def send_quote_endpoint(
             quote_id=quote_id,
             ip_address=ip_address,
             base_url=request.headers.get("origin") or None,
+            recipients=recipients,
+            cc=cc,
+            bcc=bcc,
+            subject=subject,
+            body_html=body_html,
+            attachments=attachments,
+            subject_was_edited=subject_was_edited,
+            body_was_edited=body_was_edited,
+            override_blocklist=override_blocklist,
         )
         await db.commit()
+    except InvalidAttachmentSelection:
+        await db.rollback()
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid attachment selection."},
+        )
+    except EmailSendFailure as exc:
+        await db.rollback()
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+        )
     except ValueError as exc:
         await db.rollback()
         error_msg = str(exc)

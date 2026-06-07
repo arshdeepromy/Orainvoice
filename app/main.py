@@ -691,6 +691,10 @@ def create_app() -> FastAPI:
     from app.modules.email_providers.router import router as email_providers_router
     app.include_router(email_providers_router, prefix="/api/v2/admin/email-providers", tags=["v2-admin-email-providers"])
 
+    # --- Email Compose (Send Email Modal preview endpoint) ---
+    from app.modules.email_compose.router import router as email_compose_router
+    app.include_router(email_compose_router, prefix="/api/v2", tags=["v2-email-compose"])
+
     # --- Public (no-auth) invoice sharing ---
     from app.modules.invoices.public_router import router as public_invoice_router
     app.include_router(public_invoice_router, prefix="/api/v1/public/invoice", tags=["public"])

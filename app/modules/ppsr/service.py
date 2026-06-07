@@ -47,14 +47,18 @@ from app.core.encryption import envelope_decrypt_str, envelope_encrypt
 from app.core.modules import ModuleService
 from app.integrations.carjam import (
     CarjamNotFoundError,
+    CarjamOwnerCheckNotAllowedError,
+    CarjamOwnerCheckResponse,
+    CarjamOwnerCheckValidationError,
     CarjamPpsrResponse,
     CarjamRateLimitError,
 )
 from app.modules.admin.models import GlobalVehicle, IntegrationConfig, Organisation
 from app.modules.ppsr.exceptions import (
     PpsrCarjamNotConfiguredError,
+    PpsrOwnerCheckNotAllowedError,
+    PpsrOwnerCheckValidationError,
     PpsrOwnerLookupsDisabledError,
-    PpsrQuotaExceededError,
     PpsrS241PurposeRequiredError,
     PpsrSearchForbiddenError,
     PpsrSearchForgottenError,
@@ -252,11 +256,14 @@ class PpsrService:
             cache_ttl_minutes = 5
         owner_enabled = bool(cfg_fields.get("ppsr_owner_lookups_enabled") or False)
 
-        # 3. Quota check — use the load_quota path so the response shape stays
-        # consistent.
+        # 3. Quota check — load the counters for informational use. PPSR
+        # mirrors CarJam billing: we do NOT hard-block when the plan's
+        # included quota is 0 or exhausted. The lookup proceeds and the
+        # monthly counter (incremented in step 10) drives usage-based overage
+        # billing in ``process_due_billings`` (per ``ppsr_per_check_cost_nzd``).
+        # The counter is still loaded so the response/quota endpoint stays
+        # consistent, but exhaustion no longer raises.
         quota = await self._load_quota(org_id)
-        if quota.used >= quota.included:
-            raise PpsrQuotaExceededError(used=quota.used, included=quota.included)
 
         # 4. Owner-lookup gating.
         wants_owner = bool(
@@ -301,40 +308,103 @@ class PpsrService:
                     return self._build_cached_result(cached)
 
             # 7. Call CarJam — map known errors into PPSR-typed outcomes.
+            # 7. Call CarJam — map known errors into PPSR-typed outcomes.
+            #
+            # The PPSR (money-owing / vehicle) lookup is OPTIONAL: it only
+            # fires when the request actually wants PPSR data (money owing,
+            # warnings, FWS, hidden-plate, or owner-reveal). An ownership-check
+            # ONLY search skips ``lookup_ppsr`` entirely so it never consumes
+            # the PPSR budget / hits the PPSR cap (the ``owner_check`` product
+            # is billed and capped separately by CarJam).
             client = await _load_carjam_client(self.db, self.redis)
-            try:
-                carjam_resp = await client.lookup_ppsr(
-                    rego_norm,
-                    include_owners=options.include_ownership_history,
-                    include_owner=options.include_current_owner,
-                    include_warnings=options.include_warnings,
-                    include_fws=options.include_fws,
-                    check_hidden_plates=options.check_hidden_plates,
-                    s241_purpose=effective_s241,
-                )
-            except CarjamNotFoundError:
-                # Persist the not-found row so the audit trail is intact and
-                # the quota is still consumed (the upstream call happened).
-                return await self._persist_not_found(
-                    org_id=org_id,
-                    user_id=user_id,
-                    rego=rego_norm,
-                    options=options,
-                    options_hash=options_hash,
-                )
-            except CarjamRateLimitError:
-                # Router maps this to HTTP 429 with Retry-After.
-                raise
+
+            wants_ppsr = bool(
+                options.include_money_owing
+                or options.include_warnings
+                or options.include_fws
+                or options.check_hidden_plates
+                or options.include_ownership_history
+                or options.include_current_owner
+            )
+            # If the caller asked for nothing PPSR-related and no owner check,
+            # default to a money-owing PPSR lookup (back-compat with the
+            # original "blank options = PPSR check" behaviour).
+            if not wants_ppsr and not options.owner_check_type:
+                wants_ppsr = True
+
+            carjam_resp: CarjamPpsrResponse | None = None
+            if wants_ppsr:
+                try:
+                    carjam_resp = await client.lookup_ppsr(
+                        rego_norm,
+                        include_owners=options.include_ownership_history,
+                        include_owner=options.include_current_owner,
+                        include_warnings=options.include_warnings,
+                        include_fws=options.include_fws,
+                        check_hidden_plates=options.check_hidden_plates,
+                        s241_purpose=effective_s241,
+                    )
+                except CarjamNotFoundError:
+                    # Persist the not-found row so the audit trail is intact and
+                    # the quota is still consumed (the upstream call happened).
+                    return await self._persist_not_found(
+                        org_id=org_id,
+                        user_id=user_id,
+                        rego=rego_norm,
+                        options=options,
+                        options_hash=options_hash,
+                    )
+                except CarjamRateLimitError:
+                    # Router maps this to HTTP 429 with Retry-After.
+                    raise
+
+            # 7b. Optional ownership check (CarJam ``owner_check`` product).
+            #     Runs as its own upstream call when the request asked for it.
+            #     Charges are folded into the persisted ``charges_cents`` so
+            #     overage billing captures the full cost of the search.
+            owner_check_resp: CarjamOwnerCheckResponse | None = None
+            if options.owner_check_type:
+                try:
+                    owner_check_resp = await client.lookup_owner_check(
+                        rego_norm,
+                        check_type=options.owner_check_type,
+                        last_name=options.owner_last_name,
+                        first_name=options.owner_first_name,
+                        dob=options.owner_dob,
+                        driver_licence=options.owner_driver_licence,
+                        company_name=options.owner_company_name,
+                    )
+                except ValueError as exc:
+                    # Pre-flight per-type field validation failed.
+                    raise PpsrOwnerCheckValidationError(str(exc)) from exc
+                except CarjamOwnerCheckValidationError as exc:
+                    raise PpsrOwnerCheckValidationError(str(exc)) from exc
+                except CarjamOwnerCheckNotAllowedError as exc:
+                    raise PpsrOwnerCheckNotAllowedError(str(exc)) from exc
+                except CarjamRateLimitError:
+                    raise
 
             # 8. Resolve vehicle link (read-only — G23).
             ov_id, gv_id = await self._resolve_vehicle_link(org_id, rego_norm)
 
-            # 9. Persist (encrypted).
-            payload_json = json.dumps(_to_serialisable(carjam_resp), default=str)
+            # 9. Persist (encrypted). When only an ownership check ran there is
+            #    no PPSR payload, so the encrypted blob holds just the
+            #    owner-check result and PPSR summary columns stay empty.
+            if carjam_resp is not None:
+                payload_obj = _to_serialisable(carjam_resp)
+            else:
+                payload_obj = {}
+            if owner_check_resp is not None:
+                payload_obj["owner_check"] = {
+                    "type": owner_check_resp.check_type,
+                    "match": owner_check_resp.match,
+                    "ref": owner_check_resp.ref,
+                }
+            payload_json = json.dumps(payload_obj, default=str)
             encrypted = envelope_encrypt(payload_json)
 
-            money_owing = carjam_resp.money_owing or {}
-            ppsr_summary = carjam_resp.ppsr_summary or {}
+            money_owing = (carjam_resp.money_owing if carjam_resp else None) or {}
+            ppsr_summary = (carjam_resp.ppsr_summary if carjam_resp else None) or {}
             # CarJam nests the count at ppsr_summary.search_result.@attributes.fs_count
             # OR at ppsr_summary.count (test fixtures). Handle both.
             statement_count = self._safe_int(ppsr_summary.get("count"))
@@ -343,7 +413,14 @@ class PpsrService:
                 if isinstance(sr, dict):
                     attrs = sr.get("@attributes") or sr
                     statement_count = self._safe_int(attrs.get("fs_count"))
-            statement_count = statement_count or len(carjam_resp.ppsr_details or [])
+            statement_count = statement_count or len(
+                (carjam_resp.ppsr_details if carjam_resp else None) or [],
+            )
+
+            # Fold the owner-check charge into the total charge for the search.
+            total_charges = carjam_resp.charges_cents if carjam_resp else None
+            if owner_check_resp is not None and owner_check_resp.charges_cents:
+                total_charges = (total_charges or 0) + owner_check_resp.charges_cents
 
             search = PpsrSearch(
                 org_id=org_id,
@@ -356,32 +433,51 @@ class PpsrService:
                 match=money_owing.get("match"),
                 match_description=money_owing.get("match_description"),
                 statement_count=statement_count,
-                has_warnings=bool(carjam_resp.warnings),
+                has_warnings=bool(carjam_resp.warnings) if carjam_resp else False,
                 has_ownership_data=bool(
                     carjam_resp.ownership_history or carjam_resp.current_owner,
-                ),
+                ) if carjam_resp else False,
                 response_encrypted=encrypted,
-                charges_cents=carjam_resp.charges_cents,
-                not_found=bool(carjam_resp.not_found),
-                carjam_request_id=_extract_request_id(carjam_resp.raw_xml),
+                charges_cents=total_charges,
+                not_found=bool(carjam_resp.not_found) if carjam_resp else False,
+                carjam_request_id=_extract_request_id(
+                    carjam_resp.raw_xml if carjam_resp else None,
+                ),
+                owner_check_type=(
+                    owner_check_resp.check_type if owner_check_resp else None
+                ),
+                owner_check_match=(
+                    owner_check_resp.match if owner_check_resp else None
+                ),
+                owner_check_ref=(
+                    owner_check_resp.ref if owner_check_resp else None
+                ),
             )
             self.db.add(search)
 
-            # 10. Increment quota counters atomically (G44).
-            update_values: dict[str, Any] = {
-                "ppsr_lookups_this_month": (
+            # 10. Increment quota counters atomically (G44). Only bump the PPSR
+            #     counter when a PPSR lookup actually ran.
+            update_values: dict[str, Any] = {}
+            if carjam_resp is not None:
+                update_values["ppsr_lookups_this_month"] = (
                     Organisation.ppsr_lookups_this_month + 1
-                ),
-            }
-            if options.check_hidden_plates:
-                update_values["ppsr_hidden_plate_lookups_this_month"] = (
-                    Organisation.ppsr_hidden_plate_lookups_this_month + 1
                 )
-            await self.db.execute(
-                update(Organisation)
-                .where(Organisation.id == org_id)
-                .values(**update_values),
-            )
+                if options.check_hidden_plates:
+                    update_values["ppsr_hidden_plate_lookups_this_month"] = (
+                        Organisation.ppsr_hidden_plate_lookups_this_month + 1
+                    )
+            # Owner-check is a separately-billed CarJam product — count it on
+            # its own monthly counter when the search ran one.
+            if owner_check_resp is not None:
+                update_values["owner_check_lookups_this_month"] = (
+                    Organisation.owner_check_lookups_this_month + 1
+                )
+            if update_values:
+                await self.db.execute(
+                    update(Organisation)
+                    .where(Organisation.id == org_id)
+                    .values(**update_values),
+                )
 
             await self.db.flush()
             await self.db.refresh(search)
@@ -400,6 +496,7 @@ class PpsrService:
                     "match": search.match,
                     "statement_count": search.statement_count,
                     "charges_cents": search.charges_cents,
+                    "owner_check_match": search.owner_check_match,
                 },
             )
 
@@ -532,6 +629,9 @@ class PpsrService:
             not_found=row.not_found,
             charges_cents=row.charges_cents,
             carjam_request_id=row.carjam_request_id,
+            owner_check_type=row.owner_check_type,
+            owner_check_match=row.owner_check_match,
+            owner_check_ref=row.owner_check_ref,
         )
 
     async def forget_search(
@@ -711,8 +811,9 @@ class PpsrService:
         )
         row = (await self.db.execute(stmt)).first()
         if row is None:
-            # No org / plan resolution — quota effectively zero, treat as
-            # exhausted so the caller raises ``PpsrQuotaExceededError``.
+            # No org / plan resolution — report zero quota. Lookups are no
+            # longer hard-blocked on exhaustion (CarJam-parity overage
+            # billing), so this just yields a 0/0 quota strip.
             return PpsrQuotaResponse(used=0, included=0)
         used, hidden_used, resets_at, included, hidden_included = row
         return PpsrQuotaResponse(
@@ -898,12 +999,15 @@ class PpsrService:
             not_found=row.not_found,
             charges_cents=row.charges_cents,
             carjam_request_id=row.carjam_request_id,
+            owner_check_type=row.owner_check_type,
+            owner_check_match=row.owner_check_match,
+            owner_check_ref=row.owner_check_ref,
         )
 
     @staticmethod
     def _build_fresh_result(
         row: PpsrSearch,
-        carjam_resp: CarjamPpsrResponse,
+        carjam_resp: CarjamPpsrResponse | None,
     ) -> PpsrSearchResult:
         return PpsrSearchResult(
             search_id=row.id,
@@ -914,14 +1018,17 @@ class PpsrService:
             match=row.match,
             match_description=row.match_description,
             statement_count=row.statement_count,
-            ppsr_details=list(carjam_resp.ppsr_details or []),
-            ownership_history=carjam_resp.ownership_history,
-            current_owner=carjam_resp.current_owner,
-            warnings=list(carjam_resp.warnings or []),
-            basic=carjam_resp.basic,
+            ppsr_details=list(carjam_resp.ppsr_details or []) if carjam_resp else [],
+            ownership_history=carjam_resp.ownership_history if carjam_resp else None,
+            current_owner=carjam_resp.current_owner if carjam_resp else None,
+            warnings=list(carjam_resp.warnings or []) if carjam_resp else [],
+            basic=carjam_resp.basic if carjam_resp else None,
             not_found=row.not_found,
             charges_cents=row.charges_cents,
             carjam_request_id=row.carjam_request_id,
+            owner_check_type=row.owner_check_type,
+            owner_check_match=row.owner_check_match,
+            owner_check_ref=row.owner_check_ref,
         )
 
 

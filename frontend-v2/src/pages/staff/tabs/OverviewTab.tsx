@@ -29,11 +29,16 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import apiClient from '@/api/client'
+import { Badge } from '@/components/ui'
 import WorkSchedule, { type WeekSchedule } from '@/components/WorkSchedule'
 import MinimumWageWarningModal from '../components/MinimumWageWarningModal'
 import PayRateHistoryPanel from '../components/PayRateHistoryPanel'
 import RecurringAllowancesPanel from '../components/RecurringAllowancesPanel'
+import ThisMonthPanel from '../components/ThisMonthPanel'
+import CreateAccountModal from '../components/CreateAccountModal'
+import { getStaffMonthStats, type StaffMonthStats } from '@/api/staff'
 
 // ---------------------------------------------------------------------------
 // Types — mirrors `app/modules/staff/schemas.py::StaffMemberResponse`.
@@ -192,6 +197,21 @@ function isMaskedIrd(v: string | null | undefined): boolean {
 function isMaskedBank(v: string | null | undefined): boolean {
   if (!v) return false
   return MASKED_BANK_RE.test(v.trim())
+}
+
+/**
+ * Format an ISO timestamp (e.g. users.last_login_at) to a readable date.
+ * Returns "—" for null/empty/unparseable values (R9.4).
+ */
+function formatLastSignIn(iso: string | null | undefined): string {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return '—'
+  return d.toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  })
 }
 
 function staffToForm(s: StaffMember): FormState {
@@ -495,6 +515,16 @@ export default function OverviewTab({ staffId, onDirtyChange }: OverviewTabProps
   const [quickStartDate, setQuickStartDate] = useState('')
   const [quickSaving, setQuickSaving] = useState(false)
 
+  // Month stats — lifted here so both the This-month panel and the Account
+  // panel share a single fetch (single source, R8.6). Keyed on staffId with
+  // an AbortController (R8.7).
+  const [monthStats, setMonthStats] = useState<StaffMonthStats | null>(null)
+  const [monthStatsFailed, setMonthStatsFailed] = useState(false)
+
+  // Create-account modal (R9.5, R9.6) — opened from the Account panel when
+  // the staff member has no linked user account.
+  const [createAccountOpen, setCreateAccountOpen] = useState(false)
+
   // ------------------------------------------------------------------
   // Load staff. AbortController on every useEffect.
   // ------------------------------------------------------------------
@@ -530,6 +560,32 @@ export default function OverviewTab({ staffId, onDirtyChange }: OverviewTabProps
     void loadStaff(controller.signal)
     return () => controller.abort()
   }, [loadStaff])
+
+  // ------------------------------------------------------------------
+  // Month stats fetch — single source shared by the This-month panel and
+  // the Account panel (R8.6). Keyed on staffId; aborts on unmount / change.
+  // ------------------------------------------------------------------
+  useEffect(() => {
+    const controller = new AbortController()
+    setMonthStats(null)
+    setMonthStatsFailed(false)
+    const fetchStats = async () => {
+      try {
+        const data = await getStaffMonthStats(
+          staffId,
+          'this_month',
+          controller.signal,
+        )
+        if (controller.signal.aborted) return
+        setMonthStats(data)
+      } catch (err) {
+        if (controller.signal.aborted) return
+        setMonthStatsFailed(true)
+      }
+    }
+    void fetchStats()
+    return () => controller.abort()
+  }, [staffId])
 
   // ------------------------------------------------------------------
   // Dirty checker registration for the parent shell.
@@ -665,40 +721,87 @@ export default function OverviewTab({ staffId, onDirtyChange }: OverviewTabProps
     )
   }
 
+  // Class constants restyled to the StaffDetail.html design language
+  // (.input / .ro / .field label / .card / .sec-head). Shared across every
+  // card so the whole tab matches the prototype from one place.
   const inputCls =
-    'w-full rounded-ctl border border-border bg-card px-3 py-2 text-sm text-text focus:border-accent focus:outline-none focus:shadow-[0_0_0_3px_var(--accent-soft)]'
+    'h-[42px] w-full rounded-ctl border border-border-strong bg-card px-[13px] text-[13.5px] text-text focus:border-accent focus:outline-none focus:shadow-[0_0_0_3px_var(--accent-soft)]'
   const readonlyCls =
-    'w-full rounded-ctl border border-border bg-canvas px-3 py-2 text-sm text-muted'
+    'flex h-[42px] items-center rounded-ctl border border-border bg-canvas px-[13px] text-[13.5px] text-text'
   const labelCls =
-    'block text-[12.5px] font-medium text-text mb-1'
+    'block text-[12.5px] font-medium text-muted mb-[7px]'
   const cardCls =
-    'bg-card rounded-card border border-border shadow-card mb-4'
+    'rounded-card border border-border bg-card shadow-card mb-4'
+  // .sec-head — mono uppercase micro-label with a bottom divider.
   const sectionHeaderCls =
-    'px-6 py-3 border-b border-border text-sm font-semibold text-text uppercase tracking-wider'
+    'border-b border-border px-5 py-4 font-mono text-[11px] font-medium uppercase tracking-[0.1em] text-muted-2'
+
+  // Hero presentation — large avatar initials + "position · employee ID ·
+  // branch" sub-line. Per R7.2/R7.3 every one of the three components renders,
+  // substituting "—" when absent (never dropped). The employee ID uses the
+  // monospace font per the design system (R14.4). Branch resolves to "—"
+  // because the staff response exposes no branch/location *name* (only opaque
+  // location_assignments ids), so it is rendered as an absent component.
+  const initials =
+    (staff.name || '?')
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((w) => w[0]?.toUpperCase() ?? '')
+      .join('') || '?'
+  const sublinePosition = staff.position?.trim() || '—'
+  const sublineEmployeeId = staff.employee_id?.trim() || '—'
+  const sublineBranch = '—'
 
   return (
-    <div className="p-6 max-w-4xl" data-testid="overview-tab">
-      {/* Header */}
-      <div className="flex items-center justify-between mb-4">
-        <div>
-          <h1 className="text-xl font-semibold text-text">
-            {staff.name}
-          </h1>
-          {staff.position && (
-            <p className="text-sm text-muted">
-              {staff.position}
+    <div className="mx-auto max-w-[1280px] p-6" data-testid="overview-tab">
+      {/* Breadcrumb */}
+      <div className="mb-3 text-[13px] text-muted">
+        <Link to="/staff" className="hover:text-text">Staff</Link>
+        <span className="mx-2 text-muted-2">/</span>
+        <span className="text-text">{staff.name}</span>
+      </div>
+
+      {/* Page head — staff hero + actions (StaffDetail.html .page-head). */}
+      <div className="mb-5 flex flex-wrap items-center justify-between gap-4">
+        <div className="flex items-center gap-4">
+          <div
+            className="grid h-16 w-16 flex-shrink-0 place-items-center rounded-[16px] bg-purple text-2xl font-bold text-white"
+            aria-hidden="true"
+          >
+            {initials}
+          </div>
+          <div>
+            <div className="flex items-center gap-[10px]">
+              <h1 className="text-2xl font-bold tracking-[-0.02em] text-text">{staff.name}</h1>
+              <Badge variant={staff.is_active ? 'active' : 'neutral'}>
+                {staff.is_active ? 'Active' : 'Inactive'}
+              </Badge>
+            </div>
+            <p className="mt-1 text-sm text-muted" data-testid="overview-hero-subline">
+              <span>{sublinePosition}</span>
+              <span className="mx-2 text-muted-2" aria-hidden="true">·</span>
+              <span className="font-mono">{sublineEmployeeId}</span>
+              <span className="mx-2 text-muted-2" aria-hidden="true">·</span>
+              <span>{sublineBranch}</span>
             </p>
-          )}
+          </div>
         </div>
-        <div className="flex gap-2">
+
+        <div className="flex items-center gap-2">
           {!editing && (
-            <button
-              type="button"
-              onClick={() => setEditing(true)}
-              className="px-4 py-2 min-h-[44px] rounded-ctl border border-border text-sm text-text hover:bg-canvas"
-            >
-              Edit
-            </button>
+            <>
+              {staff.user_id && (
+                <span className="mr-1"><Badge variant="sent">Has login</Badge></span>
+              )}
+              <button
+                type="button"
+                onClick={() => setEditing(true)}
+                className="min-h-[44px] rounded-ctl border border-border px-4 py-2 text-sm font-medium text-text hover:bg-canvas"
+              >
+                Edit
+              </button>
+            </>
           )}
           {editing && (
             <>
@@ -706,7 +809,7 @@ export default function OverviewTab({ staffId, onDirtyChange }: OverviewTabProps
                 type="button"
                 onClick={handleCancel}
                 disabled={saving}
-                className="px-4 py-2 min-h-[44px] rounded-ctl border border-border text-sm text-text hover:bg-canvas disabled:opacity-50"
+                className="min-h-[44px] rounded-ctl border border-border px-4 py-2 text-sm font-medium text-text hover:bg-canvas disabled:opacity-50"
               >
                 Cancel
               </button>
@@ -714,9 +817,9 @@ export default function OverviewTab({ staffId, onDirtyChange }: OverviewTabProps
                 type="button"
                 onClick={handleSave}
                 disabled={saving}
-                className="px-4 py-2 min-h-[44px] rounded-ctl bg-accent text-white text-sm font-medium hover:bg-accent-press disabled:opacity-50"
+                className="min-h-[44px] rounded-ctl bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-press disabled:opacity-50"
               >
-                {saving ? 'Saving…' : 'Save'}
+                {saving ? 'Saving…' : 'Save changes'}
               </button>
             </>
           )}
@@ -733,6 +836,9 @@ export default function OverviewTab({ staffId, onDirtyChange }: OverviewTabProps
         </div>
       )}
 
+      {/* Two-column detail grid: cards (left) + account sidebar (right). */}
+      <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[1fr_320px]">
+        <div>
       {/* Personal */}
       <section className={cardCls} aria-label="Personal">
         <div className={sectionHeaderCls}>Personal</div>
@@ -1322,26 +1428,107 @@ export default function OverviewTab({ staffId, onDirtyChange }: OverviewTabProps
       {/* Skills */}
       <section className={cardCls} aria-label="Skills">
         <div className={sectionHeaderCls}>Skills</div>
-        <div className="px-6 py-4">
-          <label className={labelCls}>Skills (comma-separated)</label>
+        <div className="p-5">
           {editing ? (
-            <input
-              type="text"
-              value={form.skills}
-              onChange={(e) => updateForm('skills', e.target.value)}
-              placeholder="e.g. Brakes, Engine, Electrical"
-              className={inputCls}
-              aria-label="Skills"
-            />
-          ) : (
-            <div className={readonlyCls}>
-              {(staff.skills ?? []).length > 0
-                ? (staff.skills ?? []).join(', ')
-                : '—'}
+            <>
+              <label className={labelCls}>Skills (comma-separated)</label>
+              <input
+                type="text"
+                value={form.skills}
+                onChange={(e) => updateForm('skills', e.target.value)}
+                placeholder="e.g. Brakes, Engine, Electrical"
+                className={inputCls}
+                aria-label="Skills"
+              />
+            </>
+          ) : (staff.skills ?? []).length > 0 ? (
+            <div className="flex flex-wrap gap-1.5">
+              {(staff.skills ?? []).map((skill) => (
+                <span
+                  key={skill}
+                  className="inline-flex items-center rounded-chip bg-accent-soft px-[11px] py-1 text-[12px] font-medium text-accent"
+                >
+                  {skill}
+                </span>
+              ))}
             </div>
+          ) : (
+            <div className={readonlyCls}>—</div>
           )}
         </div>
       </section>
+        </div>{/* end left column */}
+
+        {/* Right column — Account sidebar (StaffDetail.html .stack). */}
+        <div>
+          {/* This-month metrics (R8.x) — sits above the Account panel. */}
+          <ThisMonthPanel
+            staffId={staffId}
+            stats={monthStats}
+            failed={monthStatsFailed}
+          />
+          <section className={cardCls} aria-label="Account">
+            <div className="p-5">
+              <div className="mb-3 font-mono text-[11px] font-medium uppercase tracking-[0.1em] text-muted-2">
+                Account
+              </div>
+              <div className="flex items-center justify-between border-b border-border py-[11px]">
+                <span className="text-[13px] text-muted">Login access</span>
+                <Badge variant={staff.user_id ? 'active' : 'neutral'}>
+                  {staff.user_id ? 'Active' : 'None'}
+                </Badge>
+              </div>
+
+              {staff.user_id ? (
+                <>
+                  {/* User role (R9.1, R9.2) — from the stats response. */}
+                  <div className="flex items-center justify-between border-b border-border py-[11px]">
+                    <span className="text-[13px] text-muted">User role</span>
+                    <span className="mono text-[13px] font-medium text-text">
+                      {monthStatsFailed ? '—' : monthStats?.user_role ?? '—'}
+                    </span>
+                  </div>
+                  {/* Last sign-in (R9.1, R9.3, R9.4) — from the stats response. */}
+                  <div className="flex items-center justify-between py-[11px]">
+                    <span className="text-[13px] text-muted">Last sign-in</span>
+                    <span className="mono text-[13px] font-medium text-text">
+                      {monthStatsFailed
+                        ? '—'
+                        : formatLastSignIn(monthStats?.last_sign_in)}
+                    </span>
+                  </div>
+                  <p className="mt-3 text-[12px] leading-relaxed text-muted">
+                    This staff member has a linked login. Manage their role and
+                    access from{' '}
+                    <Link to="/settings" className="text-accent hover:underline">
+                      Settings → Users
+                    </Link>
+                    .
+                  </p>
+                </>
+              ) : (
+                /* No linked account (R9.5) — "No account?" prompt + action. */
+                <div className="mt-3">
+                  <p className="text-[13px] font-medium text-text">
+                    No account?
+                  </p>
+                  <p className="mt-1 text-[12px] leading-relaxed text-muted">
+                    Staff without a login can&apos;t be scheduled or sign in.
+                    Create an account so they can sign in with their email.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setCreateAccountOpen(true)}
+                    className="mt-3 inline-flex h-9 items-center justify-center rounded-ctl bg-accent px-3 text-[13px] font-semibold text-white hover:brightness-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-card"
+                  >
+                    Create user account
+                  </button>
+                </div>
+              )}
+            </div>
+          </section>
+        </div>
+      </div>{/* end detail grid */}
 
       {minWageModal && (
         <MinimumWageWarningModal
@@ -1349,6 +1536,19 @@ export default function OverviewTab({ staffId, onDirtyChange }: OverviewTabProps
           proposed={minWageModal.proposed}
           onCancel={() => setMinWageModal(null)}
           onConfirm={handleConfirmMinWage}
+        />
+      )}
+
+      {createAccountOpen && (
+        <CreateAccountModal
+          staffId={staffId}
+          email={staff.email}
+          onCancel={() => setCreateAccountOpen(false)}
+          onCreated={() => {
+            setCreateAccountOpen(false)
+            // Reload so user_id updates and the panel flips to linked state.
+            void loadStaff()
+          }}
         />
       )}
     </div>

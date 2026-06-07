@@ -1,7 +1,7 @@
 {
   "name": "orainvoice-mobile",
   "private": true,
-  "version": "1.19.0",
+  "version": "1.21.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -39,6 +39,10 @@
     "@headlessui/react": "^2.2.10",
     "@stripe/react-stripe-js": "^6.3.0",
     "@stripe/stripe-js": "^9.3.1",
+    "@tiptap/extension-link": "3.24.0",
+    "@tiptap/extension-underline": "3.24.0",
+    "@tiptap/react": "3.24.0",
+    "@tiptap/starter-kit": "3.24.0",
     "axios": "^1.15.0",
     "capacitor-native-biometric": "^4.2.0",
     "firebase": "^12.12.0",
@@ -46,6 +50,18 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-router-dom": "^7.0.0"
+  },
+  "overrides": {
+    "@tiptap/core": "3.24.0",
+    "@tiptap/pm": "3.24.0",
+    "@tiptap/extensions": "3.24.0",
+    "@tiptap/extension-bullet-list": "3.24.0",
+    "@tiptap/extension-dropcursor": "3.24.0",
+    "@tiptap/extension-gapcursor": "3.24.0",
+    "@tiptap/extension-list": "3.24.0",
+    "@tiptap/extension-list-item": "3.24.0",
+    "@tiptap/extension-list-keymap": "3.24.0",
+    "@tiptap/extension-ordered-list": "3.24.0"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.0.0",

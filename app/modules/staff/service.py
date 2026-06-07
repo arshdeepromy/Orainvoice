@@ -6,15 +6,19 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date, timedelta
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import and_, func, or_, select, text
+from sqlalchemy import and_, case, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.encryption import envelope_encrypt
+from app.modules.job_cards.models import JobCard
 from app.modules.organisations.service import get_org_settings
+from app.modules.scheduling_v2.models import ScheduleEntry
 from app.modules.staff.models import (
     StaffLocationAssignment,
     StaffMember,
@@ -22,6 +26,7 @@ from app.modules.staff.models import (
 )
 from app.modules.staff.schemas import StaffMemberCreate, StaffMemberUpdate
 from app.modules.staff.security import is_masked_bank, is_masked_ird
+from app.modules.time_clock.models import TimeClockEntry
 from app.modules.time_tracking_v2.models import TimeEntry
 
 # ---------------------------------------------------------------------------
@@ -51,6 +56,98 @@ class MinimumWageBelowThresholdError(Exception):
 # Settings UI. Keeps create/update working before B6's settings entry is
 # populated and matches the design's "no row backfill needed" rule.
 _DEFAULT_MINIMUM_WAGE_THRESHOLD = Decimal("23.15")
+
+
+# Org timezone fallback when ``organisations.timezone`` is absent or invalid.
+_DEFAULT_ORG_TIMEZONE = "Pacific/Auckland"
+
+# On-time grace window applied to scheduled clock-ins (R11.5).
+ON_TIME_GRACE = timedelta(minutes=5)
+
+
+@dataclass
+class StaffMonthStats:
+    """The four "this month" metrics plus last sign-in and linked user role
+    for a single staff member, as computed by
+    ``StaffService.get_staff_month_stats``.
+
+    Each metric carries an explicit ``*_has_data`` flag so the frontend can
+    render "—" instead of a misleading zero when no underlying data exists
+    (R12). The router maps this dataclass onto ``StaffMonthStatsResponse``.
+    """
+
+    hours_logged: Decimal
+    hours_logged_has_data: bool
+    jobs_completed: int
+    jobs_completed_has_data: bool
+    billable_ratio: int
+    billable_ratio_has_data: bool
+    on_time_rate: int
+    on_time_rate_has_data: bool
+    last_sign_in: datetime | None
+    user_role: str | None
+
+
+@dataclass
+class StaffListKpis:
+    """Org-wide staff list KPIs surfaced on the Staff list page (R1.6).
+
+    Computed by ``StaffService.get_list_kpis``. ``avg_hourly_rate`` is
+    ``None`` when no active staff member has an hourly rate, so the frontend
+    renders "—" rather than a misleading 0 (R1.7). The router maps this
+    dataclass onto ``StaffListKpisResponse``.
+    """
+
+    total_staff: int
+    employee_count: int
+    with_login_count: int
+    avg_hourly_rate: Decimal | None
+
+
+def org_month_bounds_utc(
+    org_tz_name: str | None,
+    *,
+    now: datetime | None = None,
+) -> tuple[datetime, datetime]:
+    """Derive the ``[month_start_utc, month_end_utc)`` half-open window for
+    the current calendar month evaluated in the organisation timezone (R11.7).
+
+    ``org_tz_name`` is ``organisations.timezone`` (``String(50)``, default
+    ``Pacific/Auckland``); a missing or invalid zone name falls back to UTC.
+    ``now`` is injectable for deterministic testing and defaults to
+    ``datetime.now(tz=UTC)``; a naive ``now`` is assumed to be UTC.
+
+    The returned boundaries are timezone-aware UTC datetimes suitable for
+    comparison against the timezone-aware UTC columns (``clock_in_at``,
+    ``start_time``, ``updated_at``, ...). Metric queries filter with
+    ``column >= month_start_utc AND column < month_end_utc`` so the boundary
+    is never double-counted.
+    """
+    try:
+        tz = ZoneInfo(org_tz_name or _DEFAULT_ORG_TIMEZONE)
+    except (ZoneInfoNotFoundError, ValueError):
+        tz = ZoneInfo("UTC")
+
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+
+    local_now = current.astimezone(tz)
+    month_start_local = local_now.replace(
+        day=1, hour=0, minute=0, second=0, microsecond=0
+    )
+    if month_start_local.month == 12:
+        month_end_local = month_start_local.replace(
+            year=month_start_local.year + 1, month=1
+        )
+    else:
+        month_end_local = month_start_local.replace(
+            month=month_start_local.month + 1
+        )
+
+    month_start_utc = month_start_local.astimezone(timezone.utc)
+    month_end_utc = month_end_local.astimezone(timezone.utc)
+    return month_start_utc, month_end_utc
 
 
 class StaffService:
@@ -283,6 +380,288 @@ class StaffService:
         )
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
+
+    # ------------------------------------------------------------------
+    # Staff redesign — "this month" metrics (R11, R12, R9.2)
+    # ------------------------------------------------------------------
+
+    async def get_staff_month_stats(
+        self,
+        org_id: uuid.UUID,
+        staff_id: uuid.UUID,
+        *,
+        now: datetime | None = None,
+    ) -> StaffMonthStats:
+        """Compute the four "this month" metrics plus last sign-in and the
+        linked user's role for a single staff member.
+
+        ``now`` is injectable for deterministic testing and defaults to
+        ``datetime.now(tz=UTC)``. The calendar-month window is derived in
+        the organisation timezone (R11.7) via :func:`org_month_bounds_utc`.
+
+        Each metric carries an explicit ``*_has_data`` flag so the frontend
+        can render "—" rather than a misleading zero when no underlying data
+        exists (R12). All aggregate queries are ``org_id``- and
+        ``staff_id``-scoped and filter on the half-open
+        ``[month_start_utc, month_end_utc)`` interval so the month boundary
+        is never double-counted.
+
+        Returns a :class:`StaffMonthStats` dataclass; the router maps it onto
+        ``StaffMonthStatsResponse``. Assumes the caller has already verified
+        the staff member belongs to ``org_id`` and passed the RBAC/self-scope
+        check.
+        """
+        # Local import keeps this module free of an import-time dependency
+        # on the auth module (avoids cycles), mirroring
+        # ``get_pay_rate_history``.
+        from app.modules.auth.models import User
+
+        # Load the staff member to obtain the linked ``user_id``; the org
+        # timezone drives the month-boundary calculation.
+        staff = await self.get_staff(org_id, staff_id)
+
+        org_tz_name = (
+            await self.db.execute(
+                text("SELECT timezone FROM organisations WHERE id = :org_id"),
+                {"org_id": str(org_id)},
+            )
+        ).scalar_one_or_none()
+
+        month_start_utc, month_end_utc = org_month_bounds_utc(
+            org_tz_name, now=now,
+        )
+
+        # ------------------------------------------------------------------
+        # Hours_Logged (R11.2, R12.2) — SUM(worked_minutes)/60 over completed
+        # in-month clock entries; has_data false when no completed entries.
+        # ------------------------------------------------------------------
+        hours_row = (
+            await self.db.execute(
+                select(
+                    func.coalesce(
+                        func.sum(TimeClockEntry.worked_minutes), 0,
+                    ).label("minutes"),
+                    func.count(TimeClockEntry.id).label("n"),
+                ).where(
+                    TimeClockEntry.org_id == org_id,
+                    TimeClockEntry.staff_id == staff_id,
+                    TimeClockEntry.clock_out_at.isnot(None),
+                    TimeClockEntry.clock_in_at >= month_start_utc,
+                    TimeClockEntry.clock_in_at < month_end_utc,
+                )
+            )
+        ).one()
+        hours_logged = Decimal(hours_row.minutes) / Decimal(60)
+        hours_logged_has_data = hours_row.n > 0
+
+        # ------------------------------------------------------------------
+        # Jobs_Completed (R11.3) — count completed/invoiced job cards
+        # assigned to this staff member whose updated_at is in-month.
+        # ------------------------------------------------------------------
+        jobs_completed = (
+            await self.db.execute(
+                select(func.count(JobCard.id)).where(
+                    JobCard.org_id == org_id,
+                    JobCard.assigned_to == staff_id,
+                    JobCard.status.in_(("completed", "invoiced")),
+                    JobCard.updated_at >= month_start_utc,
+                    JobCard.updated_at < month_end_utc,
+                )
+            )
+        ).scalar() or 0
+        jobs_completed = int(jobs_completed)
+        # A count of 0 is a true zero (the staff member completed no jobs),
+        # so the count is always meaningful — has_data tracks that a count
+        # was computed.
+        jobs_completed_has_data = True
+
+        # ------------------------------------------------------------------
+        # Billable_Ratio (R11.4, R12.3) — SUM(billable)/SUM(total)*100,
+        # mirroring reports_v2 Staff Utilisation; has_data false when total
+        # logged minutes is zero.
+        # ------------------------------------------------------------------
+        billable_row = (
+            await self.db.execute(
+                select(
+                    func.coalesce(
+                        func.sum(TimeEntry.duration_minutes), 0,
+                    ).label("total"),
+                    func.coalesce(
+                        func.sum(
+                            case(
+                                (
+                                    TimeEntry.is_billable.is_(True),
+                                    TimeEntry.duration_minutes,
+                                ),
+                                else_=0,
+                            )
+                        ),
+                        0,
+                    ).label("billable"),
+                ).where(
+                    TimeEntry.org_id == org_id,
+                    TimeEntry.staff_id == staff_id,
+                    TimeEntry.start_time >= month_start_utc,
+                    TimeEntry.start_time < month_end_utc,
+                )
+            )
+        ).one()
+        if billable_row.total > 0:
+            billable_ratio = int(
+                round(
+                    Decimal(billable_row.billable)
+                    / Decimal(billable_row.total)
+                    * 100
+                )
+            )
+            billable_ratio_has_data = True
+        else:
+            billable_ratio = 0
+            billable_ratio_has_data = False
+
+        # ------------------------------------------------------------------
+        # On_Time_Rate (R11.5, R11.6, R12.4) — percentage of scheduled
+        # in-month clock-ins within the 5-min grace window; unscheduled
+        # entries excluded from the denominator; has_data false when no
+        # scheduled in-month entries.
+        # ------------------------------------------------------------------
+        on_time_row = (
+            await self.db.execute(
+                select(
+                    func.count(TimeClockEntry.id).label("scheduled"),
+                    func.coalesce(
+                        func.sum(
+                            case(
+                                (
+                                    TimeClockEntry.clock_in_at
+                                    <= ScheduleEntry.start_time + ON_TIME_GRACE,
+                                    1,
+                                ),
+                                else_=0,
+                            )
+                        ),
+                        0,
+                    ).label("on_time"),
+                )
+                .select_from(TimeClockEntry)
+                .join(
+                    ScheduleEntry,
+                    TimeClockEntry.scheduled_entry_id == ScheduleEntry.id,
+                )
+                .where(
+                    TimeClockEntry.org_id == org_id,
+                    TimeClockEntry.staff_id == staff_id,
+                    TimeClockEntry.scheduled_entry_id.isnot(None),
+                    TimeClockEntry.clock_in_at >= month_start_utc,
+                    TimeClockEntry.clock_in_at < month_end_utc,
+                )
+            )
+        ).one()
+        if on_time_row.scheduled > 0:
+            on_time_rate = int(
+                round(
+                    Decimal(on_time_row.on_time)
+                    / Decimal(on_time_row.scheduled)
+                    * 100
+                )
+            )
+            on_time_rate_has_data = True
+        else:
+            on_time_rate = 0
+            on_time_rate_has_data = False
+
+        # ------------------------------------------------------------------
+        # Last_Sign_In + User_Role (R11.8, R9.2) — one combined lookup of the
+        # linked users row via staff.user_id. Both None when no linked user.
+        # ------------------------------------------------------------------
+        last_sign_in: datetime | None = None
+        user_role: str | None = None
+        if staff is not None and staff.user_id is not None:
+            user_row = (
+                await self.db.execute(
+                    select(User.last_login_at, User.role).where(
+                        User.id == staff.user_id,
+                    )
+                )
+            ).one_or_none()
+            if user_row is not None:
+                last_sign_in, user_role = user_row
+
+        return StaffMonthStats(
+            hours_logged=hours_logged,
+            hours_logged_has_data=hours_logged_has_data,
+            jobs_completed=jobs_completed,
+            jobs_completed_has_data=jobs_completed_has_data,
+            billable_ratio=billable_ratio,
+            billable_ratio_has_data=billable_ratio_has_data,
+            on_time_rate=on_time_rate,
+            on_time_rate_has_data=on_time_rate_has_data,
+            last_sign_in=last_sign_in,
+            user_role=user_role,
+        )
+
+    # ------------------------------------------------------------------
+    # Staff redesign — list KPI aggregates (R1.6)
+    # ------------------------------------------------------------------
+
+    async def get_list_kpis(self, org_id: uuid.UUID) -> StaffListKpis:
+        """Org-wide staff KPIs for the list page (R1.6).
+
+        Returns ``total_staff``, ``employee_count``, ``with_login_count``,
+        and ``avg_hourly_rate``. All four are scoped to *active* staff for a
+        consistent population: the list page's segmented filters default to
+        active staff, and the with-login / avg-rate aggregates are explicitly
+        defined over active staff in the design's "List KPI surfacing" note.
+
+        ``with_login_count`` is ``COUNT(*) WHERE user_id IS NOT NULL`` over
+        active staff; ``avg_hourly_rate`` is ``AVG(hourly_rate)`` over active
+        staff with a non-null ``hourly_rate``, returned as ``None`` when no
+        active staff member has a rate so the card renders "—" (R1.7).
+
+        This is a pure read-only org-wide scan; no writes.
+        """
+        row = (
+            await self.db.execute(
+                select(
+                    func.count(StaffMember.id).label("total_staff"),
+                    func.coalesce(
+                        func.sum(
+                            case(
+                                (StaffMember.role_type == "employee", 1),
+                                else_=0,
+                            )
+                        ),
+                        0,
+                    ).label("employee_count"),
+                    func.coalesce(
+                        func.sum(
+                            case(
+                                (StaffMember.user_id.isnot(None), 1),
+                                else_=0,
+                            )
+                        ),
+                        0,
+                    ).label("with_login_count"),
+                    func.avg(StaffMember.hourly_rate).label("avg_hourly_rate"),
+                ).where(
+                    StaffMember.org_id == org_id,
+                    StaffMember.is_active.is_(True),
+                )
+            )
+        ).one()
+
+        avg_rate = (
+            Decimal(row.avg_hourly_rate)
+            if row.avg_hourly_rate is not None
+            else None
+        )
+
+        return StaffListKpis(
+            total_staff=int(row.total_staff or 0),
+            employee_count=int(row.employee_count or 0),
+            with_login_count=int(row.with_login_count or 0),
+            avg_hourly_rate=avg_rate,
+        )
 
     async def update_staff(
         self, org_id: uuid.UUID, staff_id: uuid.UUID, payload: StaffMemberUpdate,

@@ -469,3 +469,48 @@ class EmploymentAgreementRequest(BaseModel):
     """
 
     upload_id: UUID
+
+
+# ---------------------------------------------------------------------------
+# Staff redesign — month stats + list KPIs (R11, R12, R14, R1.6, R9.2)
+# ---------------------------------------------------------------------------
+
+
+class StaffMetricValue(BaseModel):
+    """One month metric: a numeric value plus a ``has_data`` flag.
+
+    ``has_data=false`` signals the frontend to render ``'—'`` rather
+    than the (meaningless) zero value. ``value`` is always a number so
+    the schema stays a structured object, never null-in-a-bare-field
+    (R12.5).
+    """
+
+    value: Decimal
+    has_data: bool
+
+
+class StaffMonthStatsResponse(BaseModel):
+    """``GET /api/v2/staff/{id}/stats`` response — a structured object,
+    NOT a bare array (R14.5).
+
+    One sub-object per metric so each can carry its own ``has_data``
+    flag (R11.1, R12.1).
+    """
+
+    staff_id: UUID
+    period: Literal["this_month"]
+    hours_logged: StaffMetricValue       # hours, 1 dp
+    jobs_completed: StaffMetricValue     # integer count
+    billable_ratio: StaffMetricValue     # whole percent 0–100
+    on_time_rate: StaffMetricValue       # whole percent 0–100
+    last_sign_in: datetime | None = None  # from users.last_login_at
+    user_role: str | None = None          # from users.role (null when no linked user)
+
+
+class StaffListKpisResponse(BaseModel):
+    """Org-wide staff list KPIs (R1.6)."""
+
+    total_staff: int
+    employee_count: int
+    with_login_count: int
+    avg_hourly_rate: Decimal | None = None  # null → '—'

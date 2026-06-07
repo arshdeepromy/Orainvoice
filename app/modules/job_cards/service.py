@@ -27,10 +27,18 @@ logger = logging.getLogger(__name__)
 
 TWO_PLACES = Decimal("0.01")
 
-# Valid status transitions: Open → In Progress → Completed → Invoiced
+# Valid status transitions:
+#   open → in_progress
+#   in_progress ↔ awaiting_parts (parts ordered, then arrived)
+#   in_progress → completed
+#   awaiting_parts → completed   (parts arrived + work finished)
+#   completed → invoiced
+# Moves *into* awaiting_parts also require non-empty notes (enforced in
+# update_job_card below).
 VALID_TRANSITIONS: dict[str, set[str]] = {
     "open": {"in_progress"},
-    "in_progress": {"completed"},
+    "in_progress": {"awaiting_parts", "completed"},
+    "awaiting_parts": {"in_progress", "completed"},
     "completed": {"invoiced"},
     "invoiced": set(),
 }
@@ -475,10 +483,31 @@ async def update_job_card(
     new_status = updates.get("status")
     if new_status and new_status != job_card.status:
         _validate_status_transition(job_card.status, new_status)
+
+        # When moving INTO awaiting_parts, a non-empty note is required.
+        # The note is appended to the existing notes column with a
+        # timestamp prefix so the history isn't overwritten.
+        if new_status == "awaiting_parts":
+            note_text = (updates.get("notes") or "").strip()
+            if not note_text:
+                raise ValueError(
+                    "Notes are required when moving a job card to "
+                    "'awaiting_parts'. Please describe the parts being "
+                    "ordered or the reason for the wait."
+                )
+            from datetime import datetime, timezone
+            stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+            entry = f"[{stamp}] Awaiting parts: {note_text}"
+            existing = (job_card.notes or "").rstrip()
+            job_card.notes = f"{existing}\n{entry}".lstrip() if existing else entry
+            # Drop the raw `notes` from updates so the structural-edit
+            # block below doesn't overwrite our composed value.
+            updates = {k: v for k, v in updates.items() if k != "notes"}
+
         job_card.status = new_status
 
-    # Open and in_progress job cards allow structural edits
-    if job_card.status in ("open", "in_progress"):
+    # Open, in_progress, and awaiting_parts job cards allow structural edits.
+    if job_card.status in ("open", "in_progress", "awaiting_parts"):
         for field in ("customer_id", "vehicle_rego", "description", "notes"):
             if field in updates and updates[field] is not None:
                 setattr(job_card, field, updates[field])

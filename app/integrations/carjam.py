@@ -62,6 +62,27 @@ class CarjamNotFoundError(CarjamError):
         super().__init__(f"No Carjam result for rego '{rego}'")
 
 
+class CarjamOwnerCheckValidationError(CarjamError):
+    """Raised when CarJam rejects an owner_check call with
+    ``err-owner-check-validation`` (missing / unrecognised type, missing
+    plate, missing per-type fields, or invalid dob).
+
+    The upstream ``message`` field describes the specific issue and is
+    carried through verbatim so the API layer can surface it to the
+    user.
+    """
+
+
+class CarjamOwnerCheckNotAllowedError(CarjamError):
+    """Raised when the CarJam account is not subscribed to the
+    ``owner_check`` API product (``err-api-product-not-allowed``).
+
+    This is a platform-configuration problem (the org's CarJam key
+    lacks the product), not user input, so it is surfaced distinctly
+    from a validation error.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Vehicle data container
 # ---------------------------------------------------------------------------
@@ -304,6 +325,44 @@ class CarjamPpsrResponse:
     flood: dict | None
     charges_cents: int | None
     raw_xml: str
+    requested_options: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class CarjamOwnerCheckResponse:
+    """Typed container for a CarJam ``owner_check`` response.
+
+    The owner_check API product verifies supplied identity details
+    against the current registered owner in the NZ Motor Vehicle
+    Register and returns a boolean ``match`` flag.
+
+    Attributes
+    ----------
+    rego:
+        Normalised registration plate (UPPER + stripped) the check ran against.
+    check_type:
+        One of ``person_names`` / ``person_dl`` / ``company`` — echoed
+        back by CarJam under ``owner_check.type``.
+    match:
+        ``True`` when the supplied details match the registered owner
+        (CarJam ``match=1``), ``False`` otherwise (``match=0``).
+    ref:
+        CarJam reference id for the check (e.g. ``OC1A2B3C4D``).
+    charges_cents:
+        Cost CarJam reported for this call (in cents NZD), if returned.
+    raw_response:
+        The unaltered upstream response body (JSON when ``f=json``).
+    requested_options:
+        The query-string parameters the call was issued with (api_key
+        redacted) for audit + reproducibility.
+    """
+
+    rego: str
+    check_type: str
+    match: bool
+    ref: str | None
+    charges_cents: int | None
+    raw_response: str
     requested_options: dict = field(default_factory=dict)
 
 
@@ -667,6 +726,121 @@ def _parse_ppsr_response(
         flood=flood,
         charges_cents=charges_cents,
         raw_xml=body_text,
+        requested_options=dict(requested_options or {}),
+    )
+
+
+def _parse_owner_check_response(
+    rego: str,
+    body_text: str,
+    requested_options: dict,
+) -> CarjamOwnerCheckResponse:
+    """Parse a CarJam ``owner_check`` response body (JSON or XML).
+
+    CarJam returns JSON when ``f=json`` is set; the XML fallback mirrors
+    ``_parse_ppsr_response``. The success envelope wraps the payload
+    under ``owner_check`` (optionally nested under ``message`` for XML).
+
+    Raises
+    ------
+    CarjamOwnerCheckValidationError
+        On ``err-owner-check-validation`` (carries the upstream message).
+    CarjamOwnerCheckNotAllowedError
+        On ``err-api-product-not-allowed``.
+    CarjamError
+        On any other top-level error or a malformed / empty response.
+    """
+
+    rego_norm = rego.strip().upper()
+
+    # --- 1. Decode body into a dict ------------------------------------------------
+    body: dict[str, Any] | None = None
+    parse_error: Exception | None = None
+
+    text = (body_text or "").strip()
+    if not text:
+        raise CarjamError("Carjam owner_check response was empty")
+
+    try:
+        decoded = json.loads(text)
+        if isinstance(decoded, dict):
+            body = decoded
+        else:
+            parse_error = CarjamError("Carjam owner_check response was not a JSON object")
+    except (ValueError, json.JSONDecodeError) as exc:
+        parse_error = exc
+
+    if body is None:
+        try:
+            root = ET.fromstring(text)
+        except ET.ParseError as exc:
+            raise CarjamError(
+                f"Failed to parse Carjam owner_check response: {exc}"
+            ) from parse_error or exc
+        xml_dict = _xml_element_to_dict(root)
+        if isinstance(xml_dict, dict):
+            body = (
+                {root.tag: xml_dict}
+                if root.tag != "message"
+                else {"message": xml_dict}
+            )
+        else:
+            raise CarjamError("Carjam owner_check XML root had no children")
+
+    assert body is not None  # for type-checkers
+
+    # --- 2. Error detection -------------------------------------------------------
+    # CarJam error shapes (per the owner_check guide):
+    #   Nested: {"error": {"code": -1, "scode": "...", "message": "..."}}
+    #   Flat:   {"code": -1, "scode": "err-...", "message": "...", "class": "apperror"}
+    def _raise_for_error(err: dict) -> None:
+        scode = str(err.get("scode") or "")
+        msg = err.get("message") or err.get("description") or scode or "Unknown Carjam error"
+        if scode == "err-owner-check-validation":
+            raise CarjamOwnerCheckValidationError(str(msg))
+        if scode == "err-api-product-not-allowed":
+            raise CarjamOwnerCheckNotAllowedError(str(msg))
+        if not isinstance(msg, dict):
+            raise CarjamError(str(msg))
+
+    if isinstance(body.get("error"), dict):
+        _raise_for_error(body["error"])
+
+    is_flat_error = (
+        (isinstance(body.get("class"), str) and body["class"] == "apperror")
+        or (isinstance(body.get("code"), int) and body["code"] < 0)
+    )
+    if is_flat_error and not isinstance(body.get("owner_check"), dict):
+        _raise_for_error(body)
+
+    # CarJam wraps content under ``message`` when returning XML.
+    container = body.get("message") if isinstance(body.get("message"), dict) else body
+    if isinstance(container, dict) and isinstance(container.get("error"), dict):
+        _raise_for_error(container["error"])
+
+    # --- 3. owner_check payload ---------------------------------------------------
+    oc = container.get("owner_check") if isinstance(container, dict) else None
+    if not isinstance(oc, dict):
+        raise CarjamError("Carjam owner_check response missing owner_check block")
+
+    match_val = oc.get("match")
+    match = _coerce_bool(match_val) or str(match_val).strip() == "1"
+    ref = oc.get("ref")
+    check_type = str(oc.get("type") or requested_options.get("type") or "")
+
+    # --- 4. charges ---------------------------------------------------------------
+    charges_cents: int | None = None
+    charges_raw = container.get("charges") if isinstance(container, dict) else None
+    if isinstance(charges_raw, dict):
+        charges_cents = _coerce_int(charges_raw.get("cents"))
+
+    return CarjamOwnerCheckResponse(
+        rego=rego_norm,
+        check_type=check_type,
+        match=bool(match),
+        ref=str(ref) if ref else None,
+        charges_cents=charges_cents,
+        raw_response=body_text,
         requested_options=dict(requested_options or {}),
     )
 
@@ -1148,3 +1322,163 @@ class CarjamClient:
             k: ("<redacted>" if k == "key" else v) for k, v in params.items()
         }
         return _parse_ppsr_response(rego_norm, body_text, recorded_options)
+
+    async def lookup_owner_check(
+        self,
+        rego: str,
+        *,
+        check_type: str,
+        last_name: str | None = None,
+        first_name: str | None = None,
+        dob: str | None = None,
+        driver_licence: str | None = None,
+        company_name: str | None = None,
+    ) -> CarjamOwnerCheckResponse:
+        """Run a CarJam ``owner_check`` — verify supplied identity details
+        against the current registered owner in the NZ MVR.
+
+        Reuses the same rate-limited HTTP path as :meth:`lookup_ppsr`;
+        owner_check calls count against the platform-wide CarJam budget
+        and are charged at the ``owner_check`` API product price.
+
+        Parameters
+        ----------
+        rego:
+            NZ registration plate or VIN. Normalised to UPPER + stripped.
+        check_type:
+            One of ``person_names`` / ``person_dl`` / ``company``.
+        last_name / first_name / dob:
+            For ``person_names`` — ``last_name`` required; one of
+            ``first_name`` / ``dob`` required. ``dob`` is any
+            ``strtotime``-compatible value (``YYYY-MM-DD`` works).
+        driver_licence:
+            For ``person_dl`` — NZ driver licence number (required).
+        company_name:
+            For ``company`` — company name (required).
+
+        Raises
+        ------
+        ValueError
+            When required per-type fields are missing (pre-flight guard).
+        CarjamRateLimitError
+            When the platform-wide CarJam rate limit is exhausted.
+        CarjamOwnerCheckValidationError
+            When CarJam rejects the inputs (``err-owner-check-validation``).
+        CarjamOwnerCheckNotAllowedError
+            When the account lacks the ``owner_check`` API product.
+        CarjamError
+            On other upstream errors / parse failures / non-2xx responses.
+        """
+
+        normalised_type = (check_type or "").strip().lower()
+        if normalised_type not in {"person_names", "person_dl", "company"}:
+            raise ValueError(
+                "check_type must be one of person_names / person_dl / company",
+            )
+
+        rego_norm = rego.strip().upper()
+        if not rego_norm:
+            raise CarjamError("Registration plate cannot be empty")
+
+        # --- Pre-flight per-type field validation (mirror CarJam rules) ---
+        per_type: dict[str, str] = {}
+        if normalised_type == "person_names":
+            ln = (last_name or "").strip()
+            fn = (first_name or "").strip()
+            db_val = (dob or "").strip()
+            if not ln:
+                raise ValueError("last_name is required for person_names")
+            if not fn and not db_val:
+                raise ValueError(
+                    "first_name or dob is required for person_names",
+                )
+            per_type["last_name"] = ln
+            if fn:
+                per_type["first_name"] = fn
+            if db_val:
+                per_type["dob"] = db_val
+        elif normalised_type == "person_dl":
+            dl = (driver_licence or "").strip()
+            if not dl:
+                raise ValueError("driver_licence is required for person_dl")
+            per_type["driver_licence"] = dl
+        else:  # company
+            cn = (company_name or "").strip()
+            if not cn:
+                raise ValueError("company_name is required for company")
+            per_type["company_name"] = cn
+
+        # --- Rate limit check ---
+        allowed, retry_after = await _check_carjam_rate_limit(
+            self._redis, self._rate_limit,
+        )
+        if not allowed:
+            logger.warning(
+                "Carjam global rate limit hit (%d/min) — retry after %ds",
+                self._rate_limit,
+                retry_after,
+            )
+            raise CarjamRateLimitError(retry_after=retry_after)
+
+        # --- Build query-string parameters ---
+        params: dict[str, str] = {
+            "key": self._api_key,
+            "f": "json",
+            "type": normalised_type,
+            "plate": rego_norm,
+            "charges": "1",
+            **per_type,
+        }
+
+        url = f"{self._base_url}/api/car/"
+        log_params = {k: ("<redacted>" if k == "key" else v) for k, v in params.items()}
+        logger.info("Carjam owner_check API call: URL=%s, params=%s", url, log_params)
+
+        try:
+            async with httpx.AsyncClient(
+                timeout=self._timeout, follow_redirects=True,
+            ) as http:
+                response = await http.get(url, params=params)
+                logger.info(
+                    "Carjam owner_check API response: status=%d, final_url=%s",
+                    response.status_code,
+                    response.url,
+                )
+        except httpx.TimeoutException:
+            logger.error("Carjam owner_check API timeout for rego=%s", rego_norm)
+            raise CarjamError(
+                f"Carjam owner_check API timed out for rego '{rego_norm}'"
+            )
+        except httpx.HTTPError as exc:
+            logger.error("Carjam owner_check HTTP error for rego=%s: %s", rego_norm, exc)
+            raise CarjamError(f"Carjam owner_check HTTP error: {exc}") from exc
+
+        if response.status_code == 429:
+            retry_hdr = response.headers.get("Retry-After", "60")
+            try:
+                retry_secs = int(retry_hdr)
+            except ValueError:
+                retry_secs = 60
+            logger.warning(
+                "Carjam owner_check API returned 429 for rego=%s — retry after %ds",
+                rego_norm,
+                retry_secs,
+            )
+            raise CarjamRateLimitError(retry_after=retry_secs)
+
+        if response.status_code != 200:
+            logger.error(
+                "Carjam owner_check API unexpected status %d for rego=%s: %s",
+                response.status_code,
+                rego_norm,
+                response.text[:500],
+            )
+            raise CarjamError(
+                f"Carjam owner_check API returned status {response.status_code}"
+            )
+
+        body_text = response.text
+        recorded_options = {
+            k: ("<redacted>" if k == "key" else v) for k, v in params.items()
+        }
+        return _parse_owner_check_response(rego_norm, body_text, recorded_options)

@@ -16,7 +16,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.modules.billing.schemas import BillingDashboardResponse, SubscriptionInvoiceResponse
+from app.modules.billing.schemas import (
+    BillingDashboardResponse,
+    BillingReceiptResponse,
+    SubscriptionInvoiceResponse,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -131,3 +135,28 @@ class TestBillingDashboardConstruction:
             assert "debit" not in name.lower()
             assert "credit" not in name.lower()
             assert "accrual" not in name.lower()
+
+    def test_owner_check_overage_fields_present(self):
+        """Ownership (owner_check) usage-based billing fields are exposed."""
+        field_names = set(BillingDashboardResponse.model_fields.keys())
+        assert "owner_check_overage_charge_nzd" in field_names
+        assert "owner_check_lookups_used" in field_names
+        assert "owner_check_lookups_included" in field_names
+
+        dashboard = BillingDashboardResponse(
+            current_plan="Starter",
+            plan_monthly_price_nzd=29.0,
+            next_billing_date=None,
+            estimated_next_invoice_nzd=29.0,
+            org_status="trial",
+        )
+        # Defaults to zero charge / usage when not set.
+        assert dashboard.owner_check_overage_charge_nzd == 0.0
+        assert dashboard.owner_check_lookups_used == 0
+        assert dashboard.owner_check_lookups_included == 0
+
+    def test_owner_check_receipt_fields_present(self):
+        """Receipt schema carries owner_check overage cents + count."""
+        field_names = set(BillingReceiptResponse.model_fields.keys())
+        assert "owner_check_overage_cents" in field_names
+        assert "owner_check_overage_count" in field_names

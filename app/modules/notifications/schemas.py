@@ -17,9 +17,12 @@ from pydantic import BaseModel, Field
 # The 16 customisable email template types per org (Req 34.3)
 EMAIL_TEMPLATE_TYPES: list[str] = [
     "invoice_issued",
+    "invoice_payment_link",
     "payment_received",
     "payment_overdue_reminder",
     "invoice_voided",
+    "customer_statement",
+    "portal_link",
     "storage_warning_80",
     "storage_critical_90",
     "storage_full_100",
@@ -148,6 +151,13 @@ _DEFAULT_BODY_BLOCKS: dict[str, list[dict[str, Any]]] = {
         {"type": "text", "content": "If you have any questions, please contact us."},
         {"type": "footer", "content": "Kind regards,\n{{org_name}}"},
     ],
+    "invoice_payment_link": [
+        {"type": "text", "content": "Hi {{customer_first_name}},"},
+        {"type": "text", "content": "Invoice {{invoice_number}} for {{total_due}} is ready to pay online. Payment is due by {{due_date}}."},
+        {"type": "button", "content": "Pay Invoice Online", "url": "{{payment_link}}"},
+        {"type": "text", "content": "If you've already paid, please disregard this message."},
+        {"type": "footer", "content": "Kind regards,\n{{org_name}}"},
+    ],
     "payment_received": [
         {"type": "text", "content": "Hi {{customer_first_name}},"},
         {"type": "text", "content": "We've received your payment. Thank you!"},
@@ -166,6 +176,21 @@ _DEFAULT_BODY_BLOCKS: dict[str, list[dict[str, Any]]] = {
         {"type": "text", "content": "Hi {{customer_first_name}},"},
         {"type": "text", "content": "This invoice has been voided and is no longer payable."},
         {"type": "text", "content": "Please contact us if you have any questions."},
+        {"type": "footer", "content": "Kind regards,\n{{org_name}}"},
+    ],
+    "customer_statement": [
+        {"type": "text", "content": "Hi {{customer_first_name}},"},
+        {"type": "text", "content": "Please find your account statement for the period {{statement_period_start}} to {{statement_period_end}}."},
+        {"type": "text", "content": "Your current outstanding balance is {{total_outstanding}}."},
+        {"type": "button", "content": "View Statement", "url": "{{statement_link}}"},
+        {"type": "text", "content": "If you have any questions about your statement, please get in touch."},
+        {"type": "footer", "content": "Kind regards,\n{{org_name}}"},
+    ],
+    "portal_link": [
+        {"type": "text", "content": "Hi {{customer_first_name}},"},
+        {"type": "text", "content": "You can access your customer portal to view invoices, quotes, and account details online."},
+        {"type": "button", "content": "Access Your Portal", "url": "{{portal_link}}"},
+        {"type": "text", "content": "If you didn't request access, please contact us."},
         {"type": "footer", "content": "Kind regards,\n{{org_name}}"},
     ],
     "storage_warning_80": [
@@ -265,9 +290,12 @@ _DEFAULT_BODY_BLOCKS: dict[str, list[dict[str, Any]]] = {
 
 DEFAULT_SUBJECTS: dict[str, str] = {
     "invoice_issued": "Invoice {{invoice_number}} from {{org_name}}",
+    "invoice_payment_link": "Pay invoice {{invoice_number}} online — {{org_name}}",
     "payment_received": "Payment received for invoice {{invoice_number}}",
     "payment_overdue_reminder": "Payment overdue — invoice {{invoice_number}}",
     "invoice_voided": "Invoice {{invoice_number}} voided",
+    "customer_statement": "Your account statement from {{org_name}}",
+    "portal_link": "Access your customer portal — {{org_name}}",
     "storage_warning_80": "Storage warning — 80% used",
     "storage_critical_90": "Storage critical — 90% used",
     "storage_full_100": "Storage full — action required",
@@ -418,6 +446,29 @@ class NotificationLogEntry(BaseModel):
         None, description="ISO 8601 timestamp when delivery was confirmed"
     )
     created_at: str = Field(..., description="ISO 8601 timestamp when queued")
+    # Send-email-modal audit columns (R11.5–11.8). Declared explicitly so
+    # Pydantic does not silently drop them from the response
+    # (frontend-backend-contract-alignment Rule 8). Defaults match the
+    # no-edit / empty-list state so existing rows serialize cleanly.
+    subject_was_edited: bool = Field(
+        False, description="True if the user edited the default subject before sending"
+    )
+    body_was_edited: bool = Field(
+        False, description="True if the user edited the default body before sending"
+    )
+    edited_subject_hash: Optional[str] = Field(
+        None, description="SHA-256 hex digest of the final subject when edited"
+    )
+    edited_body_hash: Optional[str] = Field(
+        None,
+        description="SHA-256 hex digest of the post-sanitisation body when edited",
+    )
+    cc_recipients: list[str] = Field(
+        default_factory=list, description="Cc recipients for this send (empty list if none)"
+    )
+    bcc_recipients: list[str] = Field(
+        default_factory=list, description="Bcc recipients for this send (empty list if none)"
+    )
 
 
 class NotificationLogResponse(BaseModel):

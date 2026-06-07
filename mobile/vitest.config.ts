@@ -8,6 +8,7 @@ export default defineConfig({
     alias: {
       '@': path.resolve(__dirname, './src'),
       '@shared': path.resolve(__dirname, '../shared'),
+      '@email-contract': path.resolve(__dirname, '../frontend-v2/src/components/email'),
     },
   },
   test: {

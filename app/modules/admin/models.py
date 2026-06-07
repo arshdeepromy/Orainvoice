@@ -69,6 +69,8 @@ class SubscriptionPlan(Base):
     # PPSR Phase 1 — per-plan monthly quota (G44).
     ppsr_lookups_included: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     ppsr_hidden_plate_lookups_included: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    # CarJam ownership (owner_check) — per-plan included monthly quota.
+    owner_check_lookups_included: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -119,6 +121,9 @@ class Organisation(Base):
     # PPSR Phase 1 — per-org monthly counters (G44; reuses carjam_lookups_reset_at).
     ppsr_lookups_this_month: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     ppsr_hidden_plate_lookups_this_month: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    # CarJam ownership (owner_check) — per-org monthly counter; billed usage-based
+    # like PPSR/CarJam. Shares the carjam_lookups_reset_at billing-cycle boundary.
+    owner_check_lookups_this_month: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     settings: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="'{}'")
     locale: Mapped[str] = mapped_column(
         String(10), nullable=False, server_default="'en'"

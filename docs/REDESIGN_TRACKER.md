@@ -1,6 +1,14 @@
 # OraInvoice Frontend Redesign Tracker
 
-> **Strategy:** The existing `frontend/` folder remains untouched. All redesigned pages/components live in `frontend-v2/` until ready for cutover.
+> **STATUS: CUT OVER (local dev) — 2026-06-05.** `frontend-v2/` is now the **live** frontend behind the local dev gateway: it is served under `/new/` and the gateway root `/` 302-redirects there. The legacy `frontend/` is **ARCHIVED** (`frontend/ARCHIVED.md`) — no further development. Cutover is wired via additive, reversible files only (`docker-compose.frontend-v2.yml`, `docker-compose.dev-v2.yml`, `nginx/nginx.dev-v2.conf`); the canonical `docker-compose.yml` and `nginx/nginx.conf` are untouched. Production / Pi cutover (a static build) is a separate future step.
+>
+> **Local dev run command:**
+> ```
+> docker compose -f docker-compose.yml -f docker-compose.dev.yml \
+>   -f docker-compose.frontend-v2.yml -f docker-compose.dev-v2.yml \
+>   up -d --remove-orphans postgres redis app mobile frontend-v2 nginx
+> ```
+> Then open http://localhost/ (redirects to http://localhost/new/).
 >
 > **Design source:** `OraInvoice_Handoff/` — contains 150+ high-fidelity HTML prototypes, `ds.css` (design system), `shell.js` (app shell), and full spec in `README.md`.
 >

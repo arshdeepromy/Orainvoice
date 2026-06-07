@@ -326,6 +326,7 @@ const Settings = lazy(() => import('@/pages/settings/Settings').then(m => ({ def
 const OnlinePaymentsSettings = lazy(() => import('@/pages/settings/OnlinePaymentsSettings'))
 const PayPeriodsPage = lazy(() => import('@/pages/settings/people/PayPeriodsPage'))
 const AllowanceTypesPage = lazy(() => import('@/pages/settings/people/AllowanceTypesPage'))
+const ShiftTemplatesSettings = lazy(() => import('@/pages/schedule/ShiftTemplates'))
 
 // Reports (Task 46) — the org Reports hub + financial reports.
 //   ReportsPage   → /reports (ungated tabbed container: Revenue / Invoice
@@ -1376,12 +1377,18 @@ function AppRoutes() {
           />
 
           {/* Schedule + Staff Schedule + Roster Grid (Task 32) — mirrors
-              frontend/src/App.tsx exactly: /schedule (ScheduleCalendar) and
-              /staff-schedule/grid (RosterGridPage) gated by `scheduling`;
-              /staff-schedule (StaffSchedule) gated by `branch_management`.
+              frontend/src/App.tsx exactly: /staff-schedule/grid (RosterGridPage)
+              gated by `scheduling`; /staff-schedule (StaffSchedule) gated by
+              `branch_management`. /schedule redirects to the grid view (the
+              roster grid is now the default Schedule landing). The legacy
+              calendar view is still available at /schedule/calendar.
               Static /staff-schedule/grid scores above /staff-schedule. */}
           <Route
             path="schedule"
+            element={<Navigate to="/staff-schedule/grid" replace />}
+          />
+          <Route
+            path="schedule/calendar"
             element={<ModuleRoute moduleSlug="scheduling"><ScheduleCalendar /></ModuleRoute>}
           />
           <Route
@@ -1739,6 +1746,7 @@ function AppRoutes() {
           <Route element={<RequireOrgAdmin />}>
             <Route path="settings" element={<Settings />} />
             <Route path="settings/online-payments" element={<OnlinePaymentsSettings />} />
+            <Route path="settings/shift-templates" element={<ShiftTemplatesSettings />} />
             <Route
               path="settings/people/pay-periods"
               element={<ModuleRoute moduleSlug="payroll"><PayPeriodsPage /></ModuleRoute>}

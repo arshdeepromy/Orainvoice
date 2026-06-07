@@ -23,6 +23,8 @@ import { useTenant } from '@/contexts/TenantContext'
 import { Button } from '@/components/ui'
 import QuoteAttachmentList from '@/components/quotes/QuoteAttachmentList'
 import CancelQuoteModal from '@/components/quotes/CancelQuoteModal'
+import { SendEmailModal } from '@/components/email/SendEmailModal'
+import { SURFACE_REGISTRY } from '@/components/email/surfaceRegistry'
 import { resolveTemplateStyles } from '@/utils/invoiceTemplateStyles'
 
 const PRINT_STYLES = `
@@ -229,6 +231,8 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
   const [copied, setCopied] = useState<boolean>(false)
   const [cancelModalOpen, setCancelModalOpen] = useState(false)
   const [cancelLoading, setCancelLoading] = useState(false)
+  /* --- Send Email composer modal (shared SendEmailModal) --- */
+  const [emailModalOpen, setEmailModalOpen] = useState(false)
 
   const templateStyles = useMemo(
     () => resolveTemplateStyles(
@@ -311,20 +315,13 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
     }
   }
 
-  const handleSend = async () => {
-    setActionLoading(true)
+  /* Open the shared Send Email composer for the quote. The modal reads
+     SURFACE_REGISTRY['quote_sent'] to know where to POST; onSent (wired at the
+     render site) re-fetches the quote. */
+  const handleSend = () => {
     setError(null)
     setSuccessMsg(null)
-    try {
-      await apiClient.post(`/quotes/${quoteId}/send`)
-      setSuccessMsg('Quote emailed to customer')
-      await fetchQuote()
-    } catch (err: unknown) {
-      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-      setError(detail || 'Failed to email quote')
-    } finally {
-      setActionLoading(false)
-    }
+    setEmailModalOpen(true)
   }
 
   const handleIssueQuote = async () => {
@@ -883,6 +880,19 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
         onConfirm={handleCancelQuote}
         loading={cancelLoading}
       />
+
+      {/* Send Email composer modal (shared) */}
+      {emailModalOpen && (
+        <SendEmailModal
+          open={true}
+          onClose={() => setEmailModalOpen(false)}
+          templateType="quote_sent"
+          entityType="quote"
+          entityId={quote.id}
+          surfaceLabel={SURFACE_REGISTRY['quote_sent']?.surfaceLabel ?? 'Email Quote'}
+          onSent={() => { fetchQuote() }}
+        />
+      )}
     </div>
   )
 }

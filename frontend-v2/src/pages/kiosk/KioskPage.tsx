@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect, useRef } from 'react'
 import { useModules } from '@/contexts/ModuleContext'
 import { useAuth } from '@/contexts/AuthContext'
 import apiClient from '@/api/client'
+import { KioskBrand } from './KioskBrand'
 import { KioskWelcome } from './KioskWelcome'
 import { KioskRegoEntry } from './KioskRegoEntry'
 import { KioskVehicleSummary } from './KioskVehicleSummary'
@@ -151,10 +152,26 @@ export function KioskPage() {
     setScreen('vehicle-summary')
   }, [])
 
-  /** KioskRegoEntry: back → go to welcome. */
+  /** KioskRegoEntry: back.
+   *
+   * Non-destructive once a vehicle has been added (i.e. the user reached rego
+   * via "Add another vehicle" or stepped back from the form): return to the
+   * check-in form with the added vehicles AND any entered details intact, so an
+   * accidental "Add another" / Back no longer wipes the session. Only resets to
+   * welcome from a genuinely fresh start (no vehicles entered yet). */
   const handleRegoBack = useCallback(() => {
-    resetToWelcome()
-  }, [resetToWelcome])
+    if (vehicles.length > 0) {
+      setScreen('form')
+    } else {
+      resetToWelcome()
+    }
+  }, [vehicles.length, resetToWelcome])
+
+  /** KioskRegoEntry: "Continue to check-in" → proceed to the form with the
+   *  vehicles already added (shown only when at least one vehicle exists). */
+  const handleRegoContinue = useCallback(() => {
+    setScreen('form')
+  }, [])
 
   /** KioskVehicleSummary: confirm → add vehicle to list, go to form. */
   const handleVehicleConfirm = useCallback(
@@ -254,12 +271,15 @@ export function KioskPage() {
 
   return (
     <div
-      className="flex min-h-screen flex-col items-center justify-center bg-canvas px-4"
+      className="kiosk"
       onPointerDown={handlePointerDown}
       onPointerUp={handlePointerUp}
       onPointerLeave={handlePointerLeave}
       onPointerCancel={handlePointerUp}
     >
+      {/* Persistent brand lockup, pinned top-centre on every screen (design). */}
+      <KioskBrand />
+
       {screen === 'welcome' && (
         <KioskWelcome onCheckIn={handleCheckIn} />
       )}
@@ -269,6 +289,7 @@ export function KioskPage() {
           vehicleCount={vehicles.length}
           onVehicleFound={handleVehicleFound}
           onBack={handleRegoBack}
+          onContinue={handleRegoContinue}
         />
       )}
 
@@ -301,33 +322,21 @@ export function KioskPage() {
       )}
 
       {screen === 'error' && (
-        <div className="w-full max-w-md space-y-6 rounded-card bg-card p-8 text-center shadow-pop">
-          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-danger-soft">
-            <svg
-              className="h-8 w-8 text-danger"
-              fill="none"
-              viewBox="0 0 24 24"
-              strokeWidth={2}
-              stroke="currentColor"
-              aria-hidden="true"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M6 18L18 6M6 6l12 12"
-              />
+        <div className="k-card" style={{ textAlign: 'center' }}>
+          <div className="k-ico" style={{ background: 'var(--danger-soft)' }}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="var(--danger)" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
             </svg>
           </div>
-          <h2 className="text-xl font-semibold text-text">Something went wrong</h2>
-          <p className="text-lg text-muted">
-            We couldn&apos;t complete your check-in. Please try again.
-          </p>
+          <h1 style={{ fontSize: '28px' }}>Something went wrong</h1>
+          <p className="lead">We couldn&apos;t complete your check-in. Please try again.</p>
           <button
             type="button"
+            className="btn-kiosk primary"
+            style={{ marginTop: '30px' }}
             onClick={resetToWelcome}
-            className="inline-flex min-h-[48px] items-center justify-center rounded-ctl bg-accent px-8 py-3 text-lg font-medium text-white shadow-card hover:bg-accent-press focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2"
           >
-            Start Over
+            Start over
           </button>
         </div>
       )}

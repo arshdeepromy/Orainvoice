@@ -4,6 +4,7 @@ import { useFeatureFlags } from '@/contexts/FeatureFlagContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { useTenant } from '@/contexts/TenantContext'
 import OrgSwitcher from '@/components/shell/OrgSwitcher'
+import { useComplianceBadgeCount } from '@/hooks/useComplianceBadgeCount'
 
 /**
  * Sidebar — 264px ink navigation rail (left region of OrgLayout).
@@ -28,11 +29,13 @@ import OrgSwitcher from '@/components/shell/OrgSwitcher'
  * providers in App.tsx, at which point the Sidebar starts gating against real
  * org module/flag/role/trade state with no changes needed here.
  *
- * Count pills + alert dots: the prototype shows demo values (Invoices 18,
- * Quotes 7, Job Cards 14, Bookings dot). The real counts depend on queries not
- * yet ported (overdue-invoice counts, booking alerts, etc.). They are rendered
- * from the DEMO_BADGES map below so the visual matches the prototype; TODO(Task
- * 18+) swaps the source for real per-item query/context data.
+ * Count pills + alert dots: the Compliance item shows a real "needs attention"
+ * count (expired + expiring-soon docs) from GET /api/v2/compliance-docs/badge-
+ * count, ported from the original sidebar's NotificationBadge. Other items have
+ * no real count source in this backend (the prototype's Invoices 18 / Quotes 7 /
+ * Job Cards 14 / Bookings dot were demo-only placeholders) so they render no
+ * badge rather than a fake number. TODO(Task 18+): add real counts for other
+ * items if/when count endpoints land (e.g. shift-swaps awaiting-manager).
  *
  * Drawer hooks (Task 9) preserved exactly as the stub: `data-open={open}` on the
  * root <aside>, an in-drawer close button wired to `onClose`, and every nav item
@@ -242,21 +245,14 @@ const FOOTER_ITEMS: NavItem[] = [
   { id: 'admin', to: '/admin', label: 'Admin Console', icon: ICON.server, globalAdminOnly: true },
 ]
 
-/**
- * Demo count pills / alert dots, matching the prototype's static values for
- * visual fidelity in the side-by-side preview.
- *
- * TODO(Task 18+): replace with real data sources — overdue/open invoice counts,
- *   open quote counts, active job-card counts, booking alerts — sourced from the
- *   relevant context/queries once those pages/hooks are ported (cf. the real
- *   app's NotificationBadge / ShiftSwapBadge). Until then these are presentation
- *   placeholders only.
- */
-const DEMO_BADGES: Record<string, { count?: number; dot?: boolean }> = {
-  invoices: { count: 18 },
-  quotes: { count: 7 },
-  'job-cards': { count: 14 },
-  bookings: { dot: true },
+/** Per-item badge data. Sourced from real backend queries (see Sidebar). */
+interface NavBadgeData {
+  /** Numeric count pill (hidden when 0/undefined). */
+  count?: number
+  /** Plain alert dot (no number). */
+  dot?: boolean
+  /** Render the count pill in the danger tone (an "attention" alert). */
+  danger?: boolean
 }
 
 /** Stroke-based 18×18 nav icon, matching `.nav-item svg` in ds.css. */
@@ -278,16 +274,18 @@ function NavIcon({ d, active }: { d: string; active: boolean }) {
 }
 
 /** Right-aligned count pill / alert dot (matches `.nav-item .count` / `.dot`). */
-function NavBadge({ id }: { id: string }) {
-  const badge = DEMO_BADGES[id]
-  if (!badge) return null
-  if (badge.dot) {
+function NavBadge({ count, dot, danger }: NavBadgeData) {
+  if (dot) {
     return <span className="ml-auto h-[7px] w-[7px] flex-shrink-0 rounded-full bg-danger" aria-hidden="true" />
   }
-  if (badge.count != null) {
-    return (
+  if (count != null && count > 0) {
+    return danger ? (
+      <span className="ml-auto inline-flex h-5 min-w-[20px] flex-shrink-0 items-center justify-center rounded-full bg-danger px-1.5 text-[11px] font-semibold leading-none text-white">
+        {count}
+      </span>
+    ) : (
       <span className="mono ml-auto flex-shrink-0 rounded-[20px] bg-sb-hover px-[7px] py-px text-[11px] font-medium text-sb-text-strong">
-        {badge.count}
+        {count}
       </span>
     )
   }
@@ -295,7 +293,7 @@ function NavBadge({ id }: { id: string }) {
 }
 
 /** A single nav row — NavLink with active state, icon, label, optional badge. */
-function NavRow({ item, onClose }: { item: NavItem; onClose: () => void }) {
+function NavRow({ item, onClose, badge }: { item: NavItem; onClose: () => void; badge?: NavBadgeData }) {
   return (
     <NavLink
       to={item.to}
@@ -320,7 +318,7 @@ function NavRow({ item, onClose }: { item: NavItem; onClose: () => void }) {
           )}
           <NavIcon d={item.icon} active={isActive} />
           <span className="truncate">{item.label}</span>
-          <NavBadge id={item.id} />
+          {badge && <NavBadge {...badge} />}
         </>
       )}
     </NavLink>
@@ -333,6 +331,19 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
   const { user } = useAuth()
   const { tradeFamily } = useTenant()
   const userRole = user?.role
+
+  // Real "needs attention" count for the Compliance nav item (expired +
+  // expiring-soon docs). Only fetched when the compliance_docs module is on.
+  const complianceCount = useComplianceBadgeCount(isEnabled('compliance_docs'))
+
+  /** Real per-item badge data, keyed by nav-item id. Items absent here render
+   *  no badge (the old DEMO_BADGES placeholders had no backend count source). */
+  const badgeFor = (id: string): NavBadgeData | undefined => {
+    if (id === 'compliance' && complianceCount > 0) {
+      return { count: complianceCount, danger: true }
+    }
+    return undefined
+  }
 
   /**
    * Visibility gate — copied verbatim from OrgLayout's `visibleNavItems` filter
@@ -399,7 +410,7 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
                 {group.label}
               </div>
               {items.map((item) => (
-                <NavRow key={item.id} item={item} onClose={onClose} />
+                <NavRow key={item.id} item={item} onClose={onClose} badge={badgeFor(item.id)} />
               ))}
             </div>
           )

@@ -9,7 +9,10 @@ interface KioskSuccessProps {
 
 const COUNTDOWN_START = 10
 
-/* ── KioskSuccess ── */
+/* ── KioskSuccess ──
+ * Design: the "SUCCESS" screen in OraInvoice_Handoff/app/Kiosk.html. The
+ * auto-return countdown behaviour is unchanged (renders as the design's plain
+ * countdown line instead of the previous progress ring). */
 
 export function KioskSuccess({ customerFirstName, onDone }: KioskSuccessProps) {
   const [secondsLeft, setSecondsLeft] = useState(COUNTDOWN_START)
@@ -31,72 +34,35 @@ export function KioskSuccess({ customerFirstName, onDone }: KioskSuccessProps) {
     onDone()
   }, [onDone])
 
-  /** Progress percentage for the visual countdown ring (1 = full, 0 = empty). */
-  const progress = secondsLeft / COUNTDOWN_START
-
   return (
-    <div className="w-full max-w-md space-y-8 rounded-card bg-card p-8 text-center shadow-pop">
-      {/* Confirmation icon */}
-      <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-ok-soft">
-        <svg
-          className="h-8 w-8 text-ok"
-          fill="none"
-          viewBox="0 0 24 24"
-          strokeWidth={2}
-          stroke="currentColor"
-          aria-hidden="true"
-        >
-          <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+    <div className="k-card" style={{ textAlign: 'center' }}>
+      <div className="k-ico" style={{ background: 'var(--ok-soft)' }}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="var(--ok)" strokeWidth={2.4}>
+          <path d="M20 6L9 17l-5-5" />
         </svg>
       </div>
 
-      {/* Greeting (Req 5.1) */}
-      <h2 className="text-xl font-semibold text-text">
-        Thanks {customerFirstName}, we&apos;ll be with you shortly
-      </h2>
+      <h1>You&apos;re checked in!</h1>
+      <p className="lead">
+        Thanks{customerFirstName ? `, ${customerFirstName}` : ''}. We&apos;ve let your technician
+        know you&apos;ve arrived. Take a seat — we&apos;ll be with you shortly.
+      </p>
 
-      {/* Countdown visual (Req 5.2) */}
-      <div className="flex flex-col items-center gap-2">
-        <div className="relative h-20 w-20" aria-label={`Returning to welcome in ${secondsLeft} seconds`}>
-          <svg className="h-20 w-20 -rotate-90" viewBox="0 0 36 36">
-            {/* Background circle */}
-            <circle
-              cx="18"
-              cy="18"
-              r="15.9155"
-              fill="none"
-              stroke="var(--color-border)"
-              strokeWidth="3"
-            />
-            {/* Progress circle */}
-            <circle
-              cx="18"
-              cy="18"
-              r="15.9155"
-              fill="none"
-              stroke="var(--color-accent)"
-              strokeWidth="3"
-              strokeDasharray="100"
-              strokeDashoffset={100 - progress * 100}
-              strokeLinecap="round"
-              className="transition-[stroke-dashoffset] duration-1000 ease-linear"
-            />
-          </svg>
-          <span className="absolute inset-0 flex items-center justify-center text-2xl font-bold text-text">
-            {secondsLeft}
-          </span>
-        </div>
-        <p className="text-sm text-muted">Returning to welcome…</p>
-      </div>
-
-      {/* Done button (Req 5.4) */}
       <button
         type="button"
+        className="btn-kiosk primary"
+        style={{ marginTop: '30px' }}
         onClick={handleDone}
-        className="inline-flex min-h-[48px] items-center justify-center rounded-ctl bg-accent px-8 py-3 text-lg font-medium text-white shadow-card hover:bg-accent-press focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2"
       >
         Done
       </button>
+
+      <p
+        style={{ fontSize: '14px', color: 'var(--muted-2)', marginTop: '18px' }}
+        aria-label={`Returning to start in ${secondsLeft} seconds`}
+      >
+        Returning to start in {secondsLeft}s…
+      </p>
     </div>
   )
 }

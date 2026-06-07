@@ -20,7 +20,6 @@
  * **Validates: PPSR module spec task D3**
  */
 
-import { useLocale } from '@/contexts/LocaleContext'
 import type { PpsrMatch, PpsrSearchResult } from '@/api/ppsr'
 
 // ===========================================================================
@@ -125,6 +124,17 @@ function formatRegistrationDate(raw: string): string {
   return d.toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' })
 }
 
+const OWNER_CHECK_TYPE_LABELS: Record<string, string> = {
+  person_names: 'Person (name)',
+  person_dl: "Driver's licence",
+  company: 'Company',
+}
+
+function ownerCheckTypeLabel(type: string | null | undefined): string {
+  if (!type) return 'Ownership check'
+  return OWNER_CHECK_TYPE_LABELS[type] ?? 'Ownership check'
+}
+
 // ===========================================================================
 // Card / panel base classes (design.md §6.0)
 // ===========================================================================
@@ -149,7 +159,6 @@ export function PpsrResultPanel({
   onNew,
   onForceRefresh,
 }: PpsrResultPanelProps) {
-  const { locale } = useLocale()
 
   // Safe destructuring — every field guarded per safe-api-consumption.md.
   const match = result?.match ?? null
@@ -162,8 +171,14 @@ export function PpsrResultPanel({
   const basic = result?.basic ?? null
   const cached = result?.cached === true
   const cachedAtIso = result?.cached_at ?? null
-  const chargesCents = result?.charges_cents ?? null
   const notFound = result?.not_found === true
+
+  // Ownership check (CarJam owner_check). owner_check_match is null/undefined
+  // when no ownership check was run for this search.
+  const ownerCheckType = result?.owner_check_type ?? null
+  const ownerCheckMatch = result?.owner_check_match ?? null
+  const ownerCheckRef = result?.owner_check_ref ?? null
+  const hasOwnerCheck = ownerCheckType != null && ownerCheckMatch != null
 
   const style = styleForMatch(match)
   const cachedAtLabel = formatCachedAt(cachedAtIso)
@@ -172,16 +187,6 @@ export function PpsrResultPanel({
     (ownershipHistory ?? []).length > 0 || currentOwner !== null
   const hasFinancingStatements = ppsrDetails.length > 0
   const hasWarnings = warnings.length > 0
-
-  // Currency formatter — design.md §6.0 G34. Falls back gracefully on
-  // unsupported locale strings.
-  const currencyFormatter = (() => {
-    try {
-      return new Intl.NumberFormat(locale, { style: 'currency', currency: 'NZD' })
-    } catch {
-      return new Intl.NumberFormat('en-NZ', { style: 'currency', currency: 'NZD' })
-    }
-  })()
 
   return (
     <section
@@ -257,6 +262,38 @@ export function PpsrResultPanel({
               </span>
             )}
           </p>
+        </div>
+      )}
+
+      {/* 3b. Ownership check result -------------------------------------- */}
+      {hasOwnerCheck && (
+        <div
+          className={`flex items-start gap-3 rounded-card border-2 p-4 ${
+            ownerCheckMatch
+              ? 'bg-ok-soft text-ok border-ok/40'
+              : 'bg-danger-soft text-danger border-danger/40'
+          }`}
+          role="status"
+          aria-live="polite"
+          data-testid="ppsr-owner-check"
+        >
+          <span className="text-2xl leading-none" aria-hidden="true">
+            {ownerCheckMatch ? '✅' : '❌'}
+          </span>
+          <div className="space-y-0.5">
+            <p className="text-base font-semibold">
+              {ownerCheckMatch ? 'Ownership confirmed' : 'Ownership not confirmed'}
+            </p>
+            <p className="text-sm opacity-90">
+              {ownerCheckMatch
+                ? 'The supplied details match the current registered owner.'
+                : 'The supplied details do not match the current registered owner.'}
+            </p>
+            <p className="text-xs opacity-75">
+              Check type: {ownerCheckTypeLabel(ownerCheckType)}
+              {ownerCheckRef ? ` · Ref: ${ownerCheckRef}` : ''}
+            </p>
+          </div>
         </div>
       )}
 
@@ -391,20 +428,6 @@ export function PpsrResultPanel({
             </table>
           </div>
         </div>
-      )}
-
-      {/* 7. Charges footer ----------------------------------------------- */}
-      {chargesCents != null && chargesCents >= 0 && (
-        <p
-          className="text-xs text-muted"
-          data-testid="ppsr-charges-footer"
-        >
-          CarJam reported a charge of{' '}
-          <span className="mono font-medium text-text">
-            {currencyFormatter.format((chargesCents ?? 0) / 100)}
-          </span>{' '}
-          for this search.
-        </p>
       )}
 
       {/* 8. Actions row --------------------------------------------------- */}

@@ -11,19 +11,31 @@
  * Badge status pills, ds.css pagination. `warning`→`warn`, `secondary`→`ghost`.
  */
 
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import apiClient from '@/api/client'
 import { Button, Input, Select, Badge, Spinner, Pagination, useToast, ToastContainer } from '@/components/ui'
 import type { BadgeVariant } from '@/components/ui'
 import StaffPicker from '@/components/StaffPicker'
 import { useTenant } from '@/contexts/TenantContext'
 import { useBranch } from '@/contexts/BranchContext'
+import {
+  DndContext,
+  DragOverlay,
+  PointerSensor,
+  useDraggable,
+  useDroppable,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragStartEvent,
+} from '@dnd-kit/core'
+import AwaitingPartsNoteModal from './AwaitingPartsNoteModal'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
 
-type JobCardStatus = 'open' | 'in_progress' | 'completed' | 'invoiced'
+type JobCardStatus = 'open' | 'in_progress' | 'awaiting_parts' | 'completed' | 'invoiced'
 
 interface JobCardSummary {
   id: string
@@ -72,6 +84,7 @@ function formatTimer(seconds: number): string {
 const STATUS_CONFIG: Record<JobCardStatus, { label: string; variant: BadgeVariant }> = {
   open: { label: 'Open', variant: 'info' },
   in_progress: { label: 'In Progress', variant: 'warn' },
+  awaiting_parts: { label: 'Awaiting Parts', variant: 'warn' },
   completed: { label: 'Completed', variant: 'success' },
   invoiced: { label: 'Invoiced', variant: 'neutral' },
 }
@@ -80,11 +93,132 @@ const STATUS_OPTIONS = [
   { value: '', label: 'All statuses' },
   { value: 'open', label: 'Open' },
   { value: 'in_progress', label: 'In Progress' },
+  { value: 'awaiting_parts', label: 'Awaiting Parts' },
   { value: 'completed', label: 'Completed' },
   { value: 'invoiced', label: 'Invoiced' },
 ]
 
 const PAGE_SIZE = 20
+
+/* ------------------------------------------------------------------ */
+/*  Kanban board (Job Cards Board view)                                */
+/* ------------------------------------------------------------------ */
+
+const BOARD_COLUMNS: Array<{ key: JobCardStatus; label: string; dot: string }> = [
+  { key: 'open', label: 'Open', dot: '#97A0AE' },
+  { key: 'in_progress', label: 'In Progress', dot: '#2F62F0' },
+  { key: 'awaiting_parts', label: 'Awaiting Parts', dot: '#B5740F' },
+  { key: 'completed', label: 'Completed', dot: '#1F8A5B' },
+  { key: 'invoiced', label: 'Invoiced', dot: '#6D5AE6' },
+]
+
+const AVATAR_PALETTE = ['#2F62F0', '#1F8A5B', '#E0683B', '#6D5AE6', '#B5740F']
+
+function avatarColor(text: string): string {
+  let h = 0
+  for (let i = 0; i < text.length; i++) h = text.charCodeAt(i) + ((h << 5) - h)
+  return AVATAR_PALETTE[Math.abs(h) % AVATAR_PALETTE.length]
+}
+
+function avatarInitials(name: string | null | undefined): string {
+  const parts = (name ?? '').trim().split(/\s+/).filter(Boolean)
+  if (parts.length === 0) return '·'
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase()
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+}
+
+function KanbanCardBody({ jc }: { jc: JobCardSummary }) {
+  const rego = jc.vehicle_rego || jc.rego
+  const initials = avatarInitials(jc.assigned_to_name)
+  return (
+    <div className="rounded-card border border-border bg-card p-3 shadow-sm">
+      <div className="mono text-[10.5px] font-medium uppercase tracking-[0.08em] text-muted-2">
+        {jc.job_card_number || jc.id.slice(0, 8)}
+      </div>
+      <div className="mt-1 line-clamp-2 text-[13.5px] font-medium text-text">
+        {jc.description || '—'}
+      </div>
+      <div className="mt-1 text-[12px] text-muted">
+        {jc.customer_name}
+        {rego ? <span className="mono"> · {rego}</span> : null}
+      </div>
+      <div className="mt-2 flex items-center justify-between">
+        <span
+          title={jc.assigned_to_name ?? 'Unassigned'}
+          className="grid h-6 w-6 place-items-center rounded-full text-[10px] font-semibold text-white"
+          style={{ background: jc.assigned_to_name ? avatarColor(initials) : 'var(--muted-2)' }}
+        >
+          {initials}
+        </span>
+        <span className="mono text-[11px] text-muted">{formatDate(jc.created_at)}</span>
+      </div>
+    </div>
+  )
+}
+
+function KanbanCard({ jc, onOpen }: { jc: JobCardSummary; onOpen: (id: string) => void }) {
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+    id: jc.id,
+  })
+
+  return (
+    <div
+      ref={setNodeRef}
+      {...attributes}
+      {...listeners}
+      onClick={(e) => {
+        // PointerSensor distance constraint suppresses click on real drags;
+        // this guard is belt-and-braces.
+        if (!isDragging) {
+          e.stopPropagation()
+          onOpen(jc.id)
+        }
+      }}
+      className={`mb-2 cursor-grab transition-opacity ${
+        isDragging ? 'opacity-30' : 'opacity-100 hover:opacity-95'
+      }`}
+    >
+      <KanbanCardBody jc={jc} />
+    </div>
+  )
+}
+
+function KanbanColumn({
+  column,
+  cards,
+  onOpenCard,
+}: {
+  column: (typeof BOARD_COLUMNS)[number]
+  cards: JobCardSummary[]
+  onOpenCard: (id: string) => void
+}) {
+  const { isOver, setNodeRef } = useDroppable({ id: column.key })
+  return (
+    <div
+      ref={setNodeRef}
+      className={`flex w-72 flex-shrink-0 flex-col rounded-card border bg-canvas p-3 ${
+        isOver ? 'border-accent ring-2 ring-accent/30' : 'border-border'
+      }`}
+    >
+      <div className="mb-2 flex items-center gap-2 px-1">
+        <span
+          className="h-2 w-2 rounded-full"
+          style={{ background: column.dot }}
+          aria-hidden="true"
+        />
+        <span className="text-sm font-semibold text-text">{column.label}</span>
+        <span className="mono ml-auto text-[11px] text-muted-2">{cards.length}</span>
+      </div>
+      <div className="flex-1 overflow-y-auto">
+        {cards.length === 0 ? (
+          <p className="mt-2 px-1 text-[12px] text-muted-2">No cards.</p>
+        ) : (
+          cards.map((jc) => <KanbanCard key={jc.id} jc={jc} onOpen={onOpenCard} />)
+        )}
+      </div>
+    </div>
+  )
+}
 
 /* ------------------------------------------------------------------ */
 /*  Inline timer hook — ticks every second for a running job           */
@@ -214,10 +348,21 @@ export default function JobCardList() {
   const [searchQuery, setSearchQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
   const [page, setPage] = useState(1)
+  const [viewMode, setViewMode] = useState<'list' | 'board'>('list')
 
   const [data, setData] = useState<JobCardListResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+
+  // Board view: load up to 200 cards in one go (no pagination on a Kanban).
+  const [boardCards, setBoardCards] = useState<JobCardSummary[]>([])
+  const [boardLoading, setBoardLoading] = useState(false)
+
+  // Awaiting-parts confirmation modal state.
+  const [partsPrompt, setPartsPrompt] = useState<JobCardSummary | null>(null)
+  // Currently dragging card id (drives the DragOverlay clone so the card
+  // doesn't get clipped by the column's overflow container).
+  const [activeDragId, setActiveDragId] = useState<string | null>(null)
 
   // Track which jobs have active timers (jobId → startedAt)
   const [activeTimers, setActiveTimers] = useState<Record<string, string>>({})
@@ -289,6 +434,117 @@ export default function JobCardList() {
   }, [page])
 
   const refetch = () => fetchJobCards(searchQuery, statusFilter, page)
+
+  /* ---- Board view: load up to 100 cards (search-aware, ignores
+         status filter so all 5 columns are populated). The backend
+         caps `limit` at 100 (`Query(le=100)`), so 200 returns 422. ---- */
+  const fetchBoard = useCallback(async (search: string) => {
+    setBoardLoading(true)
+    try {
+      const params: Record<string, string | number> = { limit: 100, offset: 0 }
+      if (search.trim()) params.search = search.trim()
+      const res = await apiClient.get<JobCardListResponse>('/job-cards', { params })
+      const items = res.data?.items ?? res.data?.job_cards ?? []
+      setBoardCards(items)
+    } catch {
+      setBoardCards([])
+    } finally {
+      setBoardLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (viewMode !== 'board') return
+    fetchBoard(searchQuery)
+  }, [viewMode, searchQuery, fetchBoard])
+
+  const cardsByStatus = useMemo(() => {
+    const grouped: Record<JobCardStatus, JobCardSummary[]> = {
+      open: [], in_progress: [], awaiting_parts: [], completed: [], invoiced: [],
+    }
+    for (const jc of boardCards) {
+      if (jc.status in grouped) grouped[jc.status as JobCardStatus].push(jc)
+    }
+    return grouped
+  }, [boardCards])
+
+  /* ---- Drag-and-drop handler ---- */
+  const dndSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+  )
+
+  const performStatusChange = useCallback(
+    async (jobId: string, target: JobCardStatus, notes?: string) => {
+      const before = boardCards.find((c) => c.id === jobId)
+      if (!before) return
+      // Optimistic update.
+      setBoardCards((prev) =>
+        prev.map((c) => (c.id === jobId ? { ...c, status: target } : c)),
+      )
+      try {
+        const payload: Record<string, unknown> = { status: target }
+        if (notes && notes.trim()) payload.notes = notes
+        await apiClient.put(`/job-cards/${jobId}`, payload)
+        addToast('success', `Moved to ${STATUS_CONFIG[target].label}.`)
+      } catch (err: unknown) {
+        // Revert on failure.
+        setBoardCards((prev) =>
+          prev.map((c) => (c.id === jobId ? { ...c, status: before.status } : c)),
+        )
+        const detail = (err as { response?: { data?: { detail?: string } } })?.response
+          ?.data?.detail
+        addToast('error', detail ?? `Couldn't move card to ${STATUS_CONFIG[target].label}.`)
+        throw err
+      }
+    },
+    [addToast, boardCards],
+  )
+
+  const handleDragEnd = useCallback(
+    async (event: DragEndEvent) => {
+      setActiveDragId(null)
+      const jobId = String(event.active.id)
+      const target = event.over?.id as JobCardStatus | undefined
+      if (!target) return
+      const card = boardCards.find((c) => c.id === jobId)
+      if (!card || card.status === target) return
+      if (target === 'awaiting_parts') {
+        // Defer the API call until the user adds a required note.
+        setPartsPrompt(card)
+        return
+      }
+      try {
+        await performStatusChange(jobId, target)
+      } catch {
+        /* error already toasted, optimistic update reverted */
+      }
+    },
+    [boardCards, performStatusChange],
+  )
+
+  const handleDragStart = useCallback((event: DragStartEvent) => {
+    setActiveDragId(String(event.active.id))
+  }, [])
+
+  const handleDragCancel = useCallback(() => {
+    setActiveDragId(null)
+  }, [])
+
+  const activeDragCard = activeDragId
+    ? boardCards.find((c) => c.id === activeDragId) ?? null
+    : null
+
+  const handlePartsConfirm = useCallback(
+    async (note: string) => {
+      if (!partsPrompt) return
+      await performStatusChange(partsPrompt.id, 'awaiting_parts', note)
+    },
+    [partsPrompt, performStatusChange],
+  )
+
+  const openCard = (id: string) => {
+    window.location.href = `/job-cards/${id}`
+  }
 
   /* ---- Start Job (start timer) ---- */
   const handleStartJob = async (jobId: string) => {
@@ -380,6 +636,34 @@ export default function JobCardList() {
           <h1>Job Cards</h1>
         </div>
         <div className="head-actions">
+          <div
+            className="inline-flex overflow-hidden rounded-ctl border border-border"
+            role="group"
+            aria-label="View mode"
+          >
+            <button
+              type="button"
+              onClick={() => setViewMode('list')}
+              className={`px-3 py-1.5 text-sm font-medium transition-colors ${
+                viewMode === 'list'
+                  ? 'bg-accent text-white'
+                  : 'bg-card text-text hover:bg-canvas'
+              }`}
+            >
+              List
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('board')}
+              className={`px-3 py-1.5 text-sm font-medium transition-colors ${
+                viewMode === 'board'
+                  ? 'bg-accent text-white'
+                  : 'bg-card text-text hover:bg-canvas'
+              }`}
+            >
+              Board
+            </button>
+          </div>
           <Button
             leftIcon={
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2}>
@@ -403,12 +687,14 @@ export default function JobCardList() {
             onChange={(e) => setSearchQuery(e.target.value)}
             aria-label="Search job cards"
           />
-          <Select
-            label="Status"
-            options={STATUS_OPTIONS}
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-          />
+          {viewMode === 'list' && (
+            <Select
+              label="Status"
+              options={STATUS_OPTIONS}
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+            />
+          )}
         </div>
 
         {hasFilters && (
@@ -434,14 +720,14 @@ export default function JobCardList() {
       )}
 
       {/* Loading */}
-      {loading && !data && (
+      {viewMode === 'list' && loading && !data && (
         <div className="py-16">
           <Spinner label="Loading job cards" />
         </div>
       )}
 
       {/* Table */}
-      {data && (
+      {viewMode === 'list' && data && (
         <>
           <section className="overflow-hidden rounded-card border border-border bg-card shadow-card">
             <div className="overflow-x-auto">
@@ -560,6 +846,58 @@ export default function JobCardList() {
           )}
         </>
       )}
+
+      {/* Board view */}
+      {viewMode === 'board' && (
+        <>
+          {boardLoading && boardCards.length === 0 ? (
+            <div className="py-16">
+              <Spinner label="Loading job cards" />
+            </div>
+          ) : (
+            <DndContext
+              sensors={dndSensors}
+              onDragStart={handleDragStart}
+              onDragEnd={handleDragEnd}
+              onDragCancel={handleDragCancel}
+            >
+              <div className="flex gap-3 overflow-x-auto pb-2">
+                {BOARD_COLUMNS.map((col) => (
+                  <KanbanColumn
+                    key={col.key}
+                    column={col}
+                    cards={cardsByStatus[col.key] ?? []}
+                    onOpenCard={openCard}
+                  />
+                ))}
+              </div>
+              <DragOverlay dropAnimation={null}>
+                {activeDragCard ? (
+                  <div className="w-72 cursor-grabbing opacity-95 shadow-pop">
+                    <KanbanCardBody jc={activeDragCard} />
+                  </div>
+                ) : null}
+              </DragOverlay>
+            </DndContext>
+          )}
+          {boardCards.length === 0 && !boardLoading && (
+            <p className="mt-4 text-[13px] text-muted">
+              No job cards yet. Create your first job card to get started.
+            </p>
+          )}
+        </>
+      )}
+
+      <AwaitingPartsNoteModal
+        open={!!partsPrompt}
+        jobCardLabel={
+          partsPrompt
+            ? `${partsPrompt.job_card_number || partsPrompt.id.slice(0, 8)} — ${partsPrompt.customer_name}`
+            : ''
+        }
+        onClose={() => setPartsPrompt(null)}
+        onConfirm={handlePartsConfirm}
+      />
 
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>

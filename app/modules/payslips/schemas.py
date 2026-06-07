@@ -34,7 +34,7 @@ from decimal import Decimal
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 
 # ---------------------------------------------------------------------------
@@ -356,6 +356,44 @@ class PayslipUpdate(BaseModel):
     notes: str | None = Field(default=None, max_length=2000)
 
 
+class PayslipDeductionSubtotals(BaseModel):
+    """Per-payslip deduction subtotals, one figure per ``DeductionKind``.
+
+    Derived on read from the payslip's ``payslip_deductions`` rows (the
+    source of truth) — never stored, so it can never drift from the
+    underlying lines. ``kiwisaver_employee`` and ``kiwisaver_employer``
+    are kept separate because only the employee portion reduces
+    ``net_pay`` (the employer contribution is informational — see
+    ``compute_payslip`` in :mod:`app.modules.payslips.calc`).
+
+    Each kind defaults to ``Decimal("0")`` so an unpopulated instance
+    (e.g. the schema default for an existing consumer that never sets
+    it) serialises cleanly as all-zeros. ``total`` is a computed field
+    (sum of the seven) so it can never disagree with the parts.
+    """
+
+    paye: Decimal = Field(default=Decimal("0"))
+    acc_levy: Decimal = Field(default=Decimal("0"))
+    kiwisaver_employee: Decimal = Field(default=Decimal("0"))
+    kiwisaver_employer: Decimal = Field(default=Decimal("0"))
+    student_loan: Decimal = Field(default=Decimal("0"))
+    child_support: Decimal = Field(default=Decimal("0"))
+    voluntary: Decimal = Field(default=Decimal("0"))
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def total(self) -> Decimal:
+        return (
+            self.paye
+            + self.acc_levy
+            + self.kiwisaver_employee
+            + self.kiwisaver_employer
+            + self.student_loan
+            + self.child_support
+            + self.voluntary
+        )
+
+
 class PayslipResponse(BaseModel):
     """Outbound payslip summary record (admin view).
 
@@ -385,6 +423,9 @@ class PayslipResponse(BaseModel):
     gross_pay: Decimal
     gross_ytd: Decimal
     net_pay: Decimal
+    deduction_subtotals: PayslipDeductionSubtotals = Field(
+        default_factory=PayslipDeductionSubtotals,
+    )
     pdf_file_key: str | None = None
     emailed_at: datetime | None = None
     finalised_at: datetime | None = None

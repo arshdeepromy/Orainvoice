@@ -1,6 +1,10 @@
 import { useState, useEffect, useCallback } from 'react'
 import apiClient from '@/api/client'
-import { Input, Badge, Spinner, Pagination, Select } from '@/components/ui'
+import { Input, Badge, Spinner, Pagination, Select, Button } from '@/components/ui'
+import { useTenant } from '@/contexts/TenantContext'
+import { useModules } from '@/contexts/ModuleContext'
+import { SendEmailModal } from '@/components/email/SendEmailModal'
+import { SURFACE_REGISTRY } from '@/components/email/surfaceRegistry'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -45,6 +49,18 @@ const STATUS_BADGE: Record<LogEntry['status'], 'neutral' | 'info' | 'success' | 
 }
 
 /**
+ * Vehicle-expiry reminder template types that support the shared Send Email
+ * composer's Resend surface (R2.7). Only log rows whose `template_type` is one
+ * of these get a Resend action; all other notifications have no Resend trigger.
+ */
+const RESEND_TEMPLATE_TYPES: ReadonlySet<string> = new Set([
+  'wof_expiry_reminder',
+  'cof_expiry_reminder',
+  'registration_expiry_reminder',
+  'service_due_reminder',
+])
+
+/**
  * Email/SMS delivery log viewer — shows recipient, template, timestamp,
  * delivery status, and subject for all sent notifications.
  *
@@ -60,6 +76,20 @@ export default function NotificationLog() {
   const [statusFilter, setStatusFilter] = useState('')
   const [channelFilter, setChannelFilter] = useState('')
   const pageSize = 20
+
+  /* Resend capability gate (R22.1–22.3): the vehicles module must be enabled
+     AND the org's trade family must be automotive. When false we fail closed —
+     the whole Resend capability (column + per-row action) is not rendered. */
+  const { tradeFamily } = useTenant()
+  const { isEnabled: isModuleEnabled } = useModules()
+  const vehiclesEnabled = isModuleEnabled('vehicles')
+  const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
+  const canResend = vehiclesEnabled && isAutomotive
+
+  /* Shared Send Email composer — driven by the notification-log row whose
+     Resend action was clicked. Resend keys off the log id (`logId`); the
+     backend reconstructs vehicle/customer context from the log row itself. */
+  const [resendEntry, setResendEntry] = useState<LogEntry | null>(null)
 
   const fetchLog = useCallback(async () => {
     setLoading(true)
@@ -166,12 +196,15 @@ export default function NotificationLog() {
                   <th scope="col" className="mono border-b border-border px-4 py-3 text-left text-[10.5px] font-medium uppercase tracking-[0.08em] text-muted-2">Provider</th>
                   <th scope="col" className="mono border-b border-border px-4 py-3 text-left text-[10.5px] font-medium uppercase tracking-[0.08em] text-muted-2">Status</th>
                   <th scope="col" className="mono border-b border-border px-4 py-3 text-left text-[10.5px] font-medium uppercase tracking-[0.08em] text-muted-2">Sent</th>
+                  {canResend && (
+                    <th scope="col" className="mono border-b border-border px-4 py-3 text-left text-[10.5px] font-medium uppercase tracking-[0.08em] text-muted-2">Actions</th>
+                  )}
                 </tr>
               </thead>
               <tbody>
                 {filteredEntries.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="px-4 py-12 text-center text-sm text-muted">
+                    <td colSpan={canResend ? 8 : 7} className="px-4 py-12 text-center text-sm text-muted">
                       {search || statusFilter || channelFilter
                         ? 'No log entries match your filters.'
                         : 'No notifications sent yet.'}
@@ -207,6 +240,19 @@ export default function NotificationLog() {
                       <td className="mono whitespace-nowrap px-4 py-3 text-sm text-muted">
                         {new Date(entry.created_at).toLocaleString('en-NZ')}
                       </td>
+                      {canResend && (
+                        <td className="whitespace-nowrap px-4 py-3 text-sm">
+                          {RESEND_TEMPLATE_TYPES.has(entry.template_type) ? (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => setResendEntry(entry)}
+                            >
+                              Resend
+                            </Button>
+                          ) : null}
+                        </td>
+                      )}
                     </tr>
                   ))
                 )}
@@ -224,6 +270,27 @@ export default function NotificationLog() {
             </div>
           )}
         </>
+      )}
+
+      {/* ---- Send Email composer modal (shared) — Resend reminder surface ----
+         Only mounts when the Resend gate passes (R22.2/22.3) and a row has been
+         selected. The resend endpoint is keyed by `logId` (the URL is
+         /api/v2/notifications/log/{logId}/resend) and the backend reconstructs
+         the customer/vehicle context from the log row, so `entityId` is not used
+         for lookup — we pass the log id as a stable best-effort placeholder
+         (the design's (customer_id, global_vehicle_id) pair is not carried on
+         the notification_log row in this view; logId is the operative key). */}
+      {canResend && resendEntry && (
+        <SendEmailModal
+          open={true}
+          onClose={() => setResendEntry(null)}
+          templateType={resendEntry.template_type}
+          entityType="customer_vehicle"
+          entityId={resendEntry.id}
+          logId={resendEntry.id}
+          surfaceLabel={SURFACE_REGISTRY[resendEntry.template_type]?.surfaceLabel ?? 'Resend Reminder'}
+          onSent={() => { fetchLog() }}
+        />
       )}
     </div>
   )

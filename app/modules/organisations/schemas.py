@@ -958,3 +958,62 @@ class PlanSmsPricingResponse(BaseModel):
     """
 
     sms_package_pricing: list[SmsPackageTierPricing] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Clock-in / Overtime policy schemas
+# ---------------------------------------------------------------------------
+# The two JSONB columns ``organisations.clock_in_policy`` and
+# ``organisations.overtime_policy`` (added by migration 0207) plus the
+# typed ``organisations.overtime_handling`` column are exposed via the
+# dedicated GET/PUT ``/api/v2/org/clock-in-policy`` endpoints below.
+#
+# These schemas mirror the field set used by the time_clock service when
+# it reads the raw JSONB (see :mod:`app.modules.time_clock.service` —
+# ``_load_clock_in_policy`` and the geofence / kiosk-rate-limit / shift-swap
+# pathways that key off these flags). All fields carry the documented
+# defaults so a partially-set JSONB still serialises to a populated object.
+
+ClockInDefaultChannel = Literal["kiosk_only", "kiosk_and_self_service"]
+OvertimeHandling = Literal["pay_cash", "toil", "employee_chooses"]
+
+
+class ClockInPolicyBlock(BaseModel):
+    """Outbound shape of ``organisations.clock_in_policy`` JSONB."""
+
+    default_channel: ClockInDefaultChannel = "kiosk_only"
+    self_service_require_photo: bool = True
+    self_service_require_geofence: bool = False
+    branch_radius_metres: int = Field(default=200, ge=20, le=5000)
+    allow_late_clock_out_edits: bool = True
+    kiosk_employee_id_rate_limit: int = Field(default=10, ge=1, le=100)
+    shift_swap_requires_manager_approval: bool = False
+
+
+class OvertimePolicyBlock(BaseModel):
+    """Outbound shape of ``organisations.overtime_policy`` JSONB."""
+
+    weekly_threshold_minutes: int = Field(default=2400, ge=0, le=10000)
+    daily_threshold_minutes: int = Field(default=480, ge=0, le=1440)
+    require_pre_approval: bool = False
+
+
+class ClockInPolicyResponse(BaseModel):
+    """GET/PUT /api/v2/org/clock-in-policy response body."""
+
+    clock_in_policy: ClockInPolicyBlock = Field(default_factory=ClockInPolicyBlock)
+    overtime_policy: OvertimePolicyBlock = Field(default_factory=OvertimePolicyBlock)
+    overtime_handling: OvertimeHandling = "pay_cash"
+
+
+class ClockInPolicyUpdateRequest(BaseModel):
+    """PUT /api/v2/org/clock-in-policy request body.
+
+    All three top-level keys are optional so the frontend can patch a
+    subset; nested blocks merge field-by-field on the server (any field
+    omitted in the nested dict keeps its existing value).
+    """
+
+    clock_in_policy: Optional[ClockInPolicyBlock] = None
+    overtime_policy: Optional[OvertimePolicyBlock] = None
+    overtime_handling: Optional[OvertimeHandling] = None

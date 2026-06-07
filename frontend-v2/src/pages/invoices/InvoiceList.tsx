@@ -26,6 +26,8 @@ import { getInspectionLabel, getInspectionExpiry } from '@/utils/vehicleHelpers'
 import { buildVehicleDisplayFields } from '@/utils/buildVehicleDisplayFields'
 import { QrPaymentWaitingPopup } from './QrPaymentWaitingPopup'
 import { QrPaymentAmountModal } from './QrPaymentAmountModal'
+import { SendEmailModal } from '@/components/email/SendEmailModal'
+import { SURFACE_REGISTRY } from '@/components/email/surfaceRegistry'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -477,6 +479,9 @@ export default function InvoiceList() {
   const [qrAmountModalOpen, setQrAmountModalOpen] = useState(false)
   const [shareCopied, setShareCopied] = useState(false)
 
+  /* --- Send Email composer modal (shared SendEmailModal) --- */
+  const [emailModal, setEmailModal] = useState<{ templateType: string; surfaceLabel: string } | null>(null)
+
   /* Credit Note & Refund modals */
   const [creditNoteModalOpen, setCreditNoteModalOpen] = useState(false)
   const [refundModalOpen, setRefundModalOpen] = useState(false)
@@ -641,37 +646,22 @@ export default function InvoiceList() {
 
   const showMsg = (text: string, type: 'success' | 'error' = 'success') => setActionMessage({ text, type })
 
-  const handleSendInvoice = async () => {
+  /* Open the shared Send Email composer for a given template type. The modal
+     reads SURFACE_REGISTRY[templateType] to know where to POST; onSent (wired
+     at the render site) re-fetches the invoice row + list. */
+  const openEmailModal = (templateType: string) => {
     if (!invoice) return
-    setActionLoading('send')
-    try {
-      await apiClient.post(`/invoices/${invoice.id}/email`)
-      showMsg('Invoice sent to customer.')
-      fetchDetail(invoice.id)
-      fetchInvoices(searchQuery, statusFilter, page)
-    } catch (err: unknown) {
-      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-      showMsg(detail || 'Failed to send invoice.', 'error')
-    }
-    finally { setActionLoading(''); setSendMenuOpen(false) }
+    const surfaceLabel = SURFACE_REGISTRY[templateType]?.surfaceLabel ?? 'Send Email'
+    setEmailModal({ templateType, surfaceLabel })
+    setSendMenuOpen(false)
+    setMoreMenuOpen(false)
   }
 
-  const handleSendPaymentLink = async () => {
-    if (!invoice) return
-    setActionLoading('sendPaymentLink')
-    try {
-      // Reuses the org's on-domain payment page URL (same one used by QR
-      // Payment) and emails it via the org's active invoice_issued template
-      // (or the default Pay Now template). No new Stripe Checkout Session
-      // is created — the same PaymentIntent-backed page is reused.
-      await apiClient.post(`/payments/invoice/${invoice.id}/send-payment-link`)
-      showMsg('Payment link emailed to customer.')
-    } catch (err: unknown) {
-      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-      showMsg(detail || 'Failed to send payment link.', 'error')
-    }
-    finally { setActionLoading(''); setSendMenuOpen(false) }
-  }
+  const handleSendInvoice = () => openEmailModal('invoice_issued')
+
+  const handleSendPaymentLink = () => openEmailModal('invoice_payment_link')
+
+  const handleSendReceipt = () => openEmailModal('payment_received')
 
   const handleMarkAsSent = async () => {
     if (!invoice || invoice.status !== 'draft') return
@@ -1225,18 +1215,16 @@ export default function InvoiceList() {
                     <div className="absolute right-0 mt-1 w-48 bg-card border border-border rounded-ctl shadow-pop z-50 py-1">
                       <button
                         onClick={handleSendInvoice}
-                        disabled={actionLoading === 'send'}
                         className="w-full text-left px-4 py-2 text-sm text-text hover:bg-canvas disabled:opacity-50"
                       >
-                        {actionLoading === 'send' ? 'Sending…' : 'Send Invoice'}
+                        Send Invoice
                       </button>
                       {canShowSendPaymentLink && (
                         <button
                           onClick={handleSendPaymentLink}
-                          disabled={actionLoading === 'sendPaymentLink'}
                           className="w-full text-left px-4 py-2 text-sm text-text hover:bg-canvas disabled:opacity-50 border-t border-border"
                         >
-                          {actionLoading === 'sendPaymentLink' ? 'Sending…' : 'Send Payment Link'}
+                          Send Payment Link
                         </button>
                       )}
                       {isDraft && (
@@ -1392,6 +1380,14 @@ export default function InvoiceList() {
                       >
                         Copy Link
                       </button>
+                      {invoice && (invoice.status === 'paid' || invoice.status === 'partially_paid') && (
+                        <button
+                          onClick={handleSendReceipt}
+                          className="w-full text-left px-4 py-2 text-sm text-text hover:bg-canvas"
+                        >
+                          Send Receipt
+                        </button>
+                      )}
                       {invoice && isCreditNoteButtonVisible(invoice.status) && (
                         <button
                           onClick={() => { setCreditNoteModalOpen(true); setMoreMenuOpen(false) }}
@@ -1448,10 +1444,9 @@ export default function InvoiceList() {
                 <div className="ml-auto flex items-center gap-2">
                   <button
                     onClick={handleSendInvoice}
-                    disabled={actionLoading === 'send'}
                     className="px-3 py-1 text-xs font-semibold text-white bg-accent rounded hover:bg-accent-press disabled:opacity-50 transition-colors"
                   >
-                    {actionLoading === 'send' ? 'Sending…' : 'Send Invoice'}
+                    Send Invoice
                   </button>
                   <button
                     onClick={handleMarkAsSent}
@@ -2231,6 +2226,20 @@ export default function InvoiceList() {
             invoiceId={invoice.id}
             refundableAmount={refundableAmount}
           />
+          {emailModal && (
+            <SendEmailModal
+              open={true}
+              onClose={() => setEmailModal(null)}
+              templateType={emailModal.templateType}
+              entityType="invoice"
+              entityId={invoice.id}
+              surfaceLabel={emailModal.surfaceLabel}
+              onSent={() => {
+                fetchDetail(invoice.id)
+                fetchInvoices(searchQuery, statusFilter, page)
+              }}
+            />
+          )}
         </>
       )}
 

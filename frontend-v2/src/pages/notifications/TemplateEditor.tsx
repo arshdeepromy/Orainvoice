@@ -64,6 +64,16 @@ const TEMPLATE_VARIABLES_QUOTE = [
   { variable: '{{quote_valid_until}}', description: 'Quote expiry date' },
 ]
 
+// Statement and portal-link variables — always shown (invoice_payment_link reuses
+// the base invoice variables, so it needs no additional entries here)
+const TEMPLATE_VARIABLES_STATEMENT_PORTAL = [
+  { variable: '{{statement_period_start}}', description: 'Statement period start date' },
+  { variable: '{{statement_period_end}}', description: 'Statement period end date' },
+  { variable: '{{total_outstanding}}', description: 'Total outstanding balance' },
+  { variable: '{{statement_link}}', description: 'Online customer statement link' },
+  { variable: '{{portal_link}}', description: 'Customer portal access link' },
+]
+
 const BLOCK_TYPES = [
   { value: 'logo', label: 'Logo' },
   { value: 'header', label: 'Header Text' },
@@ -107,6 +117,7 @@ export default function TemplateEditor() {
   // Build template variables list — vehicle/booking/quote vars shown when their modules are enabled
   const templateVariables = [
     ...TEMPLATE_VARIABLES_BASE,
+    ...TEMPLATE_VARIABLES_STATEMENT_PORTAL,
     ...(isEnabled('vehicles') ? TEMPLATE_VARIABLES_VEHICLE : []),
     ...(isEnabled('bookings') ? TEMPLATE_VARIABLES_BOOKING : []),
     ...(isEnabled('quotes') ? TEMPLATE_VARIABLES_QUOTE : []),

@@ -194,8 +194,13 @@ FRANCHISE_ADMIN_ALLOWED_PREFIXES: tuple[str, ...] = (
     "/api/v1/admin/reports",
 )
 
-# Staff member: only allowed to access own jobs, time entries, schedule
+# Staff member: own jobs, time entries, schedule + self-service (clock,
+# payslips) + the shell/bootstrap endpoints every authenticated session needs.
+# Server-side handlers still enforce per-user ownership on the broad prefixes
+# (jobs / time-tracking / staff) via staff_members.user_id, so these are coarse
+# "can reach the route" gates, not data-scope grants.
 STAFF_MEMBER_ALLOWED_PREFIXES: tuple[str, ...] = (
+    # --- Work (own records; ownership enforced server-side) ---
     "/api/v2/jobs/",
     "/api/v2/jobs",
     "/api/v2/time-tracking/",
@@ -204,6 +209,36 @@ STAFF_MEMBER_ALLOWED_PREFIXES: tuple[str, ...] = (
     "/api/v2/schedule",
     "/api/v1/job-cards/",
     "/api/v1/job-cards",
+    # --- Self-service (clock-in/out, payslips) ---
+    # SelfServiceClockScreen resolves the current user's own staff row from the
+    # active-staff list and posts clock actions; MyPayslipsPage reads
+    # /staff/me/payslips. Ownership for the /me and clock endpoints is enforced
+    # server-side via staff_members.user_id.
+    "/api/v2/staff/",
+    "/api/v2/staff",
+    "/api/v2/uploads/clock-photos",
+    # --- Shell / bootstrap (read-only — see STAFF_MEMBER_READONLY_PREFIXES) ---
+    # The org app shell + its context providers call these for EVERY role on
+    # load; without them a staff_member can authenticate but the SPA can't
+    # initialise (AuthContext / ModuleContext / FeatureFlagContext / BranchContext
+    # / branding / topbar bell). Mirrors the equivalent KIOSK allowances.
+    "/api/v1/auth/me",
+    "/api/v2/modules",
+    "/api/v2/flags",
+    "/api/v1/org/settings",
+    "/api/v1/org/branches",
+    "/api/v1/notifications/inbox",
+)
+
+# Of the staff allowlist, these shell/bootstrap prefixes are read-only for a
+# staff member — GET is allowed (so the SPA can load), but writes are denied so
+# staff can't modify org settings, branches, flags, modules or notifications.
+STAFF_MEMBER_READONLY_PREFIXES: tuple[str, ...] = (
+    "/api/v1/org/settings",
+    "/api/v1/org/branches",
+    "/api/v2/modules",
+    "/api/v2/flags",
+    "/api/v1/notifications/inbox",
 )
 
 # Kiosk: allowlist-based access — only check-in and branding endpoints
@@ -336,9 +371,13 @@ def check_role_path_access(role: str, path: str, method: str = "GET") -> str | N
             return "Franchise admin has read-only access"
 
     elif role == STAFF_MEMBER:
-        # Staff members can only access their own jobs, time entries, schedule
+        # Staff members can only access their own work, self-service, and the
+        # read-only shell/bootstrap endpoints.
         if not _matches_any_prefix(path, STAFF_MEMBER_ALLOWED_PREFIXES):
             return "Staff member can only access assigned jobs, time entries, and schedule"
+        # Shell/bootstrap endpoints are read-only for staff — deny writes.
+        if method.upper() != "GET" and _matches_any_prefix(path, STAFF_MEMBER_READONLY_PREFIXES):
+            return "Staff member has read-only access to this resource"
 
     elif role == LOCATION_MANAGER:
         # Location managers have salesperson-level access + staff/inventory/scheduling

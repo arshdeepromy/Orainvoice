@@ -8,14 +8,31 @@ interface KioskRegoEntryProps {
   vehicleCount: number
   onVehicleFound: (result: VehicleLookupResult) => void
   onBack: () => void
+  /** Proceed to the check-in form with the vehicles already added. Rendered as
+   *  a "Continue to check-in" button when at least one vehicle exists. */
+  onContinue?: () => void
 }
 
-/* ── KioskRegoEntry ── */
+const REGO_MAX = 6
+/* Full alphanumeric on-screen keypad. The prototype draws a 9-key mock
+   (A/B/C/1/2/3/0/⌫/Clear) that can't enter most plates, so we keep its button
+   styling (`.keypad`) but expose every key for real kiosk use. */
+const KEYPAD_KEYS = [
+  'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I',
+  'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R',
+  'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', '0',
+  '1', '2', '3', '4', '5', '6', '7', '8', '9',
+]
+
+/* ── KioskRegoEntry ──
+ * Design: the "REGO" screen in OraInvoice_Handoff/app/Kiosk.html. Vehicle
+ * lookup logic (lookupVehicle + 404/429/error handling) is unchanged. */
 
 export function KioskRegoEntry({
   vehicleCount,
   onVehicleFound,
   onBack,
+  onContinue,
 }: KioskRegoEntryProps) {
   const [rego, setRego] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -28,6 +45,18 @@ export function KioskRegoEntry({
       abortControllerRef.current?.abort()
     }
   }, [])
+
+  /** Mirror of the prototype `key()` helper — drives the readonly-style input
+   *  from the on-screen keypad. The input itself stays editable for keyboards. */
+  const pressKey = useCallback((k: string) => {
+    if (error) setError(null)
+    setRego((prev) => {
+      if (k === 'back') return prev.slice(0, -1)
+      if (k === 'clear') return ''
+      if (prev.length >= REGO_MAX) return prev
+      return (prev + k).toUpperCase()
+    })
+  }, [error])
 
   const handleConfirm = useCallback(async () => {
     // Validate non-empty
@@ -70,103 +99,120 @@ export function KioskRegoEntry({
   }, [rego, onVehicleFound])
 
   return (
-    <div className="w-full max-w-md space-y-6 rounded-card bg-card p-8 text-center shadow-pop">
-      {/* Vehicle count badge */}
-      {vehicleCount > 0 && (
-        <div className="inline-flex items-center rounded-full bg-ok-soft px-3 py-1 text-sm font-medium text-ok">
-          {vehicleCount} vehicle{vehicleCount !== 1 ? 's' : ''} added
+    <>
+      <button type="button" className="k-back" onClick={onBack} disabled={loading}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+          <path d="M15 18l-6-6 6-6" />
+        </svg>
+        Back
+      </button>
+
+      <div className="k-card">
+        <h1>Your number plate</h1>
+        <p className="lead">Pop in your rego and we&apos;ll find your vehicle.</p>
+
+        {vehicleCount > 0 && (
+          <p className="mono" style={{ textAlign: 'center', color: 'var(--ok)', fontSize: '14px', fontWeight: 600, marginTop: '14px' }}>
+            {vehicleCount} vehicle{vehicleCount !== 1 ? 's' : ''} added
+          </p>
+        )}
+
+        <div style={{ marginTop: '26px' }}>
+          <input
+            className="k-input"
+            value={rego}
+            maxLength={REGO_MAX}
+            onChange={(e) => {
+              setRego(e.target.value.toUpperCase().slice(0, REGO_MAX))
+              if (error) setError(null)
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') handleConfirm()
+            }}
+            aria-label="Vehicle registration number"
+            aria-invalid={!!error}
+            aria-describedby={error ? 'rego-error' : undefined}
+            autoComplete="off"
+            autoCapitalize="characters"
+            disabled={loading}
+          />
         </div>
-      )}
 
-      {/* Title */}
-      <h1 className="text-2xl font-bold text-text">
-        Enter Vehicle Registration
-      </h1>
-
-      <p className="text-lg text-muted">
-        Type your vehicle registration number below
-      </p>
-
-      {/* Rego input — 48px min tap target, 18px+ font */}
-      <div className="space-y-2">
-        <input
-          type="text"
-          value={rego}
-          onChange={(e) => {
-            setRego(e.target.value)
-            if (error) setError(null)
-          }}
-          placeholder="e.g. ABC123"
-          aria-label="Vehicle registration number"
-          aria-invalid={!!error}
-          aria-describedby={error ? 'rego-error' : undefined}
-          className="mono w-full min-h-[48px] rounded-ctl border border-border-strong px-4 py-3 text-lg text-center font-semibold uppercase tracking-wider placeholder:normal-case placeholder:font-normal placeholder:tracking-normal focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent"
-          autoComplete="off"
-          autoCapitalize="characters"
-          disabled={loading}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') handleConfirm()
-          }}
-        />
-
-        {/* Validation / error message */}
         {error && (
-          <p id="rego-error" className="text-sm text-danger" role="alert">
+          <p
+            id="rego-error"
+            role="alert"
+            style={{ textAlign: 'center', color: 'var(--danger)', fontSize: '14px', marginTop: '10px' }}
+          >
             {error}
           </p>
         )}
-      </div>
 
-      {/* Action buttons */}
-      <div className="space-y-3">
-        {/* Confirm button */}
+        <div className="keypad" style={{ gridTemplateColumns: 'repeat(6, 1fr)' }}>
+          {KEYPAD_KEYS.map((k) => (
+            <button key={k} type="button" onClick={() => pressKey(k)} disabled={loading}>
+              {k}
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={() => pressKey('back')}
+            disabled={loading}
+            aria-label="Backspace"
+            style={{ gridColumn: 'span 3' }}
+          >
+            ⌫
+          </button>
+          <button
+            type="button"
+            onClick={() => pressKey('clear')}
+            disabled={loading}
+            style={{ gridColumn: 'span 3', fontSize: '18px' }}
+          >
+            Clear
+          </button>
+        </div>
+
         <button
           type="button"
+          className="btn-kiosk primary"
+          style={{ marginTop: '20px' }}
           onClick={handleConfirm}
           disabled={loading}
-          className="inline-flex w-full min-h-[48px] items-center justify-center rounded-ctl bg-accent px-6 py-3 text-lg font-medium text-white shadow-card hover:bg-accent-press focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {loading ? (
-            <>
-              <svg
-                className="mr-2 h-5 w-5 animate-spin text-white"
-                xmlns="http://www.w3.org/2000/svg"
-                fill="none"
-                viewBox="0 0 24 24"
-                aria-hidden="true"
-              >
-                <circle
-                  className="opacity-25"
-                  cx="12"
-                  cy="12"
-                  r="10"
-                  stroke="currentColor"
-                  strokeWidth="4"
-                />
-                <path
-                  className="opacity-75"
-                  fill="currentColor"
-                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                />
-              </svg>
-              Looking up…
-            </>
+            'Looking up…'
           ) : (
-            'Confirm'
+            <>
+              Find my vehicle
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                <path d="M21 21l-5-5m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+              </svg>
+            </>
           )}
         </button>
 
-        {/* Back button */}
-        <button
-          type="button"
-          onClick={onBack}
-          disabled={loading}
-          className="inline-flex w-full min-h-[48px] items-center justify-center rounded-ctl px-6 py-3 text-lg font-medium text-muted hover:text-text focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          Back
-        </button>
+        {/* Recover from an accidental "Add another vehicle": continue to the
+            check-in form with the vehicles already added (no data lost). */}
+        {vehicleCount > 0 && onContinue && (
+          <button
+            type="button"
+            className="btn-kiosk ghost"
+            style={{ marginTop: '12px' }}
+            onClick={onContinue}
+            disabled={loading}
+          >
+            Continue to check-in
+          </button>
+        )}
+
+        <div className="step-dots">
+          <i className="on" />
+          <i />
+          <i />
+        </div>
       </div>
-    </div>
+    </>
   )
 }
 

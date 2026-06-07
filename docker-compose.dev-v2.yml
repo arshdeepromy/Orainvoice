@@ -1,0 +1,47 @@
+# =============================================================================
+# docker-compose.dev-v2.yml  —  LOCAL DEV: make frontend-v2 the live SPA
+# -----------------------------------------------------------------------------
+# Layer this on top of the dev stack to serve the REDESIGN (frontend-v2) as the
+# live frontend behind the nginx gateway on http://localhost/ (root redirects
+# to /new/). The old `frontend/` build is ARCHIVED and is NOT started.
+#
+# USAGE (local dev only — never on prod / Pi):
+#
+#   docker compose \
+#     -f docker-compose.yml \
+#     -f docker-compose.dev.yml \
+#     -f docker-compose.frontend-v2.yml \
+#     -f docker-compose.dev-v2.yml \
+#     up -d --remove-orphans postgres redis app mobile frontend-v2 nginx
+#
+# Note we deliberately OMIT the `frontend` service from the `up` list so the
+# archived old SPA does not run. (Listing services explicitly is how we keep it
+# stopped without editing the canonical docker-compose.yml.)
+#
+# To REVERT to the old frontend, drop this file (and docker-compose.frontend-v2
+# .yml) from the command and bring the stack up normally.
+# =============================================================================
+
+services:
+  # Point the gateway at the dev-v2 config (frontend-v2 under /new/, root ->
+  # /new/) and make it reach the redesign dev server on the shared network.
+  # Overrides ONLY the config mount + depends_on; the old read-only
+  # frontend_dist mount from docker-compose.yml is harmless but unused.
+  nginx:
+    volumes:
+      - ./nginx/nginx.dev-v2.conf:/etc/nginx/conf.d/default.conf:ro
+      - mobile_dist:/usr/share/nginx/mobile:ro
+    depends_on:
+      - app
+      - mobile
+      - frontend-v2
+
+  # HMR over the gateway: the browser loads the app from http://localhost/new/
+  # (port 80), so Vite's HMR websocket must target host:80, not :5174.
+  frontend-v2:
+    environment:
+      - API_PROXY=http://app:8000
+      - HMR_HOST=localhost
+      - HMR_CLIENT_PORT=80
+      - HMR_PROTOCOL=ws
+      - CHOKIDAR_USEPOLLING=true

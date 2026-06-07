@@ -39,6 +39,8 @@ interface FieldDef {
   visibleWhen?: { key: string; oneOf: string }
   /** Group name for sectioned rendering (Stripe uses 'api-keys' and 'connect') */
   group?: string
+  /** Render a dedicated Save button under this field that persists only this field */
+  inlineSave?: boolean
 }
 
 const INTEGRATION_FIELDS: Record<IntegrationName, FieldDef[]> = {
@@ -47,6 +49,8 @@ const INTEGRATION_FIELDS: Record<IntegrationName, FieldDef[]> = {
     { key: 'endpoint_url', label: 'Endpoint URL', type: 'text', placeholder: 'https://www.carjam.co.nz' },
     { key: 'per_lookup_cost_nzd', label: 'Basic per-lookup cost (NZD)', type: 'number', placeholder: '0.50', helperText: 'Cost charged per basic CarJam API lookup' },
     { key: 'abcd_per_lookup_cost_nzd', label: 'ABCD per-lookup cost (NZD)', type: 'number', placeholder: '0.05', helperText: 'Cost charged per ABCD (lower-cost) lookup' },
+    { key: 'ppsr_per_check_cost_nzd', label: 'PPSR per-check cost (NZD)', type: 'number', placeholder: '2.00', helperText: 'Cost charged per PPSR (security interest) check', inlineSave: true },
+    { key: 'owner_check_per_check_cost_nzd', label: 'Ownership check per-check cost (NZD)', type: 'number', placeholder: '2.00', helperText: 'Cost charged per CarJam ownership (owner_check) check', inlineSave: true },
     { key: 'global_rate_limit_per_minute', label: 'Global rate limit (calls/min)', type: 'number', placeholder: '60' },
     {
       key: 's241_purpose_default',
@@ -110,6 +114,9 @@ function IntegrationPanel({
   const [savingKeys, setSavingKeys] = useState(false)
   const [testingKeys, setTestingKeys] = useState(false)
   const [keysTestResult, setKeysTestResult] = useState<{ success: boolean; message: string } | null>(null)
+
+  // Per-field inline save (e.g. Carjam PPSR per-check cost) — keyed by field key.
+  const [savingField, setSavingField] = useState<string | null>(null)
   
   // Vehicle lookup test state (Carjam only)
   const [lookupRego, setLookupRego] = useState('')
@@ -216,6 +223,31 @@ function IntegrationPanel({
       onToast('error', `Failed to save ${INTEGRATION_LABELS[name]} configuration`)
     } finally {
       setSaving(false)
+    }
+  }
+
+  // Save only a single field (inline Save button, e.g. Carjam PPSR per-check
+  // cost). PUTs only that one field so other unsaved edits on the form are
+  // not persisted.
+  const handleSaveField = async (f: FieldDef) => {
+    setSavingField(f.key)
+    try {
+      const val = values[f.key]
+      const payload: Record<string, string | number | boolean> = {}
+      if (f.type === 'number') {
+        payload[f.key] = val ? parseFloat(val) : 0
+      } else if (f.type === 'checkbox') {
+        payload[f.key] = val === 'true'
+      } else {
+        payload[f.key] = val ?? ''
+      }
+      await apiClient.put(`/admin/integrations/${name}`, payload)
+      onToast('success', `${f.label} saved`)
+      fetchConfig()
+    } catch {
+      onToast('error', `Failed to save ${f.label}`)
+    } finally {
+      setSavingField(null)
     }
   }
 
@@ -438,6 +470,18 @@ function IntegrationPanel({
             helperText={f.helperText}
             step={f.type === 'number' ? '0.01' : undefined}
           />
+        )}
+        {f.inlineSave && (
+          <div className="mt-2">
+            <Button
+              type="button"
+              size="sm"
+              onClick={() => handleSaveField(f)}
+              loading={savingField === f.key}
+            >
+              Save {f.label}
+            </Button>
+          </div>
         )}
       </div>
     )

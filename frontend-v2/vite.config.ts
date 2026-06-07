@@ -74,9 +74,12 @@ function classifyChunk(id: string): string | undefined {
 }
 
 export default defineConfig({
-  // Served under the /new/ path prefix for side-by-side testing with the
-  // existing frontend (frontend-redesign FR-3 / FR-4).
-  base: '/new/',
+  // Served at the gateway root '/'. The /new/ prefix used during the
+  // side-by-side preview phase has been removed (frontend-v2 is now the
+  // active SPA in local dev — see docker-compose.dev-v2.yml +
+  // nginx/nginx.dev-v2.conf). All asset URLs and the React Router basename
+  // resolve from this `base` via import.meta.env.BASE_URL.
+  base: '/',
   plugins: [react(), stripConsoleInProduction()],
   define: {
     __APP_VERSION__: JSON.stringify(version),

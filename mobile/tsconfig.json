@@ -18,7 +18,8 @@
     "forceConsistentCasingInFileNames": true,
     "paths": {
       "@/*": ["./src/*"],
-      "@shared/*": ["../shared/*"]
+      "@shared/*": ["../shared/*"],
+      "@email-contract/*": ["../frontend-v2/src/components/email/*"]
     }
   },
   "include": ["src", "../shared"]

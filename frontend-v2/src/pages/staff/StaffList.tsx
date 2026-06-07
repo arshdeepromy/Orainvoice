@@ -23,6 +23,11 @@ import { Button, Modal } from '@/components/ui'
 import WorkSchedule, { type WeekSchedule } from '@/components/WorkSchedule'
 import { useBranch } from '@/contexts/BranchContext'
 import { useModules } from '@/contexts/ModuleContext'
+import StaffKpiStrip from './components/StaffKpiStrip'
+import SegmentedFilter from './components/SegmentedFilter'
+import DayPips from './components/DayPips'
+import { staffInitials } from './components/staffInitials'
+import { getPendingLeaveCount } from '@/api/staff'
 
 interface StaffMember {
   id: string
@@ -86,6 +91,7 @@ export default function StaffList() {
   const [search, setSearch] = useState('')
   const [roleFilter, setRoleFilter] = useState('')
   const [activeFilter, setActiveFilter] = useState('')
+  const [pendingLeaveCount, setPendingLeaveCount] = useState(0)
   const pageSize = 20
 
   // Modal state
@@ -156,6 +162,25 @@ export default function StaffList() {
     }
     loadAll()
   }, [])
+
+  // Pending leave count for the header "Leave" badge (R5.2). Fetched once on
+  // mount; getPendingLeaveCount returns 0 on failure so the badge stays hidden.
+  useEffect(() => {
+    const controller = new AbortController()
+    getPendingLeaveCount(controller.signal)
+      .then((count) => setPendingLeaveCount(count))
+      .catch(() => setPendingLeaveCount(0))
+    return () => controller.abort()
+  }, [])
+
+  // Shared client-side search predicate — the SAME filter applied to render
+  // table rows is reused for the CSV export so they always agree (R5.3).
+  const matchesSearch = useCallback((m: StaffMember) => {
+    if (!search) return true
+    const q = search.toLowerCase()
+    const fullName = `${m.first_name} ${m.last_name || ''}`.toLowerCase()
+    return fullName.includes(q) || (m.email || '').toLowerCase().includes(q) || (m.employee_id || '').toLowerCase().includes(q)
+  }, [search])
 
   const totalPages = Math.ceil(total / pageSize)
 
@@ -300,6 +325,41 @@ export default function StaffList() {
     } catch { /* non-blocking */ }
   }
 
+  // CSV export of the CURRENT filtered + searched staff set (R5.3). Uses the
+  // exact same `matchesSearch` predicate the table renders with, so the export
+  // mirrors the applied role/status filters (server-side) and search.
+  const handleExport = () => {
+    const csvEscape = (value: unknown): string => {
+      const s = value == null ? '' : String(value)
+      return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+    }
+    const headers = [
+      'Employee ID', 'First Name', 'Last Name', 'Position',
+      'Email', 'Phone', 'Role Type', 'Status',
+    ]
+    const rows = staff.filter(matchesSearch).map((m) => [
+      m.employee_id ?? '',
+      m.first_name ?? '',
+      m.last_name ?? '',
+      m.position ?? '',
+      m.email ?? '',
+      m.phone ?? '',
+      m.role_type === 'employee' ? 'Employee' : 'Contractor',
+      m.is_active ? 'Active' : 'Inactive',
+    ])
+    const lines = [headers, ...rows].map((cols) => cols.map(csvEscape).join(','))
+    const csv = lines.join('\r\n')
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'staff.csv'
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
+
   const thCls = 'mono border-b border-border px-4 py-3 text-left text-[10.5px] font-medium uppercase tracking-[0.08em] text-muted-2'
 
   return (
@@ -314,6 +374,34 @@ export default function StaffList() {
           </p>
         </div>
         <div className="head-actions">
+          <button
+            type="button"
+            onClick={() => navigate('/leave/approvals')}
+            className="relative inline-flex h-10 items-center gap-2 rounded-ctl border border-border bg-card px-3.5 text-[13.5px] font-medium text-text hover:bg-canvas dark:hover:bg-canvas"
+          >
+            <svg className="h-4 w-4 text-muted-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M8 7V3m8 4V3M3 11h18M5 5h14a2 2 0 012 2v12a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2z" />
+            </svg>
+            Leave
+            {pendingLeaveCount > 0 && (
+              <span
+                aria-label={`${pendingLeaveCount} pending leave requests`}
+                className="ml-0.5 inline-flex min-w-[18px] items-center justify-center rounded-full bg-danger px-1.5 py-0.5 text-[10.5px] font-semibold leading-none text-white"
+              >
+                {pendingLeaveCount}
+              </span>
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={handleExport}
+            className="inline-flex h-10 items-center gap-2 rounded-ctl border border-border bg-card px-3.5 text-[13.5px] font-medium text-text hover:bg-canvas dark:hover:bg-canvas"
+          >
+            <svg className="h-4 w-4 text-muted-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2" />
+            </svg>
+            Export
+          </button>
           <Button
             leftIcon={
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2}>
@@ -326,6 +414,9 @@ export default function StaffList() {
           </Button>
         </div>
       </div>
+
+      {/* KPI strip */}
+      <StaffKpiStrip totalStaff={total} />
 
       {/* Filters */}
       <div className="mb-[22px] flex flex-wrap items-center gap-3">
@@ -342,18 +433,26 @@ export default function StaffList() {
             className="w-full border-none bg-transparent text-[13.5px] text-text outline-none placeholder:text-muted-2"
           />
         </div>
-        <select value={roleFilter} onChange={(e) => { setRoleFilter(e.target.value); setPage(1) }}
-          className="h-10 rounded-ctl border border-border bg-card px-3 text-[13.5px] text-text focus:border-accent focus:outline-none focus:shadow-[0_0_0_3px_var(--accent-soft)]">
-          <option value="">All Roles</option>
-          <option value="employee">Employee</option>
-          <option value="contractor">Contractor</option>
-        </select>
-        <select value={activeFilter} onChange={(e) => { setActiveFilter(e.target.value); setPage(1) }}
-          className="h-10 rounded-ctl border border-border bg-card px-3 text-[13.5px] text-text focus:border-accent focus:outline-none focus:shadow-[0_0_0_3px_var(--accent-soft)]">
-          <option value="">All Status</option>
-          <option value="true">Active</option>
-          <option value="false">Inactive</option>
-        </select>
+        <SegmentedFilter
+          ariaLabel="Filter by role"
+          value={roleFilter}
+          onChange={(v) => { setRoleFilter(v); setPage(1) }}
+          options={[
+            { label: 'All roles', value: '' },
+            { label: 'Employees', value: 'employee' },
+            { label: 'Contractors', value: 'contractor' },
+          ]}
+        />
+        <SegmentedFilter
+          ariaLabel="Filter by status"
+          value={activeFilter}
+          onChange={(v) => { setActiveFilter(v); setPage(1) }}
+          options={[
+            { label: 'All', value: '' },
+            { label: 'Active', value: 'true' },
+            { label: 'Inactive', value: 'false' },
+          ]}
+        />
       </div>
 
       {/* Table */}
@@ -382,30 +481,33 @@ export default function StaffList() {
                 </tr>
               </thead>
               <tbody>
-                {staff.filter(m => {
-                  if (!search) return true
-                  const q = search.toLowerCase()
-                  const fullName = `${m.first_name} ${m.last_name || ''}`.toLowerCase()
-                  return fullName.includes(q) || (m.email || '').toLowerCase().includes(q) || (m.employee_id || '').toLowerCase().includes(q)
-                }).map((member) => (
+                {staff.filter(matchesSearch).map((member) => (
                   <tr key={member.id} className="border-b border-border last:border-b-0 hover:bg-canvas">
                     <td className="mono whitespace-nowrap px-4 py-3 text-muted">{member.employee_id || '—'}</td>
                     <td className="whitespace-nowrap px-4 py-3">
-                      <button onClick={() => navigate(`/staff/${member.id}`)}
-                        className="text-[13.5px] font-medium text-accent hover:text-accent-press">
-                        {member.first_name} {member.last_name || ''}
-                      </button>
+                      <div className="flex items-center gap-3">
+                        <span
+                          aria-hidden="true"
+                          className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-accent-soft text-[12px] font-semibold text-accent"
+                        >
+                          {staffInitials(member.first_name, member.last_name) || '—'}
+                        </span>
+                        <div className="flex flex-col">
+                          <button onClick={() => navigate(`/staff/${member.id}`)}
+                            className="text-left text-[13.5px] font-medium text-accent hover:text-accent-press">
+                            {member.first_name} {member.last_name || ''}
+                          </button>
+                          <span className="text-[11.5px] text-muted-2">
+                            {member.role_type === 'employee' ? 'Employee' : 'Contractor'}
+                          </span>
+                        </div>
+                      </div>
                     </td>
                     <td className="whitespace-nowrap px-4 py-3 text-text">{member.position || '—'}</td>
                     <td className="whitespace-nowrap px-4 py-3 text-muted">{member.email || '—'}</td>
                     <td className="mono whitespace-nowrap px-4 py-3 text-muted">{member.phone || '—'}</td>
                     <td className="whitespace-nowrap px-4 py-3 text-muted">
-                      {member.availability_schedule && Object.keys(member.availability_schedule).length > 0
-                        ? ['monday','tuesday','wednesday','thursday','friday','saturday','sunday']
-                            .filter(d => member.availability_schedule[d])
-                            .map(d => d.slice(0, 3).charAt(0).toUpperCase() + d.slice(1, 3))
-                            .join(', ')
-                        : (member.shift_start && member.shift_end ? `${member.shift_start} - ${member.shift_end}` : '-')}
+                      <DayPips schedule={member.availability_schedule} />
                     </td>
                     <td className="whitespace-nowrap px-4 py-3 text-muted">{member.reporting_to_name || '—'}</td>
                     <td className="whitespace-nowrap px-4 py-3">

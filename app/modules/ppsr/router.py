@@ -33,6 +33,8 @@ from app.core.redis import get_redis
 from app.integrations.carjam import CarjamError, CarjamRateLimitError
 from app.modules.ppsr.exceptions import (
     PpsrCarjamNotConfiguredError,
+    PpsrOwnerCheckNotAllowedError,
+    PpsrOwnerCheckValidationError,
     PpsrOwnerLookupsDisabledError,
     PpsrQuotaExceededError,
     PpsrS241PurposeRequiredError,
@@ -246,6 +248,16 @@ async def post_search(
         raise HTTPException(
             status_code=422,
             detail={"detail": "s241_not_authorised"},
+        )
+    except PpsrOwnerCheckValidationError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"detail": "owner_check_validation", "message": exc.message},
+        )
+    except PpsrOwnerCheckNotAllowedError:
+        raise HTTPException(
+            status_code=422,
+            detail={"detail": "owner_check_not_allowed"},
         )
     except CarjamRateLimitError as exc:
         _raise_carjam_rate_limit(exc)

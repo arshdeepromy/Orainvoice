@@ -42,10 +42,11 @@ from app.modules.ppsr.schemas import (
 class TestPpsrSearchOptions:
     def test_defaults_match_design(self):
         opts = PpsrSearchOptions()
-        # Defaults per design.md §5 — only warnings is on by default.
+        # Defaults — all PPSR data flags off so the caller explicitly opts
+        # into a PPSR lookup; an owner-check-only search skips lookup_ppsr.
         assert opts.include_ownership_history is False
         assert opts.include_current_owner is False
-        assert opts.include_warnings is True
+        assert opts.include_warnings is False
         assert opts.include_fws is False
         assert opts.check_hidden_plates is False
         assert opts.s241_purpose is None
@@ -122,7 +123,7 @@ class TestPpsrSearchRequestFlattenedOptions:
         req = PpsrSearchRequest(rego="ABC123")
         assert req.include_ownership_history is False
         assert req.include_current_owner is False
-        assert req.include_warnings is True
+        assert req.include_warnings is False
         assert req.include_fws is False
         assert req.check_hidden_plates is False
         assert req.s241_purpose is None
@@ -155,9 +156,100 @@ class TestPpsrSearchRequestFlattenedOptions:
         assert "force_refresh" not in opts.model_dump()
 
 
-# ---------------------------------------------------------------------------
-# PpsrLinkVehicleRequest
-# ---------------------------------------------------------------------------
+class TestPpsrSearchRequestOwnerCheck:
+    """Owner-check per-type required-field validation (mirrors CarJam's
+    ``err-owner-check-validation`` rules)."""
+
+    def test_no_owner_check_by_default(self):
+        req = PpsrSearchRequest(rego="ABC123")
+        assert req.owner_check_type is None
+
+    def test_owner_check_type_normalised_to_lower(self):
+        req = PpsrSearchRequest(
+            rego="ABC123",
+            owner_check_type="PERSON_DL",
+            owner_driver_licence="DL123",
+        )
+        assert req.owner_check_type == "person_dl"
+
+    def test_blank_owner_check_type_treated_as_none(self):
+        req = PpsrSearchRequest(rego="ABC123", owner_check_type="  ")
+        assert req.owner_check_type is None
+
+    def test_unknown_owner_check_type_rejected(self):
+        with pytest.raises(ValidationError):
+            PpsrSearchRequest(rego="ABC123", owner_check_type="bogus")
+
+    def test_company_requires_company_name(self):
+        with pytest.raises(ValidationError) as exc:
+            PpsrSearchRequest(rego="ABC123", owner_check_type="company")
+        assert "owner_company_name" in str(exc.value)
+
+    def test_company_with_name_valid(self):
+        req = PpsrSearchRequest(
+            rego="ABC123",
+            owner_check_type="company",
+            owner_company_name="Acme Ltd",
+        )
+        assert req.owner_check_type == "company"
+
+    def test_person_dl_requires_licence(self):
+        with pytest.raises(ValidationError) as exc:
+            PpsrSearchRequest(rego="ABC123", owner_check_type="person_dl")
+        assert "owner_driver_licence" in str(exc.value)
+
+    def test_person_names_requires_last_name(self):
+        with pytest.raises(ValidationError) as exc:
+            PpsrSearchRequest(
+                rego="ABC123",
+                owner_check_type="person_names",
+                owner_first_name="Jane",
+            )
+        assert "owner_last_name" in str(exc.value)
+
+    def test_person_names_requires_first_or_dob(self):
+        with pytest.raises(ValidationError) as exc:
+            PpsrSearchRequest(
+                rego="ABC123",
+                owner_check_type="person_names",
+                owner_last_name="Smith",
+            )
+        assert "owner_first_name or owner_dob" in str(exc.value)
+
+    def test_person_names_with_dob_only_valid(self):
+        req = PpsrSearchRequest(
+            rego="ABC123",
+            owner_check_type="person_names",
+            owner_last_name="Smith",
+            owner_dob="1990-01-01",
+        )
+        assert req.owner_dob == "1990-01-01"
+
+    def test_to_options_carries_owner_check_fields(self):
+        req = PpsrSearchRequest(
+            rego="ABC123",
+            owner_check_type="person_names",
+            owner_last_name="Smith",
+            owner_first_name="Jane",
+        )
+        opts = req.to_options()
+        assert opts.owner_check_type == "person_names"
+        assert opts.owner_last_name == "Smith"
+        assert opts.owner_first_name == "Jane"
+
+    def test_owner_check_changes_options_hash(self):
+        """An owner-check search must not cache-hit a plain search."""
+        from app.modules.ppsr.service import _hash_options_payload
+
+        plain = PpsrSearchRequest(rego="ABC123").to_options()
+        owner = PpsrSearchRequest(
+            rego="ABC123",
+            owner_check_type="company",
+            owner_company_name="Acme Ltd",
+        ).to_options()
+        assert _hash_options_payload(plain.model_dump()) != _hash_options_payload(
+            owner.model_dump()
+        )
 
 
 class TestPpsrLinkVehicleRequest:

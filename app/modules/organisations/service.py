@@ -12,6 +12,7 @@ import re
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
+from typing import Any, Optional
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -2490,4 +2491,163 @@ async def set_business_type(
         "gst_registration_date": org.gst_registration_date,
         "income_tax_year_end": org.income_tax_year_end,
         "provisional_tax_method": org.provisional_tax_method,
+    }
+
+
+# ===========================================================================
+# Clock-in / Overtime policy (R6 + G1 + G8 + G17)
+# ---------------------------------------------------------------------------
+# Read/write helpers for the two JSONB columns on ``organisations``:
+#   - ``clock_in_policy``    (added by migration 0207)
+#   - ``overtime_policy``    (added by migration 0207)
+# plus the typed ``overtime_handling`` enum column (Phase 2 P2-N5).
+#
+# The Organisation ORM model does not yet declare these columns as typed
+# fields (see ``time_clock.service._load_clock_in_policy`` for the existing
+# precedent) so we read/write them directly via SQL inside the caller's
+# session. The route layer wraps both helpers in a single transaction
+# managed by ``get_db_session.begin()`` (same pattern as ``update_org_settings``
+# above), so ``flush()`` is sufficient — no manual ``commit()``.
+# ===========================================================================
+
+_CLOCK_IN_POLICY_DEFAULTS: dict[str, Any] = {
+    "default_channel": "kiosk_only",
+    "self_service_require_photo": True,
+    "self_service_require_geofence": False,
+    "branch_radius_metres": 200,
+    "allow_late_clock_out_edits": True,
+    "kiosk_employee_id_rate_limit": 10,
+    "shift_swap_requires_manager_approval": False,
+}
+
+_OVERTIME_POLICY_DEFAULTS: dict[str, Any] = {
+    "weekly_threshold_minutes": 2400,
+    "daily_threshold_minutes": 480,
+    "require_pre_approval": False,
+}
+
+_DEFAULT_OVERTIME_HANDLING: str = "pay_cash"
+
+
+async def get_clock_in_policy(
+    db: AsyncSession, *, org_id: uuid.UUID
+) -> dict[str, Any]:
+    """Return the org's clock-in + overtime policy block.
+
+    Defaults are merged in for any key the JSONB column doesn't carry,
+    so the response is always fully populated.
+
+    Returns a dict shaped like
+    ``{"clock_in_policy": {...}, "overtime_policy": {...},
+       "overtime_handling": "pay_cash"}``.
+    """
+    from sqlalchemy import text as _text
+
+    result = await db.execute(
+        _text(
+            "SELECT clock_in_policy, overtime_policy, overtime_handling "
+            "FROM organisations WHERE id = :org_id"
+        ),
+        {"org_id": str(org_id)},
+    )
+    row = result.first()
+    if row is None:
+        raise ValueError("Organisation not found")
+
+    raw_clock = row[0] if isinstance(row[0], dict) else {}
+    raw_ot = row[1] if isinstance(row[1], dict) else {}
+    raw_handling = row[2]
+
+    return {
+        "clock_in_policy": {**_CLOCK_IN_POLICY_DEFAULTS, **raw_clock},
+        "overtime_policy": {**_OVERTIME_POLICY_DEFAULTS, **raw_ot},
+        "overtime_handling": raw_handling or _DEFAULT_OVERTIME_HANDLING,
+    }
+
+
+async def update_clock_in_policy(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    user_id: uuid.UUID,
+    ip_address: Optional[str] = None,
+    clock_in_policy: Optional[dict[str, Any]] = None,
+    overtime_policy: Optional[dict[str, Any]] = None,
+    overtime_handling: Optional[str] = None,
+) -> dict[str, Any]:
+    """Update one or more of the policy fields and return the new state.
+
+    Each nested block is merged field-by-field over the existing JSONB so
+    callers can patch a subset of keys without losing the rest. Writes a
+    distinct audit-log entry (``org.clock_in_policy_updated``) carrying
+    ``before_value`` + ``after_value`` for traceability. ``flush()`` only
+    — the caller's ``session.begin()`` context handles commit/rollback.
+    """
+    from sqlalchemy import text as _text
+
+    # Read current state (re-uses the merge-with-defaults helper so the
+    # before_value is fully populated even if the JSONB was empty).
+    before = await get_clock_in_policy(db, org_id=org_id)
+
+    new_clock = dict(before["clock_in_policy"])
+    new_ot = dict(before["overtime_policy"])
+    new_handling: str = before["overtime_handling"]
+
+    updated: list[str] = []
+
+    if clock_in_policy is not None:
+        for k, v in clock_in_policy.items():
+            new_clock[k] = v
+        updated.append("clock_in_policy")
+
+    if overtime_policy is not None:
+        for k, v in overtime_policy.items():
+            new_ot[k] = v
+        updated.append("overtime_policy")
+
+    if overtime_handling is not None and overtime_handling != new_handling:
+        new_handling = overtime_handling
+        updated.append("overtime_handling")
+
+    if not updated:
+        # Nothing to change — return current state without auditing.
+        return before
+
+    await db.execute(
+        _text(
+            "UPDATE organisations SET "
+            "  clock_in_policy = CAST(:clock_in_policy AS JSONB), "
+            "  overtime_policy = CAST(:overtime_policy AS JSONB), "
+            "  overtime_handling = :overtime_handling "
+            "WHERE id = :org_id"
+        ),
+        {
+            "org_id": str(org_id),
+            "clock_in_policy": json.dumps(new_clock),
+            "overtime_policy": json.dumps(new_ot),
+            "overtime_handling": new_handling,
+        },
+    )
+    await db.flush()
+
+    await write_audit_log(
+        session=db,
+        org_id=org_id,
+        user_id=user_id,
+        action="org.clock_in_policy_updated",
+        entity_type="organisation",
+        entity_id=org_id,
+        before_value=before,
+        after_value={
+            "clock_in_policy": new_clock,
+            "overtime_policy": new_ot,
+            "overtime_handling": new_handling,
+        },
+        ip_address=ip_address,
+    )
+
+    return {
+        "clock_in_policy": new_clock,
+        "overtime_policy": new_ot,
+        "overtime_handling": new_handling,
     }

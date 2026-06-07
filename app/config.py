@@ -80,9 +80,24 @@ class Settings(BaseSettings):
     google_client_secret: str = ""
 
     # --- WebAuthn / Passkeys ---
+    # Legacy single-value fallback (used when a request's origin is not on the
+    # trusted allowlist below — e.g. server-to-server or a missing Origin header).
     webauthn_rp_id: str = "localhost"
     webauthn_rp_name: str = "OraInvoice"
     webauthn_origin: str = "http://localhost:5173"
+    # Trusted front-end origins for passkeys. The RP ID + expected origin are
+    # derived per-request from whichever of these the request actually came from,
+    # so passkeys work across every front-end domain (and localhost in dev)
+    # without per-domain config. An origin must be listed here (or added via the
+    # WEBAUTHN_ORIGINS env var) to be trusted — this prevents a spoofed Origin
+    # header from redirecting the WebAuthn relying party to a domain we don't own.
+    webauthn_origins: list[str] = [
+        "http://localhost:5173",
+        "http://localhost:3000",
+        "http://localhost",
+        "https://invoice.oraflows.co.nz",
+        "https://devin.oraflows.co.nz",
+    ]
 
     # --- Firebase ---
     firebase_project_id: str = ""

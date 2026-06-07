@@ -59,7 +59,13 @@
       "Bash(grep -nE \">[A-Z][a-zA-Z &/]{3,40}<|h2 className|h3 className\" /mnt/hindi-tv/Invoicing/frontend/src/pages/invoices/InvoiceCreate.tsx)",
       "Bash(grep -nE \">[A-Z][a-zA-Z &/]{3,40}<|h2 className|h3 className\" /mnt/hindi-tv/Invoicing/frontend/src/pages/quotes/QuoteCreate.tsx)",
       "Bash(python -c \"import ast; ast.parse\\(open\\('app/modules/kiosk/service.py'\\).read\\(\\)\\); print\\('syntax OK'\\)\")",
-      "Bash(python3 -c \"import ast; ast.parse\\(open\\('app/modules/kiosk/service.py'\\).read\\(\\)\\); ast.parse\\(open\\('app/modules/vehicles/service.py'\\).read\\(\\)\\); print\\('syntax OK'\\)\")"
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('app/modules/kiosk/service.py'\\).read\\(\\)\\); ast.parse\\(open\\('app/modules/vehicles/service.py'\\).read\\(\\)\\); print\\('syntax OK'\\)\")",
+      "Bash(grep -vE \":0$\")",
+      "Bash(sort -t: -k2 -rn)",
+      "Bash(grep -iB1 \"PlaceholderPage\")",
+      "Bash(sed -n '70,80p' components/shell/TopBar.tsx)",
+      "Bash(grep -nA12 \"DEMO_BADGES\" components/shell/Sidebar.tsx)",
+      "Bash(echo \"exit: $?\")"
     ],
     "deny": []
   }

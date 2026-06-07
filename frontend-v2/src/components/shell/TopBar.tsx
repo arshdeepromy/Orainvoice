@@ -1,4 +1,3 @@
-import { useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Menu, MenuButton, MenuItem, MenuItems } from '@headlessui/react'
 import { useAuth } from '@/contexts/AuthContext'
@@ -36,9 +35,9 @@ import { useBranch } from '@/contexts/BranchContext'
  *   - Avatar       → Headless UI Menu (Profile / Settings / Setup Guide / Sign
  *                    out) mirroring the real user menu, including the admin-only
  *                    gates and the navigation targets.
- *   - Search ⌘K    → cmd/ctrl+K focuses the search field (see TODO below for the
- *                    palette port). Visual matches the prototype's `.search` +
- *                    `⌘K` kbd hint.
+ *   - Search ⌘K    → cmd/ctrl+K (or clicking the field) opens the real command
+ *                    palette (GlobalSearchBar, mounted in OrgLayout). Visual
+ *                    matches the prototype's `.search` + `⌘K` kbd hint.
  *
  * Gating contexts (useAuth / useModules / useFeatureFlags / useBranch) are
  * imported from the real `@/contexts/...` paths. Those context files are
@@ -51,16 +50,10 @@ import { useBranch } from '@/contexts/BranchContext'
  *   wired below), collapse the search to an icon (hide its label + kbd), hide
  *   the branch chip, and make "New" icon-only. Driven purely by responsive
  *   `display`/width rules; no restructuring of this component required.
- * TODO(Task 15): wire Sign out to the real auth `logout()` (the shim useAuth
- *   does not expose it yet) — for now Sign out navigates to /login.
- * TODO(shared search palette port): mount the real command palette
- *   (frontend/src/components/search/GlobalSearchBar.tsx) and have ⌘K / clicking
- *   the search field open it. Until then ⌘K focuses the field (focused-input
- *   fallback).
- * TODO(Task 52, notifications): source the unread badge from
- *   /notifications/inbox/unread-count (and mount the full InboxBellDropdown
- *   panel) once the notifications pages are ported. Until then the badge is
- *   driven by the optional `notificationCount` prop / a presentation dot.
+ * The unread badge is sourced for real: OrgLayout supplies `notificationCount`
+ * from the /notifications/inbox/unread-count poll (useUnreadNotificationCount).
+ * TODO(Task 52, notifications): mount the full InboxBellDropdown panel so
+ *   clicking the bell opens the inbox, once the notifications pages are ported.
  */
 export interface TopBarProps {
   /**
@@ -70,12 +63,10 @@ export interface TopBarProps {
    */
   onOpenSidebar: () => void
   /**
-   * Optional unread-notification count for the bell badge. When omitted, a
-   * presentation dot is shown to match the prototype. When provided, a numeric
-   * badge renders (and 0 hides it).
-   *
-   * TODO(Task 52): default this from the real /notifications/inbox/unread-count
-   *   poll once the notifications feature is ported.
+   * Unread-notification count for the bell badge, supplied by OrgLayout from
+   * the /notifications/inbox/unread-count poll. When omitted, a presentation
+   * dot is shown to match the prototype. When provided, a numeric badge renders
+   * (and 0 hides it).
    */
   notificationCount?: number
 }
@@ -155,7 +146,7 @@ function branchCode(id: string): string {
 
 export default function TopBar({ onOpenSidebar, notificationCount }: TopBarProps) {
   const navigate = useNavigate()
-  const { user } = useAuth()
+  const { user, logout } = useAuth()
   const { isEnabled } = useModules()
   const { flags } = useFeatureFlags()
   const { selectedBranchId, branches, selectBranch, isBranchLocked } = useBranch()
@@ -164,23 +155,13 @@ export default function TopBar({ onOpenSidebar, notificationCount }: TopBarProps
   const isAdmin = userRole === 'org_admin' || userRole === 'global_admin'
   const branchModuleEnabled = isEnabled('branch_management')
 
-  // Search field ref — ⌘K focuses it (palette port fallback, see header TODO).
-  const searchRef = useRef<HTMLButtonElement>(null)
-
-  /* ── ⌘K / Ctrl+K: focus the search field ──
-     Mirrors the real GlobalSearchBar keyboard shortcut. The palette component
-     isn't ported yet, so for now we focus the field; TODO(shared search palette
-     port) swaps this to open the real command palette. */
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
-        e.preventDefault()
-        searchRef.current?.focus()
-      }
-    }
-    document.addEventListener('keydown', handler)
-    return () => document.removeEventListener('keydown', handler)
-  }, [])
+  /* ── Open the global command palette (GlobalSearchBar) ──
+     GlobalSearchBar is mounted in OrgLayout and owns the ⌘K / Ctrl+K shortcut.
+     Clicking the search field dispatches the same shortcut to open it — the
+     established trigger pattern from the original app's OrgLayout. */
+  const openSearch = () => {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true }))
+  }
 
   /* ── Quick-action visibility — copied verbatim from OrgLayout.visibleQuickActions.
      Module enablement is sufficient; items without a module fall back to a flag. */
@@ -194,9 +175,12 @@ export default function TopBar({ onOpenSidebar, notificationCount }: TopBarProps
     ? branches.find((b) => b.id === selectedBranchId) ?? null
     : null
 
-  const handleSignOut = () => {
-    // TODO(Task 15): call the real auth logout() once the shim exposes it.
-    navigate('/login')
+  const handleSignOut = async () => {
+    // Clear the session first (POST /auth/logout + reset auth state). Without
+    // this the user stays authenticated, so the GuestOnly guard on /login
+    // immediately bounces them back to the dashboard.
+    await logout()
+    navigate('/login', { replace: true })
   }
 
   return (
@@ -219,8 +203,8 @@ export default function TopBar({ onOpenSidebar, notificationCount }: TopBarProps
           an icon-only 40px square (label + kbd hidden, centered glyph), matching
           the prototype's mobile `.search`; the aria-label keeps it accessible. */}
       <button
-        ref={searchRef}
         type="button"
+        onClick={openSearch}
         aria-label="Search customers, invoices, jobs"
         aria-keyshortcuts="Meta+K Control+K"
         className="flex h-10 max-w-[440px] flex-1 items-center gap-[10px] rounded-ctl border border-border bg-canvas px-3 text-left text-muted-2 transition-colors hover:border-border-strong focus:border-accent focus:outline-none max-mobile:max-w-10 max-mobile:flex-none max-mobile:justify-center max-mobile:gap-0 max-mobile:px-0"

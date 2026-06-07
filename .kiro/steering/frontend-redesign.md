@@ -6,7 +6,7 @@ inclusion: auto
 
 ## Golden Rule
 
-**NEVER modify, delete, or rename any file inside `frontend/`.** The existing frontend remains untouched and continues to be deployed. All redesign work happens exclusively in `frontend-v2/`.
+**`frontend-v2/` is now the ACTIVE web app.** As of the local-dev cutover (2026-06-05), `frontend-v2/` is the live frontend behind the gateway (served under `/new/`, with `/` redirecting there). **`frontend/` is ARCHIVED — do not modify, extend, or add new features to it** (see `frontend/ARCHIVED.md`). All web frontend work happens exclusively in `frontend-v2/`. Treat `frontend/` as read-only reference for porting only; the sole exception is an emergency production-only hotfix for an environment that has not yet cut over, which must be noted in `docs/ISSUE_TRACKER.md` and mirrored into `frontend-v2/`.
 
 ## Design Source
 
@@ -153,8 +153,8 @@ This keeps `frontend-v2` fully independent — no cross-project imports.
 
 ### What NOT to Do
 
-- ❌ Do NOT modify anything in `frontend/`
-- ❌ Do NOT add `frontend-v2` to Docker Compose or deployment configs
+- ❌ Do NOT add new features, refactors, or dependency bumps to `frontend/` — it is archived (`frontend/ARCHIVED.md`)
+- ❌ Do NOT touch the canonical `docker-compose.yml` or `nginx/nginx.conf` for the local-dev cutover — it is done via the additive `docker-compose.dev-v2.yml` + `nginx/nginx.dev-v2.conf` (local dev only). Do NOT wire `frontend-v2` into prod / Pi compose or nginx.
 - ❌ Do NOT create new backend endpoints for the redesign
 - ❌ Do NOT change API response shapes
 - ❌ Do NOT remove features because the design doesn't show them — design them on the fly using ds.css tokens
@@ -220,9 +220,28 @@ After all pages are done:
 5. Find any pages/modals in `frontend/` not in the tracker — add and implement
 6. Document in `docs/REDESIGN_AUDIT.md`
 
-### Deployment
+### Deployment (local dev)
 
-`frontend-v2/` is NOT deployed. No Docker config, no nginx config, no CI/CD. It exists purely for development and review. At cutover time, `frontend/` will be archived and `frontend-v2/` renamed to `frontend/`.
+`frontend-v2/` is the live frontend in **local dev**, served behind the nginx gateway under `/new/` (root `/` 302-redirects there). This is wired via additive, reversible files — the canonical `docker-compose.yml` and `nginx/nginx.conf` are left untouched:
+
+- `docker-compose.frontend-v2.yml` — the `frontend-v2` Vite dev-server service (:5174)
+- `docker-compose.dev-v2.yml` — points the gateway at the dev-v2 nginx config, wires HMR through port 80, and keeps the archived old `frontend` from starting
+- `nginx/nginx.dev-v2.conf` — gateway config: `/new/` → `frontend-v2:5174` (with HMR ws), `/` → `/new/`, all backend/mobile routes unchanged
+
+Run it locally with:
+
+```
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.dev.yml \
+  -f docker-compose.frontend-v2.yml \
+  -f docker-compose.dev-v2.yml \
+  up -d --remove-orphans postgres redis app mobile frontend-v2 nginx
+```
+
+Then open http://localhost/ (redirects to http://localhost/new/).
+
+Production / Pi deployment of `frontend-v2` is a separate future step (a static build cut-over) and is NOT done by the above. Do not modify prod compose or nginx for the redesign yet.
 
 ## File Mapping (Design → Source → Target)
 

@@ -53,6 +53,8 @@ interface BillingData {
     plan_fee: number
     storage_addons: number
     carjam_overage: number
+    ppsr_overage: number
+    owner_check_overage: number
     sms_overage: number
     total: number
     gst: number
@@ -65,6 +67,14 @@ interface BillingData {
     avg_invoice_bytes: number
   }
   carjam?: {
+    lookups_this_month: number
+    included: number
+  }
+  ppsr?: {
+    lookups_this_month: number
+    included: number
+  }
+  owner_check?: {
     lookups_this_month: number
     included: number
   }
@@ -92,6 +102,8 @@ interface BillingReceiptData {
   plan_amount_cents: number
   sms_overage_cents: number
   carjam_overage_cents: number
+  ppsr_overage_cents: number
+  owner_check_overage_cents: number
   storage_addon_cents: number
   subtotal_excl_gst_cents: number
   gst_amount_cents: number
@@ -99,6 +111,8 @@ interface BillingReceiptData {
   total_amount_cents: number
   sms_overage_count: number
   carjam_overage_count: number
+  ppsr_overage_count: number
+  owner_check_overage_count: number
   storage_addon_gb: number
   status: string
   created_at: string
@@ -338,6 +352,18 @@ function NextBillEstimate({
             <span className="text-text font-medium mono">{formatNZD(estimate.carjam_overage)}</span>
           </div>
         )}
+        {estimate.ppsr_overage > 0 && (
+          <div className="flex justify-between">
+            <span className="text-muted">PPSR overage</span>
+            <span className="text-text font-medium mono">{formatNZD(estimate.ppsr_overage)}</span>
+          </div>
+        )}
+        {estimate.owner_check_overage > 0 && (
+          <div className="flex justify-between">
+            <span className="text-muted">Ownership check overage</span>
+            <span className="text-text font-medium mono">{formatNZD(estimate.owner_check_overage)}</span>
+          </div>
+        )}
         {estimate.sms_overage > 0 && (
           <div className="flex justify-between">
             <span className="text-muted">SMS overage</span>
@@ -461,6 +487,48 @@ function CarjamUsage({ lookups, included }: { lookups: number; included: number 
       {overage > 0 && (
         <p className="text-sm text-warn mt-2 font-medium">
           {overage} extra {overage === 1 ? 'lookup' : 'lookups'} — overage charges will appear on your next bill.
+        </p>
+      )}
+    </div>
+  )
+}
+
+/* ── PPSR Usage ── */
+
+function PpsrUsage({ lookups, included }: { lookups: number; included: number }) {
+  const overage = Math.max(0, lookups - included)
+
+  return (
+    <div className="rounded-card border border-border p-5">
+      <h3 className="text-lg font-semibold text-text mb-3">PPSR checks this month</h3>
+      <div className="flex items-baseline gap-2">
+        <span className="text-2xl font-bold text-text mono">{lookups}</span>
+        <span className="text-sm text-muted-2">of {included} included</span>
+      </div>
+      {overage > 0 && (
+        <p className="text-sm text-warn mt-2 font-medium">
+          {overage} extra {overage === 1 ? 'check' : 'checks'} — overage charges will appear on your next bill.
+        </p>
+      )}
+    </div>
+  )
+}
+
+/* ── Ownership Check Usage ── */
+
+function OwnerCheckUsage({ lookups, included }: { lookups: number; included: number }) {
+  const overage = Math.max(0, lookups - included)
+
+  return (
+    <div className="rounded-card border border-border p-5">
+      <h3 className="text-lg font-semibold text-text mb-3">Ownership checks this month</h3>
+      <div className="flex items-baseline gap-2">
+        <span className="text-2xl font-bold text-text mono">{lookups}</span>
+        <span className="text-sm text-muted-2">of {included} included</span>
+      </div>
+      {overage > 0 && (
+        <p className="text-sm text-warn mt-2 font-medium">
+          {overage} extra {overage === 1 ? 'check' : 'checks'} — overage charges will appear on your next bill.
         </p>
       )}
     </div>
@@ -720,6 +788,18 @@ function BillingReceipts() {
                             <div className="flex justify-between">
                               <span className="text-muted">Carjam overage ({r.carjam_overage_count ?? 0} lookups)</span>
                               <span className="mono tabular-nums text-text">{formatNZD((r.carjam_overage_cents ?? 0) / 100)}</span>
+                            </div>
+                          )}
+                          {(r.ppsr_overage_cents ?? 0) > 0 && (
+                            <div className="flex justify-between">
+                              <span className="text-muted">PPSR overage ({r.ppsr_overage_count ?? 0} checks)</span>
+                              <span className="mono tabular-nums text-text">{formatNZD((r.ppsr_overage_cents ?? 0) / 100)}</span>
+                            </div>
+                          )}
+                          {(r.owner_check_overage_cents ?? 0) > 0 && (
+                            <div className="flex justify-between">
+                              <span className="text-muted">Ownership check overage ({r.owner_check_overage_count ?? 0} checks)</span>
+                              <span className="mono tabular-nums text-text">{formatNZD((r.owner_check_overage_cents ?? 0) / 100)}</span>
                             </div>
                           )}
                           {(r.storage_addon_cents ?? 0) > 0 && (
@@ -1587,6 +1667,8 @@ export function Billing() {
           plan_fee: Number(raw.interval_effective_price ?? raw.plan_monthly_price_nzd ?? 0),
           storage_addons: Number(raw.storage_addon_charge_nzd ?? 0),
           carjam_overage: Number(raw.carjam_overage_charge_nzd ?? 0),
+          ppsr_overage: Number(raw.ppsr_overage_charge_nzd ?? 0),
+          owner_check_overage: Number(raw.owner_check_overage_charge_nzd ?? 0),
           sms_overage: Number(raw.sms_overage_charge_nzd ?? 0),
           total: Number(raw.estimated_next_invoice_nzd ?? 0),
           gst: Number(raw.gst_amount_nzd ?? 0),
@@ -1601,6 +1683,14 @@ export function Billing() {
         carjam: {
           lookups_this_month: raw.carjam_lookups_used ?? 0,
           included: raw.carjam_lookups_included ?? 0,
+        },
+        ppsr: {
+          lookups_this_month: raw.ppsr_lookups_used ?? 0,
+          included: raw.ppsr_lookups_included ?? 0,
+        },
+        owner_check: {
+          lookups_this_month: raw.owner_check_lookups_used ?? 0,
+          included: raw.owner_check_lookups_included ?? 0,
         },
         storage_addon_gb: raw.storage_addon_gb ?? null,
         storage_addon_price_nzd: raw.storage_addon_price_nzd ?? null,
@@ -1695,6 +1785,25 @@ export function Billing() {
             <CarjamUsage
               lookups={billing.carjam.lookups_this_month}
               included={billing.carjam.included}
+            />
+          )}
+          {billing.ppsr && (billing.ppsr.included > 0 || billing.ppsr.lookups_this_month > 0) && (
+            <PpsrUsage
+              lookups={billing.ppsr.lookups_this_month}
+              included={billing.ppsr.included}
+            />
+          )}
+          {billing.owner_check && (
+            billing.owner_check.included > 0 ||
+            billing.owner_check.lookups_this_month > 0 ||
+            // Show alongside PPSR — ownership checks are part of the same
+            // module/trade family, so surface the tracker whenever PPSR is
+            // relevant to the org even before the first check runs.
+            (!!billing.ppsr && (billing.ppsr.included > 0 || billing.ppsr.lookups_this_month > 0))
+          ) && (
+            <OwnerCheckUsage
+              lookups={billing.owner_check.lookups_this_month}
+              included={billing.owner_check.included}
             />
           )}
           {billing.sms && (

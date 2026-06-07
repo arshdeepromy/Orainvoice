@@ -1174,14 +1174,75 @@ async def send_quote(
     recipient_email: str | None = None,
     ip_address: str | None = None,
     base_url: str | None = None,
+    recipients: list[str] | None = None,
+    cc: list[str] | None = None,
+    bcc: list[str] | None = None,
+    subject: str | None = None,
+    body_html: str | None = None,
+    attachments: list[str] | None = None,
+    subject_was_edited: bool = False,
+    body_was_edited: bool = False,
+    override_blocklist: bool = False,
 ) -> dict:
     """Generate a branded PDF quote and email it to the customer.
 
     Transitions the quote status from Draft to Sent.
     If *recipient_email* is not provided, the customer's email on file is used.
 
-    Requirements: 58.3
+    Send Email Modal overrides (send-email-modal task 8.4): the optional
+    ``recipients`` / ``cc`` / ``bcc`` / ``subject`` / ``body_html`` /
+    ``attachments`` / ``subject_was_edited`` / ``body_was_edited`` /
+    ``override_blocklist`` params let the modal override the default-render
+    content. When NONE of them are supplied the function behaves byte-for-byte
+    identically to the pre-modal auto-send path (Property P1, quote_sent):
+
+    - ``recipients`` non-empty → ``recipient_email = recipients[0]`` and
+      ``recipients[1:]`` are merged into the Cc list; ``cc`` / ``bcc`` thread
+      into ``EmailMessage.cc`` / ``.bcc``.
+    - ``subject`` (with ``subject_was_edited``) overrides the rendered subject.
+    - ``body_html`` (with ``body_was_edited``) is server-sanitised and used as
+      the HTML body; when omitted the unchanged default render runs.
+    - ``attachments`` (when not ``None``) are validated as HMAC tokens via
+      :func:`validate_attachment_token`; any miss raises
+      :class:`InvalidAttachmentSelection`. The quote surface offers
+      ``quote_pdf`` (required); matching files are re-resolved server-side and
+      attached (the default no-override path attaches no PDF to avoid Gmail
+      content filtering).
+    - On send failure the override path raises :class:`EmailSendFailure`
+      carrying the ``failure_kind`` so the router maps it to the right HTTP
+      status; the legacy (no-override) path keeps raising ``ValueError``.
+    - ``override_blocklist`` is threaded to ``send_email(allow_blocklisted=…)``.
+    - Any client-supplied ``from_email`` / ``from_name`` / ``reply_to`` is
+      ignored; the sender identity is resolved server-side (R9.3).
+
+    Requirements: 58.3, 2.4, 7.6, 8.1, 8.3, 8.4, 8.5, 8.6, 8.7, 8.8, 8.9,
+                  8.10, 9.3, 11.2, 11.3, 11.5
     """
+    # Did the caller pass any Send-Email-Modal override field? When False the
+    # function runs the original code path byte-for-byte (Property P1) and
+    # keeps its legacy ValueError-on-failure contract. ``recipient_email`` is
+    # the pre-existing legacy param and is NOT part of the override set.
+    _is_override_call = (
+        recipients is not None
+        or cc is not None
+        or bcc is not None
+        or subject is not None
+        or body_html is not None
+        or attachments is not None
+        or subject_was_edited
+        or body_was_edited
+        or override_blocklist
+    )
+
+    # Resolve the override recipient list (R8.1). recipients[0] becomes the
+    # primary To; recipients[1:] merge into the Cc list. cc/bcc thread into
+    # the EmailMessage below.
+    _cc_list: list[str] = list(cc) if cc else []
+    _bcc_list: list[str] = list(bcc) if bcc else []
+    if recipients:
+        recipient_email = recipients[0]
+        _cc_list = [*recipients[1:], *_cc_list]
+
     # Fetch quote
     quote_dict = await get_quote(db, org_id=org_id, quote_id=quote_id)
 
@@ -1319,6 +1380,11 @@ async def send_quote(
             f"Kind regards,\n{org_name}\n"
         )
 
+    # --- Send Email Modal subject override (R8.1) ---
+    # Replace the rendered/fallback subject when the modal supplied one.
+    if subject is not None:
+        _email_subject = subject
+
     # Build HTML body with conditional email signature, using the
     # unified transactional-HTML renderer so the message is a
     # well-formed document (proper <!DOCTYPE>, paragraph structure,
@@ -1339,11 +1405,60 @@ async def send_quote(
         signature_html=_signature_html_block,
     )
 
+    # --- Send Email Modal body override (R8.1, R10.1) ---
+    # When the modal supplied an edited body_html, server-sanitise it and use
+    # it as the HTML body. When omitted (the common "send default" case) the
+    # default-rendered _html_body above is used unchanged (byte-equivalence,
+    # Property P1 / R3.6).
+    if body_html is not None:
+        from app.integrations.html_sanitise import sanitise_email_html
+
+        _html_body = sanitise_email_html(body_html)
+
+    # Compute the audit hashes over the FINAL (post-sanitisation) strings so
+    # notification_log records what was actually sent (R11.2, R11.3 / P4).
+    from app.modules.email_compose.service import compute_audit_hashes as _cah
+
+    _audit_hashes = _cah(_email_subject, _html_body)
+    _edited_subject_hash = (
+        _audit_hashes["subject_hash"] if subject_was_edited else None
+    )
+    _edited_body_hash = _audit_hashes["body_hash"] if body_was_edited else None
+
     # The legacy code set ``Reply-To`` to ``org_settings['email']`` when
     # configured. The unified sender's ``org_reply_to`` override drives
     # the same header regardless of which provider in the failover chain
     # ultimately delivers the message (see Requirement 4.3).
     _org_reply_to = org_settings.get("email") or None
+
+    # Build attachments list. The default no-override path attaches no PDF
+    # (avoids Gmail content filter). When the modal supplies ``attachments``,
+    # validate EVERY token against this org+quote and re-resolve the file
+    # server-side (R7.6, R8.1). When ``attachments`` is None the default
+    # no-attachment behaviour is preserved for byte-equivalence (Property P1).
+    _email_attachments: list[EmailAttachment] = []
+    if attachments is not None:
+        from app.modules.email_compose.service import (
+            InvalidAttachmentSelection,
+            validate_attachment_token,
+        )
+
+        _resolved_kinds: list[str] = []
+        for _token in attachments:
+            _kind = validate_attachment_token(_token, org_id, quote_id)
+            if _kind is None:
+                raise InvalidAttachmentSelection("Invalid attachment selection.")
+            _resolved_kinds.append(_kind)
+
+        for _kind in _resolved_kinds:
+            if _kind == "quote_pdf":
+                _email_attachments.append(
+                    EmailAttachment(
+                        filename=f"Quote-{quote_dict['quote_number']}.pdf",
+                        content=pdf_bytes,
+                        mime_type="application/pdf",
+                    )
+                )
 
     _message = EmailMessage(
         to_email=recipient_email,
@@ -1351,10 +1466,17 @@ async def send_quote(
         subject=_email_subject,
         html_body=_html_body,
         text_body=_email_body,
-        attachments=[],  # No PDF attachment — avoids Gmail content filter
+        attachments=_email_attachments,
+        cc=_cc_list,
+        bcc=_bcc_list,
         org_id=org_id,
     )
-    result = await send_email(db, _message, org_reply_to=_org_reply_to)
+    result = await send_email(
+        db,
+        _message,
+        org_reply_to=_org_reply_to,
+        allow_blocklisted=override_blocklist,
+    )
 
     if not result.success:
         last_error = result.error or "send failed"
@@ -1391,6 +1513,22 @@ async def send_quote(
             },
         )
 
+        # For Send Email Modal override calls, surface the failure_kind so the
+        # router can map it to the right HTTP status (R8.5–R8.8). The legacy
+        # (no-override) path keeps raising ValueError for backward compat.
+        if _is_override_call:
+            from app.modules.email_compose.service import EmailSendFailure
+
+            _last_attempt = result.attempts[-1] if result.attempts else None
+            _failure_kind = (
+                _last_attempt.failure_kind if _last_attempt else None
+            )
+            raise EmailSendFailure(
+                _failure_kind,
+                attempts=len(result.attempts),
+                error=str(last_error),
+            )
+
         raise ValueError(error_msg)
 
     # Success-path notification_log row (Bug 1 / Requirement 3.1).
@@ -1405,6 +1543,12 @@ async def send_quote(
             status="sent", channel="email",
             provider_key=result.provider_key,
             provider_message_id=result.provider_message_id,
+            subject_was_edited=subject_was_edited,
+            body_was_edited=body_was_edited,
+            edited_subject_hash=_edited_subject_hash,
+            edited_body_hash=_edited_body_hash,
+            cc_recipients=_cc_list,
+            bcc_recipients=_bcc_list,
         )
     except Exception:
         import logging as _logging

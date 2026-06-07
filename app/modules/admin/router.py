@@ -832,6 +832,7 @@ async def create_subscription_plan(
             interval_config=[ic.model_dump() for ic in payload.interval_config] if payload.interval_config else None,
             ppsr_lookups_included=payload.ppsr_lookups_included,
             ppsr_hidden_plate_lookups_included=payload.ppsr_hidden_plate_lookups_included,
+            owner_check_lookups_included=payload.owner_check_lookups_included,
             created_by=uuid.UUID(user_id) if user_id else None,
             ip_address=ip_address,
         )
@@ -1485,6 +1486,8 @@ async def configure_carjam(
             endpoint_url=payload.endpoint_url,
             per_lookup_cost_nzd=payload.per_lookup_cost_nzd,
             abcd_per_lookup_cost_nzd=payload.abcd_per_lookup_cost_nzd,
+            ppsr_per_check_cost_nzd=payload.ppsr_per_check_cost_nzd,
+            owner_check_per_check_cost_nzd=payload.owner_check_per_check_cost_nzd,
             global_rate_limit_per_minute=payload.global_rate_limit_per_minute,
             ppsr_cache_ttl_minutes=payload.ppsr_cache_ttl_minutes,
             ppsr_owner_lookups_enabled=payload.ppsr_owner_lookups_enabled,

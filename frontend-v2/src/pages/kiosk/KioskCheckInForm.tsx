@@ -60,27 +60,23 @@ export function validateKioskForm(data: KioskFormData, confirmEmail?: string): F
     errors.phone = 'Phone must contain at least 7 digits'
   }
 
-  // email: optional, must match standard format if provided
-  if (data.email.trim()) {
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.email.trim())) {
-      errors.email = 'Please enter a valid email address'
-    } else if (confirmEmail !== undefined && data.email.trim().toLowerCase() !== confirmEmail.trim().toLowerCase()) {
-      errors.confirm_email = 'Email addresses do not match'
-    }
+  // email: required, valid format, and confirmed
+  if (!data.email.trim()) {
+    errors.email = 'Email is required'
+  } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.email.trim())) {
+    errors.email = 'Please enter a valid email address'
+  } else if (confirmEmail !== undefined && data.email.trim().toLowerCase() !== confirmEmail.trim().toLowerCase()) {
+    errors.confirm_email = 'Email addresses do not match'
   }
 
   return errors
 }
 
-/* ── Input styling constants ── */
-
-const INPUT_CLASS =
-  'w-full rounded-ctl border border-border-strong px-4 py-3 text-text placeholder-muted-2 ' +
-  'focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent'
-
-const INPUT_STYLE = { minHeight: '48px', fontSize: '18px' } as const
-
-/* ── Component ── */
+/* ── Component ──
+ * Design: the "FORM" screen in OraInvoice_Handoff/app/Kiosk.html. All behaviour
+ * — debounced customer auto-fill, field validation, confirm-email matching, and
+ * the /kiosk/check-in submission — is preserved exactly; only the markup is
+ * restyled to the design's `.k-card` / `.k-field` / `.k-label` language. */
 
 export function KioskCheckInForm({
   formData,
@@ -249,237 +245,202 @@ export function KioskCheckInForm({
     }
   }
 
+  const emailMismatch =
+    confirmEmail.trim().length > 0 &&
+    formData.email.trim().toLowerCase() !== confirmEmail.trim().toLowerCase()
+  const emailMatch =
+    confirmEmail.trim().length > 0 &&
+    formData.email.trim().toLowerCase() === confirmEmail.trim().toLowerCase()
+
   return (
-    <form
-      onSubmit={handleSubmit}
-      noValidate
-      className="w-full max-w-md space-y-5 rounded-card bg-card p-8 shadow-pop"
-    >
-      <h2 className="text-xl font-semibold text-text" style={{ fontSize: '22px' }}>
-        Check In
-      </h2>
+    <>
+      <button type="button" className="k-back" onClick={onBack} disabled={submitting}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+          <path d="M15 18l-6-6 6-6" />
+        </svg>
+        Back
+      </button>
 
-      {/* Auto-fill suggestion banner */}
-      {showAutoFill && matches.length === 1 && (
-        <button
-          type="button"
-          onClick={() => applyAutoFill(matches[0])}
-          className="w-full rounded-ctl border border-accent/30 bg-accent-soft px-4 py-3 text-left text-accent hover:bg-accent-soft/70 focus:outline-none focus:ring-2 focus:ring-accent"
-          style={{ minHeight: '48px' }}
-          aria-label="Auto-fill customer details"
-        >
-          <span className="font-medium">We found your details — tap to auto-fill</span>
-          <span className="mt-1 block text-sm text-accent">
-            {matches[0].first_name} {matches[0].last_name}
-          </span>
-        </button>
-      )}
+      <form onSubmit={handleSubmit} noValidate className="k-card">
+        <h1 style={{ fontSize: '28px' }}>Your details</h1>
+        <p className="lead">So we can keep you updated on your service.</p>
 
-      {/* Multiple matches — selectable list */}
-      {showAutoFill && matches.length > 1 && (
-        <div className="rounded-ctl border border-accent/30 bg-accent-soft p-3">
-          <p className="mb-2 text-sm font-medium text-accent">
-            We found your details — tap to auto-fill
-          </p>
-          <ul className="space-y-2" role="list" aria-label="Customer matches">
-            {matches.map((match) => (
-              <li key={match.id}>
-                <button
-                  type="button"
-                  onClick={() => applyAutoFill(match)}
-                  className="w-full rounded-chip border border-accent/20 bg-card px-3 py-2 text-left text-text hover:bg-accent-soft focus:outline-none focus:ring-2 focus:ring-accent"
-                  style={{ minHeight: '44px' }}
-                >
-                  <span className="font-medium">
-                    {match.first_name} {match.last_name}
-                  </span>
-                  {match.phone && (
-                    <span className="ml-2 text-sm text-muted">{match.phone}</span>
-                  )}
-                  {match.email && (
-                    <span className="ml-2 text-sm text-muted">{match.email}</span>
-                  )}
-                </button>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {/* First Name */}
-      <div>
-        <label htmlFor="kiosk-first-name" className="mb-1 block text-sm font-medium text-text">
-          First Name <span className="text-danger">*</span>
-        </label>
-        <input
-          id="kiosk-first-name"
-          type="text"
-          required
-          autoComplete="given-name"
-          placeholder="First name"
-          value={formData.first_name}
-          onChange={(e) => updateField('first_name', e.target.value)}
-          className={`${INPUT_CLASS} ${errors.first_name ? 'border-danger' : ''}`}
-          style={INPUT_STYLE}
-          aria-invalid={!!errors.first_name}
-          aria-describedby={errors.first_name ? 'err-first-name' : undefined}
-        />
-        {errors.first_name && (
-          <p id="err-first-name" className="mt-1 text-sm text-danger">{errors.first_name}</p>
-        )}
-      </div>
-
-      {/* Last Name */}
-      <div>
-        <label htmlFor="kiosk-last-name" className="mb-1 block text-sm font-medium text-text">
-          Last Name <span className="text-danger">*</span>
-        </label>
-        <input
-          id="kiosk-last-name"
-          type="text"
-          required
-          autoComplete="family-name"
-          placeholder="Last name"
-          value={formData.last_name}
-          onChange={(e) => updateField('last_name', e.target.value)}
-          className={`${INPUT_CLASS} ${errors.last_name ? 'border-danger' : ''}`}
-          style={INPUT_STYLE}
-          aria-invalid={!!errors.last_name}
-          aria-describedby={errors.last_name ? 'err-last-name' : undefined}
-        />
-        {errors.last_name && (
-          <p id="err-last-name" className="mt-1 text-sm text-danger">{errors.last_name}</p>
-        )}
-      </div>
-
-      {/* Phone */}
-      <div>
-        <label htmlFor="kiosk-phone" className="mb-1 block text-sm font-medium text-text">
-          Phone <span className="text-danger">*</span>
-        </label>
-        <input
-          id="kiosk-phone"
-          type="tel"
-          required
-          autoComplete="tel"
-          placeholder="Phone number"
-          value={formData.phone}
-          onChange={(e) => updateField('phone', e.target.value)}
-          className={`${INPUT_CLASS} ${errors.phone ? 'border-danger' : ''}`}
-          style={INPUT_STYLE}
-          aria-invalid={!!errors.phone}
-          aria-describedby={errors.phone ? 'err-phone' : undefined}
-        />
-        {errors.phone && (
-          <p id="err-phone" className="mt-1 text-sm text-danger">{errors.phone}</p>
-        )}
-      </div>
-
-      {/* Email (optional) */}
-      <div>
-        <label htmlFor="kiosk-email" className="mb-1 block text-sm font-medium text-text">
-          Email
-        </label>
-        <input
-          id="kiosk-email"
-          type="email"
-          autoComplete="email"
-          placeholder="Email (optional)"
-          value={formData.email}
-          onChange={(e) => updateField('email', e.target.value)}
-          className={`${INPUT_CLASS} ${errors.email ? 'border-danger' : ''}`}
-          style={INPUT_STYLE}
-          aria-invalid={!!errors.email}
-          aria-describedby={errors.email ? 'err-email' : undefined}
-        />
-        {errors.email && (
-          <p id="err-email" className="mt-1 text-sm text-danger">{errors.email}</p>
-        )}
-      </div>
-
-      {/* Confirm Email — only shown when email is entered */}
-      {formData.email.trim() && (
-        <div>
-          <label htmlFor="kiosk-confirm-email" className="mb-1 block text-sm font-medium text-text">
-            Confirm Email <span className="text-danger">*</span>
-          </label>
-          <input
-            id="kiosk-confirm-email"
-            type="email"
-            autoComplete="email"
-            placeholder="Re-enter your email"
-            value={confirmEmail}
-            onChange={(e) => {
-              setConfirmEmail(e.target.value)
-              if (errors.confirm_email) setErrors((prev) => ({ ...prev, confirm_email: undefined }))
-            }}
-            className={`${INPUT_CLASS} ${
-              confirmEmail.trim() && formData.email.trim().toLowerCase() !== confirmEmail.trim().toLowerCase()
-                ? 'border-danger'
-                : confirmEmail.trim() && formData.email.trim().toLowerCase() === confirmEmail.trim().toLowerCase()
-                  ? 'border-ok'
-                  : ''
-            }`}
-            style={INPUT_STYLE}
-            aria-invalid={!!(confirmEmail.trim() && formData.email.trim().toLowerCase() !== confirmEmail.trim().toLowerCase())}
-            aria-describedby="confirm-email-feedback"
-          />
-          {/* Real-time mismatch feedback */}
-          {confirmEmail.trim() && formData.email.trim().toLowerCase() !== confirmEmail.trim().toLowerCase() && (
-            <p id="confirm-email-feedback" className="mt-1 text-sm text-danger font-medium">
-              Emails do not match
-            </p>
+        <div style={{ marginTop: '24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          {/* Auto-fill suggestion — single match */}
+          {showAutoFill && matches.length === 1 && (
+            <button
+              type="button"
+              onClick={() => applyAutoFill(matches[0])}
+              className="k-field"
+              style={{ height: 'auto', padding: '12px 16px', textAlign: 'left', background: 'var(--accent-soft)', borderColor: 'var(--accent)', color: 'var(--accent)', cursor: 'pointer' }}
+              aria-label="Auto-fill customer details"
+            >
+              <span style={{ fontWeight: 600 }}>We found your details — tap to auto-fill</span>
+              <span style={{ display: 'block', fontSize: '14px', marginTop: '2px' }}>
+                {matches[0].first_name} {matches[0].last_name}
+              </span>
+            </button>
           )}
-          {/* Match confirmation */}
-          {confirmEmail.trim() && formData.email.trim().toLowerCase() === confirmEmail.trim().toLowerCase() && (
-            <p id="confirm-email-feedback" className="mt-1 text-sm text-ok font-medium">
-              ✓ Emails match
-            </p>
+
+          {/* Auto-fill suggestion — multiple matches */}
+          {showAutoFill && matches.length > 1 && (
+            <div style={{ background: 'var(--accent-soft)', borderRadius: '14px', padding: '12px' }}>
+              <p style={{ fontSize: '14px', fontWeight: 600, color: 'var(--accent)', marginBottom: '8px' }}>
+                We found your details — tap to auto-fill
+              </p>
+              <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: '8px' }} aria-label="Customer matches">
+                {matches.map((match) => (
+                  <li key={match.id}>
+                    <button
+                      type="button"
+                      onClick={() => applyAutoFill(match)}
+                      className="k-field"
+                      style={{ height: 'auto', padding: '10px 14px', textAlign: 'left', cursor: 'pointer' }}
+                    >
+                      <span style={{ fontWeight: 600 }}>
+                        {match.first_name} {match.last_name}
+                      </span>
+                      {match.phone && <span style={{ marginLeft: '8px', fontSize: '14px', color: 'var(--muted)' }}>{match.phone}</span>}
+                      {match.email && <span style={{ marginLeft: '8px', fontSize: '14px', color: 'var(--muted)' }}>{match.email}</span>}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
-          {/* Submit-time validation error (fallback) */}
-          {errors.confirm_email && !confirmEmail.trim() && (
-            <p className="mt-1 text-sm text-danger">{errors.confirm_email}</p>
+
+          {/* First + last name */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+            <div>
+              <label className="k-label" htmlFor="kiosk-first-name">First name</label>
+              <input
+                id="kiosk-first-name"
+                className={`k-field${errors.first_name ? ' error' : ''}`}
+                type="text"
+                autoComplete="given-name"
+                placeholder="First name"
+                value={formData.first_name}
+                onChange={(e) => updateField('first_name', e.target.value)}
+                aria-invalid={!!errors.first_name}
+                aria-describedby={errors.first_name ? 'err-first-name' : undefined}
+              />
+              {errors.first_name && (
+                <p id="err-first-name" style={{ marginTop: '6px', fontSize: '13px', color: 'var(--danger)' }}>{errors.first_name}</p>
+              )}
+            </div>
+            <div>
+              <label className="k-label" htmlFor="kiosk-last-name">Last name</label>
+              <input
+                id="kiosk-last-name"
+                className={`k-field${errors.last_name ? ' error' : ''}`}
+                type="text"
+                autoComplete="family-name"
+                placeholder="Last name"
+                value={formData.last_name}
+                onChange={(e) => updateField('last_name', e.target.value)}
+                aria-invalid={!!errors.last_name}
+                aria-describedby={errors.last_name ? 'err-last-name' : undefined}
+              />
+              {errors.last_name && (
+                <p id="err-last-name" style={{ marginTop: '6px', fontSize: '13px', color: 'var(--danger)' }}>{errors.last_name}</p>
+              )}
+            </div>
+          </div>
+
+          {/* Mobile */}
+          <div>
+            <label className="k-label" htmlFor="kiosk-phone">Mobile</label>
+            <input
+              id="kiosk-phone"
+              className={`k-field mono${errors.phone ? ' error' : ''}`}
+              type="tel"
+              autoComplete="tel"
+              placeholder="021 000 0000"
+              value={formData.phone}
+              onChange={(e) => updateField('phone', e.target.value)}
+              aria-invalid={!!errors.phone}
+              aria-describedby={errors.phone ? 'err-phone' : undefined}
+            />
+            {errors.phone && (
+              <p id="err-phone" style={{ marginTop: '6px', fontSize: '13px', color: 'var(--danger)' }}>{errors.phone}</p>
+            )}
+          </div>
+
+          {/* Email (optional) */}
+          <div>
+            <label className="k-label" htmlFor="kiosk-email">Email</label>
+            <input
+              id="kiosk-email"
+              className={`k-field${errors.email ? ' error' : ''}`}
+              type="email"
+              autoComplete="email"
+              placeholder="you@email.co.nz"
+              value={formData.email}
+              onChange={(e) => updateField('email', e.target.value)}
+              aria-invalid={!!errors.email}
+              aria-describedby={errors.email ? 'err-email' : undefined}
+            />
+            {errors.email && (
+              <p id="err-email" style={{ marginTop: '6px', fontSize: '13px', color: 'var(--danger)' }}>{errors.email}</p>
+            )}
+          </div>
+
+          {/* Confirm email — only when an email is entered */}
+          {formData.email.trim() && (
+            <div>
+              <label className="k-label" htmlFor="kiosk-confirm-email">Confirm email</label>
+              <input
+                id="kiosk-confirm-email"
+                className={`k-field${emailMismatch ? ' error' : ''}`}
+                style={emailMatch ? { borderColor: 'var(--ok)' } : undefined}
+                type="email"
+                autoComplete="email"
+                placeholder="Re-enter your email"
+                value={confirmEmail}
+                onChange={(e) => {
+                  setConfirmEmail(e.target.value)
+                  if (errors.confirm_email) setErrors((prev) => ({ ...prev, confirm_email: undefined }))
+                }}
+                aria-invalid={emailMismatch}
+                aria-describedby="confirm-email-feedback"
+              />
+              {emailMismatch && (
+                <p id="confirm-email-feedback" style={{ marginTop: '6px', fontSize: '13px', fontWeight: 600, color: 'var(--danger)' }}>
+                  Emails do not match
+                </p>
+              )}
+              {emailMatch && (
+                <p id="confirm-email-feedback" style={{ marginTop: '6px', fontSize: '13px', fontWeight: 600, color: 'var(--ok)' }}>
+                  ✓ Emails match
+                </p>
+              )}
+              {errors.confirm_email && !confirmEmail.trim() && (
+                <p style={{ marginTop: '6px', fontSize: '13px', color: 'var(--danger)' }}>{errors.confirm_email}</p>
+              )}
+            </div>
           )}
         </div>
-      )}
 
-      {/* Buttons */}
-      <div className="flex gap-3 pt-2">
-        <button
-          type="button"
-          onClick={onBack}
-          disabled={submitting}
-          className="min-h-[48px] rounded-ctl border border-border-strong px-6 py-3 font-medium text-text hover:bg-canvas focus:outline-none focus:ring-2 focus:ring-border-strong focus:ring-offset-2 disabled:opacity-50"
-          style={{ fontSize: '18px' }}
-        >
-          Back
-        </button>
-        <button
-          type="submit"
-          disabled={submitting}
-          className="flex min-h-[48px] flex-1 items-center justify-center rounded-ctl bg-accent px-6 py-3 font-medium text-white shadow-card hover:bg-accent-press focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2 disabled:opacity-50"
-          style={{ fontSize: '18px' }}
-        >
+        <button type="submit" className="btn-kiosk primary" style={{ marginTop: '24px' }} disabled={submitting}>
           {submitting ? (
-            <>
-              <svg
-                className="mr-2 h-5 w-5 animate-spin text-white"
-                xmlns="http://www.w3.org/2000/svg"
-                fill="none"
-                viewBox="0 0 24 24"
-                aria-hidden="true"
-              >
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-              </svg>
-              Submitting…
-            </>
+            'Submitting…'
           ) : (
-            'Submit'
+            <>
+              Complete check-in
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4}>
+                <path d="M20 6L9 17l-5-5" />
+              </svg>
+            </>
           )}
         </button>
-      </div>
-    </form>
+
+        <div className="step-dots">
+          <i />
+          <i />
+          <i className="on" />
+        </div>
+      </form>
+    </>
   )
 }
 

@@ -43,6 +43,7 @@ from app.modules.customers.schemas import (
     FleetAccountUpdateRequest,
     FleetAccountUpdateResponse,
 )
+from app.modules.email_compose.schemas import PortalLinkOverrideRequest
 from app.modules.customers.service import (
     anonymise_customer,
     create_customer,
@@ -1063,10 +1064,13 @@ async def hard_delete_customer_endpoint(
     "/{customer_id}/send-portal-link",
     responses={
         200: {"description": "Portal link sent successfully"},
-        400: {"description": "Validation error (no email, portal not enabled)"},
+        400: {"description": "Validation error (no email, portal not enabled, invalid attachment)"},
         401: {"description": "Authentication required"},
         403: {"description": "Org role required"},
         404: {"description": "Customer not found"},
+        413: {"description": "Email too large"},
+        502: {"description": "Email provider authentication failed"},
+        503: {"description": "Delivery temporarily failed"},
     },
     summary="Send portal access link to customer via email",
     dependencies=[require_role("org_admin", "salesperson")],
@@ -1074,6 +1078,7 @@ async def hard_delete_customer_endpoint(
 async def send_portal_link_endpoint(
     customer_id: str,
     request: Request,
+    payload: PortalLinkOverrideRequest | None = None,
     db: AsyncSession = Depends(get_db_session),
 ):
     """Send the customer portal access link to the customer's email.
@@ -1081,8 +1086,25 @@ async def send_portal_link_endpoint(
     Validates that the customer has portal access enabled, a valid portal
     token, and an email address on file before sending.
 
-    Requirements: 13.1, 13.2, 13.3, 13.4
+    Two modes:
+
+    - **No body (backward-compatible auto-send)** — keeps the existing
+      fire-and-forget queued dispatch and returns the original 200 shape.
+    - **Send Email Modal override** (``PortalLinkOverrideRequest``) — switches
+      ``customers.service.send_portal_link`` to a direct synchronous send so
+      this endpoint can map ``FailureKind`` → HTTP. ``override_blocklist`` is
+      org_admin-gated (R13.5); attachment-token misses map to 400; send
+      failures map their ``failure_kind`` to the right status (R8.5–R8.8); a
+      missing customer maps to 404.
+
+    Requirements: 2.6, 7.6, 8.1, 8.3, 8.4, 8.5, 8.6, 8.7, 8.8, 8.9, 8.10,
+                  11.2, 11.3, 11.5, 16.2
     """
+    from app.modules.email_compose.service import (
+        EmailSendFailure,
+        InvalidAttachmentSelection,
+    )
+
     org_uuid, user_uuid, ip_address = _extract_org_context(request)
     if not org_uuid:
         return JSONResponse(
@@ -1100,6 +1122,38 @@ async def send_portal_link_endpoint(
 
     _origin = extract_request_base_url(request)
 
+    recipients = None
+    cc = None
+    bcc = None
+    subject = None
+    body_html = None
+    attachments = None
+    subject_was_edited = False
+    body_was_edited = False
+    override_blocklist = False
+    if payload is not None:
+        recipients = payload.recipients
+        cc = payload.cc
+        bcc = payload.bcc
+        subject = payload.subject
+        body_html = payload.body_html
+        attachments = payload.attachments
+        subject_was_edited = payload.subject_was_edited
+        body_was_edited = payload.body_was_edited
+        override_blocklist = payload.override_blocklist
+
+    # Honour override_blocklist only for org_admin (R13.5).
+    if override_blocklist:
+        role = getattr(request.state, "role", None)
+        if role != "org_admin":
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "detail": "Only an organisation admin can override the "
+                    "bounce blocklist."
+                },
+            )
+
     try:
         result = await send_portal_link(
             db,
@@ -1108,6 +1162,25 @@ async def send_portal_link_endpoint(
             customer_id=cust_uuid,
             ip_address=ip_address,
             base_url=_origin,
+            recipients=recipients,
+            cc=cc,
+            bcc=bcc,
+            subject=subject,
+            body_html=body_html,
+            attachments=attachments,
+            subject_was_edited=subject_was_edited,
+            body_was_edited=body_was_edited,
+            override_blocklist=override_blocklist,
+        )
+    except InvalidAttachmentSelection:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid attachment selection."},
+        )
+    except EmailSendFailure as exc:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
         )
     except ValueError as exc:
         error_msg = str(exc)
@@ -1116,6 +1189,8 @@ async def send_portal_link_endpoint(
             status_code=status,
             content={"detail": error_msg},
         )
+
+    await db.commit()
 
     return JSONResponse(
         status_code=200,

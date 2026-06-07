@@ -44,6 +44,9 @@
    frontend/src/styles/print.css, with the Tailwind utility hooks remapped
    to v2's design-token class names (bg-card/bg-canvas/rounded-card/etc.). */
 @import "./print.css";
+/* Kiosk touch-UI classes (ported verbatim from the Kiosk.html prototype).
+   Scoped to the /kiosk screens; loaded app-wide from this single entry. */
+@import "./kiosk.css";
 
 /* ------------------------------------------------------------
    Responsive shell breakpoint — `max-mobile:` variant (Task 9)

@@ -513,6 +513,55 @@ class TestCheckRolePathAccess:
         assert result is not None
         assert "Unknown role" in result
 
+    # --- staff_member: shell bootstrap + self-service + write-protection ---
+    # Regression: a staff_member must be able to GET the endpoints the org app
+    # shell + context providers call on load, or the SPA can't initialise after
+    # they log in (the whole reason staff logins were failing).
+    @pytest.mark.parametrize("path", [
+        "/api/v1/auth/me",
+        "/api/v2/modules",
+        "/api/v2/flags",
+        "/api/v1/org/settings",
+        "/api/v1/org/branches",
+        "/api/v1/notifications/inbox/unread-count",
+    ])
+    def test_staff_member_allowed_shell_bootstrap_get(self, path):
+        assert check_role_path_access("staff_member", path, method="GET") is None
+
+    @pytest.mark.parametrize("path,method", [
+        ("/api/v2/staff", "GET"),                       # clock screen resolves own staff row
+        ("/api/v2/staff/me/clock-action", "POST"),      # clock in/out
+        ("/api/v2/staff/me/payslips/123/pdf", "GET"),   # self payslips
+        ("/api/v2/uploads/clock-photos", "POST"),       # clock photo
+    ])
+    def test_staff_member_allowed_self_service(self, path, method):
+        assert check_role_path_access("staff_member", path, method=method) is None
+
+    def test_staff_member_can_update_own_profile(self):
+        # /auth/me is not read-only locked — staff may PUT their own profile.
+        assert check_role_path_access("staff_member", "/api/v1/auth/me", method="PUT") is None
+
+    @pytest.mark.parametrize("path,method", [
+        ("/api/v1/org/settings", "PUT"),
+        ("/api/v1/org/branches", "POST"),
+        ("/api/v2/flags", "POST"),
+        ("/api/v2/modules", "DELETE"),
+        ("/api/v1/notifications/inbox", "PATCH"),
+    ])
+    def test_staff_member_denied_bootstrap_writes(self, path, method):
+        result = check_role_path_access("staff_member", path, method=method)
+        assert result is not None
+        assert "read-only" in result.lower()
+
+    @pytest.mark.parametrize("path", [
+        "/api/v1/invoices",
+        "/api/v2/customers",
+        "/api/v1/org/users",
+        "/api/v1/billing/",
+    ])
+    def test_staff_member_denied_non_self_service(self, path):
+        assert check_role_path_access("staff_member", path, method="GET") is not None
+
 
 # ---------------------------------------------------------------------------
 # require_role dependency tests

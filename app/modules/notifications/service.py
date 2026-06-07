@@ -596,6 +596,14 @@ def _log_entry_to_dict(entry: NotificationLog) -> dict[str, Any]:
         "bounced_at": entry.bounced_at.isoformat() if entry.bounced_at else None,
         "bounce_reason": entry.bounce_reason,
         "delivered_at": entry.delivered_at.isoformat() if entry.delivered_at else None,
+        # Send-email-modal audit columns (R11.5–11.8). cc/bcc always emit as a
+        # list — empty persists as [] (never None) so the contract stays stable.
+        "subject_was_edited": bool(entry.subject_was_edited),
+        "body_was_edited": bool(entry.body_was_edited),
+        "edited_subject_hash": entry.edited_subject_hash,
+        "edited_body_hash": entry.edited_body_hash,
+        "cc_recipients": entry.cc_recipients or [],
+        "bcc_recipients": entry.bcc_recipients or [],
     }
 
 
@@ -615,10 +623,21 @@ async def log_email_sent(
     bounced_at: datetime | None = None,
     bounce_reason: str | None = None,
     delivered_at: datetime | None = None,
+    subject_was_edited: bool = False,
+    body_was_edited: bool = False,
+    edited_subject_hash: str | None = None,
+    edited_body_hash: str | None = None,
+    cc_recipients: list[str] | None = None,
+    bcc_recipients: list[str] | None = None,
 ) -> dict[str, Any]:
     """Log a sent email to the notification_log table.
 
-    Requirements: 35.1, 16.3
+    The send-email-modal audit fields default to no-edit values: the two
+    ``*_was_edited`` flags default to ``False``, the two hashes to ``None``,
+    and the cc/bcc lists persist as the JSONB array ``[]`` (never ``null``).
+    Provider/status/sent_at behaviour is preserved exactly as before.
+
+    Requirements: 35.1, 16.3, 11.2, 11.3, 11.4, 11.5, 11.6
     """
     entry = NotificationLog(
         org_id=org_id,
@@ -634,6 +653,14 @@ async def log_email_sent(
         bounced_at=bounced_at,
         bounce_reason=bounce_reason,
         delivered_at=delivered_at,
+        subject_was_edited=subject_was_edited,
+        body_was_edited=body_was_edited,
+        edited_subject_hash=edited_subject_hash,
+        edited_body_hash=edited_body_hash,
+        # Coerce None → [] so empty cc/bcc persist as the JSONB array [],
+        # never null (R11.5).
+        cc_recipients=cc_recipients or [],
+        bcc_recipients=bcc_recipients or [],
     )
     db.add(entry)
     await db.flush()
@@ -2625,3 +2652,366 @@ async def notify_stock_transfer_request(
         entity_id=to_branch_id,
     )
     return 1 if result else 0
+
+
+# ---------------------------------------------------------------------------
+# Reminder resend (Send Email Modal task 8.7, surface customer_vehicle)
+# ---------------------------------------------------------------------------
+
+
+class VehiclesModuleDisabled(Exception):
+    """The ``vehicles`` module is not enabled for this organisation (R22.2).
+
+    Raised by :func:`resend_notification_log_entry` when the org does not
+    have the ``vehicles`` module enabled. The router maps this to HTTP 403
+    with the exact detail
+    "Vehicles module is not enabled for this organisation." (R25.6).
+    """
+
+
+async def resend_notification_log_entry(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    log_id: uuid.UUID,
+    base_url: str | None = None,
+    recipients: list[str] | None = None,
+    cc: list[str] | None = None,
+    bcc: list[str] | None = None,
+    subject: str | None = None,
+    body_html: str | None = None,
+    attachments: list[str] | None = None,
+    subject_was_edited: bool = False,
+    body_was_edited: bool = False,
+    override_blocklist: bool = False,
+) -> dict[str, Any]:
+    """Resend a vehicle-reminder notification via the Send Email Modal.
+
+    This is the modal-triggered reminder resend (Send Email Modal task 8.7,
+    surface ``customer_vehicle``). It supports ONLY the four vehicle expiry
+    reminder template types
+    (``wof_expiry_reminder`` / ``cof_expiry_reminder`` /
+    ``registration_expiry_reminder`` / ``service_due_reminder``) — resending
+    any other log row raises ``ValueError`` (the router maps it to 400).
+
+    Behaviour:
+
+    - Loads the ``notification_log`` row by ``log_id``, org-scoped; a miss
+      raises ``ValueError`` (router → 404).
+    - Verifies the row's ``template_type`` is one of the four reminder types;
+      otherwise raises ``ValueError`` (router → 400).
+    - Checks ``ModuleService.is_enabled(str(org_id), 'vehicles')``; when the
+      module is disabled raises :class:`VehiclesModuleDisabled` (router → 403
+      "Vehicles module is not enabled for this organisation." — R22.2/R25.6).
+    - Reconstructs the recipient + reminder default content. ``notification_log``
+      does not carry the customer / vehicle ids, so the original row's
+      ``recipient`` (email) + the rego embedded in its ``subject`` are used to
+      locate the ``customer_vehicles`` link row, then
+      :func:`app.modules.email_compose.service.build_email_preview` rebuilds the
+      byte-equivalent default subject + sanitised body (so "send default" ==
+      preview, Property P1 / R3.6). When the link row cannot be reconstructed
+      the resend falls back to the original log subject + a rebuilt reminder
+      body (documented limitation below).
+    - Threads the full Send-Email-Modal override set: ``recipients[0]`` →
+      ``to_email`` with ``recipients[1:]`` merged into Cc; ``cc`` / ``bcc`` →
+      ``EmailMessage.cc`` / ``.bcc``; ``subject`` / ``body_html`` overrides
+      (``body_html`` server-sanitised); :func:`compute_audit_hashes` over the
+      FINAL post-sanitisation strings (R11.2/R11.3 / P4).
+    - Reminder surfaces offer NO attachments (R7.7): a non-empty ``attachments``
+      list raises :class:`InvalidAttachmentSelection`; ``None`` / empty proceeds.
+    - Dispatches via ``send_email(allow_blocklisted=override_blocklist)``; a
+      failure raises :class:`EmailSendFailure` carrying the final
+      ``failure_kind`` (R8.5–R8.8). On success writes a NEW ``notification_log``
+      row via :func:`log_email_sent` with the six audit columns (a resend
+      legitimately creates a new log row).
+
+    Limitation: because ``notification_log`` stores only the recipient email
+    and subject (no customer / vehicle FK), the customer+vehicle context is
+    reconstructed heuristically (recipient email within the org, then the rego
+    token from the original subject). If that lookup is ambiguous or empty the
+    resend still proceeds using the original subject and a rebuilt reminder
+    body, but the variable-context-driven default may differ from the original
+    send in that edge case.
+
+    Requirements: 2.7, 7.6, 8.1, 8.3, 8.4, 8.5, 8.6, 8.7, 8.8, 8.9, 8.10,
+                  11.2, 11.3, 11.5, 22.2, 25.6
+    """
+    from app.core.modules import ModuleService
+    from app.integrations.email_sender import (
+        EmailMessage,
+        render_transactional_html,
+        send_email,
+    )
+    from app.integrations.html_sanitise import sanitise_email_html
+    from app.modules.email_compose.service import (
+        EmailSendFailure,
+        InvalidAttachmentSelection,
+        _REMINDER_TEMPLATE_TYPES,
+        build_email_preview,
+        compute_audit_hashes,
+    )
+
+    # --- Load the log row org-scoped (a miss -> ValueError -> router 404). ---
+    log_row = (
+        await db.execute(
+            select(NotificationLog).where(
+                NotificationLog.id == log_id,
+                NotificationLog.org_id == org_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if log_row is None:
+        raise ValueError("Notification log entry not found in this organisation")
+
+    # --- Only the four vehicle reminder types are resendable here (R2.7). ---
+    template_type = log_row.template_type
+    if template_type not in _REMINDER_TEMPLATE_TYPES:
+        raise ValueError(
+            "Only vehicle expiry reminder notifications can be resent here."
+        )
+
+    # --- Vehicles module gate (R22.2 / R25.6). ---
+    if not await ModuleService(db).is_enabled(str(org_id), "vehicles"):
+        raise VehiclesModuleDisabled(
+            "Vehicles module is not enabled for this organisation."
+        )
+
+    # --- Reconstruct the customer_vehicle link row from the log row. ---
+    original_recipient = log_row.recipient
+    original_subject = log_row.subject or ""
+    customer_vehicle_id = await _reconstruct_reminder_link(
+        db,
+        org_id=org_id,
+        recipient=original_recipient,
+        subject=original_subject,
+    )
+
+    # --- Resolve the default subject + sanitised body. Prefer the preview's
+    # byte-equivalent default-render (via build_email_preview) when the link
+    # row reconstructed; otherwise fall back to the original subject + a
+    # rebuilt reminder body (documented limitation). ---
+    default_recipients: list[str] = []
+    if customer_vehicle_id is not None:
+        preview = await build_email_preview(
+            db,
+            org_id=org_id,
+            template_type=template_type,
+            entity_type="customer_vehicle",
+            entity_id=customer_vehicle_id,
+            base_url=base_url,
+        )
+        email_subject = preview["subject"]
+        html_body = preview["body_html"]
+        default_recipients = list(preview.get("recipients") or [])
+    else:
+        _reminder_labels = {
+            "wof_expiry_reminder": "WOF Expiry",
+            "cof_expiry_reminder": "COF Expiry",
+            "registration_expiry_reminder": "Registration Expiry",
+            "service_due_reminder": "Service Due",
+        }
+        reminder_label = _reminder_labels[template_type]
+        email_subject = original_subject or f"{reminder_label} reminder"
+        fallback_body = (
+            f"<p>Hi,</p>"
+            f"<p>This is a reminder regarding your {reminder_label.lower()}.</p>"
+            f"<p>Please contact us to arrange your appointment.</p>"
+        )
+        html_body = sanitise_email_html(
+            render_transactional_html(fallback_body, subject=email_subject)
+            if "<" not in fallback_body
+            else fallback_body
+        )
+        if original_recipient:
+            default_recipients = [original_recipient]
+
+    # --- Resolve the recipient: recipients[0] wins, else the default. ---
+    _cc_list: list[str] = list(cc) if cc else []
+    _bcc_list: list[str] = list(bcc) if bcc else []
+    recipient_email: str | None = None
+    if recipients:
+        recipient_email = recipients[0]
+        _cc_list = [*recipients[1:], *_cc_list]
+    if not recipient_email:
+        recipient_email = default_recipients[0] if default_recipients else None
+    if not recipient_email:
+        recipient_email = original_recipient or None
+    if not recipient_email:
+        raise ValueError(
+            "No recipient on file for this reminder. Provide a recipient."
+        )
+
+    # --- Send Email Modal subject override (R8.1). ---
+    if subject is not None:
+        email_subject = subject
+
+    # --- Send Email Modal body override (R8.1, R10.1). ---
+    if body_html is not None:
+        html_body = sanitise_email_html(body_html)
+
+    # Audit hashes over the FINAL (post-sanitisation) strings (R11.2, R11.3 / P4).
+    _audit_hashes = compute_audit_hashes(email_subject, html_body)
+    _edited_subject_hash = (
+        _audit_hashes["subject_hash"] if subject_was_edited else None
+    )
+    _edited_body_hash = _audit_hashes["body_hash"] if body_was_edited else None
+
+    # --- Reminder surfaces offer NO attachments (R7.7). ---
+    if attachments:
+        raise InvalidAttachmentSelection("Invalid attachment selection.")
+
+    # --- Dispatch via the unified sender. ---
+    message = EmailMessage(
+        to_email=recipient_email,
+        to_name="",
+        subject=email_subject,
+        html_body=html_body,
+        text_body="",
+        attachments=[],
+        cc=_cc_list,
+        bcc=_bcc_list,
+        org_id=org_id,
+    )
+    result = await send_email(db, message, allow_blocklisted=override_blocklist)
+
+    if not result.success:
+        last_error = result.error or "send failed"
+        try:
+            await log_email_sent(
+                db,
+                org_id=org_id,
+                recipient=recipient_email,
+                template_type=template_type,
+                subject=email_subject,
+                status="failed",
+                error_message=str(last_error),
+            )
+        except Exception:
+            logger.warning(
+                "Failed to log reminder resend failure for log %s", log_id
+            )
+
+        _last_attempt = result.attempts[-1] if result.attempts else None
+        _failure_kind = _last_attempt.failure_kind if _last_attempt else None
+        raise EmailSendFailure(
+            _failure_kind,
+            attempts=len(result.attempts),
+            error=str(last_error),
+        )
+
+    # --- Success-path notification_log row with the six audit columns. This
+    # legitimately creates a NEW log row for the resend (R11.2/R11.3/R11.5). ---
+    try:
+        await log_email_sent(
+            db,
+            org_id=org_id,
+            recipient=recipient_email,
+            template_type=template_type,
+            subject=email_subject,
+            status="sent",
+            channel="email",
+            provider_key=result.provider_key,
+            provider_message_id=result.provider_message_id,
+            subject_was_edited=subject_was_edited,
+            body_was_edited=body_was_edited,
+            edited_subject_hash=_edited_subject_hash,
+            edited_body_hash=_edited_body_hash,
+            cc_recipients=_cc_list,
+            bcc_recipients=_bcc_list,
+        )
+    except Exception:
+        logger.warning("Failed to log reminder resend success for log %s", log_id)
+
+    return {
+        "log_id": log_id,
+        "recipient_email": recipient_email,
+        "template_type": template_type,
+        "status": "sent",
+    }
+
+
+async def _reconstruct_reminder_link(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    recipient: str,
+    subject: str,
+) -> uuid.UUID | None:
+    """Best-effort resolution of the ``customer_vehicles`` link for a resend.
+
+    ``notification_log`` carries no customer / vehicle FK, so this rebuilds the
+    link from the original row's recipient email (matched to a customer in this
+    org) and the rego token embedded in the original subject (matched to one of
+    that customer's linked vehicles). Returns the ``customer_vehicles.id`` when
+    a single confident match is found, else ``None`` (caller falls back to the
+    original subject + a rebuilt body).
+    """
+    from app.modules.admin.models import GlobalVehicle
+    from app.modules.customers.models import Customer
+    from app.modules.vehicles.models import CustomerVehicle, OrgVehicle
+
+    recipient_norm = (recipient or "").strip().lower()
+    if not recipient_norm:
+        return None
+
+    # Find candidate customers in this org by recipient email.
+    customer_ids = list(
+        (
+            await db.execute(
+                select(Customer.id).where(
+                    Customer.org_id == org_id,
+                    func.lower(Customer.email) == recipient_norm,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not customer_ids:
+        return None
+
+    # Pull all the customers' vehicle links + resolved rego (both link types).
+    cv_gv = list(
+        (
+            await db.execute(
+                select(CustomerVehicle.id, GlobalVehicle.rego)
+                .join(
+                    GlobalVehicle,
+                    CustomerVehicle.global_vehicle_id == GlobalVehicle.id,
+                )
+                .where(
+                    CustomerVehicle.org_id == org_id,
+                    CustomerVehicle.customer_id.in_(customer_ids),
+                )
+            )
+        ).all()
+    )
+    cv_ov = list(
+        (
+            await db.execute(
+                select(CustomerVehicle.id, OrgVehicle.rego)
+                .join(OrgVehicle, CustomerVehicle.org_vehicle_id == OrgVehicle.id)
+                .where(
+                    CustomerVehicle.org_id == org_id,
+                    CustomerVehicle.customer_id.in_(customer_ids),
+                )
+            )
+        ).all()
+    )
+    links = [*cv_gv, *cv_ov]
+    if not links:
+        return None
+
+    # Single link -> unambiguous.
+    if len(links) == 1:
+        return links[0][0]
+
+    # Otherwise match the rego token embedded in the subject (regos are
+    # alphanumeric; compare case-insensitively, stripped of spaces).
+    subject_norm = (subject or "").upper().replace(" ", "")
+    for cv_id, rego in links:
+        rego_norm = (rego or "").upper().replace(" ", "")
+        if rego_norm and rego_norm in subject_norm:
+            return cv_id
+
+    return None

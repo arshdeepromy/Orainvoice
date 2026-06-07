@@ -56,6 +56,7 @@ export interface PpsrSearchRequest {
   rego: string
   include_ownership_history?: boolean
   include_current_owner?: boolean
+  include_money_owing?: boolean
   include_warnings?: boolean
   include_fws?: boolean
   check_hidden_plates?: boolean
@@ -65,6 +66,21 @@ export interface PpsrSearchRequest {
    * org's monthly quota.
    */
   force_refresh?: boolean
+  /**
+   * Ownership check (CarJam `owner_check` API product). When set, the
+   * backend verifies the supplied identity against the registered owner
+   * and returns a match flag. `owner_check_type` selects which per-type
+   * fields are required:
+   *   - `person_names` → `owner_last_name` + (`owner_first_name` OR `owner_dob`)
+   *   - `person_dl`    → `owner_driver_licence`
+   *   - `company`      → `owner_company_name`
+   */
+  owner_check_type?: 'person_names' | 'person_dl' | 'company' | null
+  owner_last_name?: string | null
+  owner_first_name?: string | null
+  owner_dob?: string | null
+  owner_driver_licence?: string | null
+  owner_company_name?: string | null
 }
 
 /** Body of `POST /api/v2/ppsr/searches/:id/link-vehicle`. */
@@ -102,6 +118,15 @@ export interface PpsrSearchResult {
   not_found: boolean
   charges_cents: number | null
   carjam_request_id: string | null
+
+  /**
+   * Ownership-check result (CarJam `owner_check`). `owner_check_match`
+   * is `null` when no ownership check was run for this search; otherwise
+   * reflects whether the supplied identity matched the registered owner.
+   */
+  owner_check_type?: 'person_names' | 'person_dl' | 'company' | string | null
+  owner_check_match?: boolean | null
+  owner_check_ref?: string | null
 }
 
 /**
@@ -118,6 +143,8 @@ export interface PpsrSearchSummary {
   has_warnings: boolean
   has_ownership_data: boolean
   not_found: boolean
+  owner_check_type?: 'person_names' | 'person_dl' | 'company' | string | null
+  owner_check_match?: boolean | null
   forgotten_at: string | null
   org_vehicle_id: string | null
   user_id: string

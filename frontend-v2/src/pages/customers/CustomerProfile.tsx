@@ -33,6 +33,8 @@ import { useCustomerClaims } from '@/hooks/useCustomerClaims'
 import { CustomerEditModal } from '@/components/customers/CustomerEditModal'
 import { VehiclePickerModal } from '@/components/customers/VehiclePickerModal'
 import { HardDeleteModal } from '@/components/customers/HardDeleteModal'
+import { SendEmailModal } from '@/components/email/SendEmailModal'
+import { SURFACE_REGISTRY } from '@/components/email/surfaceRegistry'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -198,10 +200,8 @@ const BADGE_VARIANT_MAP: Record<ProfileBadgeVariant, 'ok' | 'warn' | 'danger' | 
 /*  Portal Access Card                                                 */
 /* ------------------------------------------------------------------ */
 
-function PortalAccessCard({ customer }: { customer: CustomerProfile; onRefresh: () => void }) {
+function PortalAccessCard({ customer, onSendPortalLink }: { customer: CustomerProfile; onRefresh: () => void; onSendPortalLink: () => void }) {
   const [copyFeedback, setCopyFeedback] = useState(false)
-  const [sendStatus, setSendStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle')
-  const [sendError, setSendError] = useState('')
 
   const isEnabled = !!customer.enable_portal && !!customer.portal_token
   const portalUrl = isEnabled ? `${window.location.origin}/portal/${customer.portal_token}` : null
@@ -214,21 +214,6 @@ function PortalAccessCard({ customer }: { customer: CustomerProfile; onRefresh: 
       setTimeout(() => setCopyFeedback(false), 2000)
     } catch {
       // fallback
-    }
-  }
-
-  const handleSendLink = async () => {
-    setSendStatus('sending')
-    setSendError('')
-    try {
-      await apiClient.post(`/api/v2/customers/${customer.id}/send-portal-link`)
-      setSendStatus('sent')
-      setTimeout(() => setSendStatus('idle'), 3000)
-    } catch (err: any) {
-      const detail = err?.response?.data?.detail ?? 'Failed to send portal link'
-      setSendError(detail)
-      setSendStatus('error')
-      setTimeout(() => setSendStatus('idle'), 4000)
     }
   }
 
@@ -257,17 +242,12 @@ function PortalAccessCard({ customer }: { customer: CustomerProfile; onRefresh: 
             </button>
             <button
               type="button"
-              onClick={handleSendLink}
-              disabled={sendStatus === 'sending' || sendStatus === 'sent'}
+              onClick={onSendPortalLink}
               className="inline-flex min-h-[36px] flex-shrink-0 items-center gap-1 rounded-chip bg-ok-soft px-2 py-1 text-[11px] font-medium text-ok transition-colors hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {sendStatus === 'sending' ? 'Sending…' : sendStatus === 'sent' ? '✓ Sent' : 'Send Link'}
+              Send Link
             </button>
           </div>
-
-          {sendStatus === 'error' && sendError && (
-            <p className="text-[11px] text-danger">{sendError}</p>
-          )}
 
           {/* Metadata */}
           <div className="flex flex-wrap gap-x-6 gap-y-1 text-[11px] text-muted">
@@ -295,6 +275,8 @@ export default function CustomerProfilePage() {
   const { isEnabled: isModuleEnabled } = useModules()
   const { user } = useAuth()
   const isOrgAdmin = user?.role === 'org_admin'
+  const isSalesperson = user?.role === 'salesperson'
+  const canSendEmail = isOrgAdmin || isSalesperson
   const smsEnabled = isModuleEnabled('sms')
   const vehiclesEnabled = isModuleEnabled('vehicles')
   const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
@@ -325,6 +307,11 @@ export default function CustomerProfilePage() {
 
   /* Edit modal */
   const [editOpen, setEditOpen] = useState(false)
+
+  /* Send Email composer modal (shared SendEmailModal) — driven by a state
+     object holding the active surface's template type. entityType is always
+     'customer' on this page (Send Statement + Send Portal Link). */
+  const [emailModal, setEmailModal] = useState<{ templateType: 'customer_statement' | 'portal_link' } | null>(null)
 
   /* Vehicle picker modal — opens before navigating to /invoices/new or
      /quotes/new when the customer has more than one linked vehicle so the
@@ -631,6 +618,11 @@ export default function CustomerProfilePage() {
   const fullName = `${customer.first_name} ${customer.last_name}`
   const outstandingNum = parseFloat(customer.outstanding_balance)
 
+  /* Send Statement gate (R17.4): visible only when the customer has at least
+     one OPEN invoice — status issued / partially_paid / overdue. */
+  const OPEN_INVOICE_STATUSES = ['issued', 'partially_paid', 'overdue']
+  const hasOpenInvoice = (customer.invoices ?? []).some((inv) => OPEN_INVOICE_STATUSES.includes(inv.status))
+
   /* ---- Tab content ---- */
   const vehiclesTab = (
     <div>
@@ -815,6 +807,11 @@ export default function CustomerProfilePage() {
           <Button size="sm" variant="ghost" onClick={() => setNotifyOpen(true)}>
             {smsEnabled ? 'Send Email / SMS' : 'Send Email'}
           </Button>
+          {canSendEmail && hasOpenInvoice && (
+            <Button size="sm" variant="ghost" onClick={() => setEmailModal({ templateType: 'customer_statement' })}>
+              Send Statement
+            </Button>
+          )}
           <Button size="sm" variant="ghost" onClick={() => setMergeOpen(true)}>
             Merge Customer
           </Button>
@@ -974,9 +971,26 @@ export default function CustomerProfilePage() {
           </section>
 
           {/* Portal Access */}
-          <PortalAccessCard customer={customer} onRefresh={fetchProfile} />
+          <PortalAccessCard
+            customer={customer}
+            onRefresh={fetchProfile}
+            onSendPortalLink={() => setEmailModal({ templateType: 'portal_link' })}
+          />
         </div>
       </div>
+
+      {/* ---- Send Email composer modal (shared) ---- */}
+      {emailModal && (
+        <SendEmailModal
+          open={true}
+          onClose={() => setEmailModal(null)}
+          templateType={emailModal.templateType}
+          entityType="customer"
+          entityId={customer.id}
+          surfaceLabel={SURFACE_REGISTRY[emailModal.templateType]?.surfaceLabel ?? 'Send Email'}
+          onSent={() => { fetchProfile() }}
+        />
+      )}
 
       {/* ---- Notify Modal ---- */}
       <Modal open={notifyOpen} onClose={() => { setNotifyOpen(false); setNotifyError('') }} title={smsEnabled ? 'Send Email / SMS' : 'Send Email'}>

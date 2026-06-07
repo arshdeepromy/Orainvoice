@@ -107,6 +107,12 @@ class PpsrSearch(Base):
     )
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     carjam_request_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Ownership check (CarJam ``owner_check`` API product). ``owner_check_type``
+    # is NULL when no ownership check was run for this search; ``owner_check_match``
+    # captures whether the supplied identity matched the registered owner.
+    owner_check_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    owner_check_match: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    owner_check_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
     # G29 — payload-wipe timestamp; detail-fetch returns HTTP 410 when set.
     forgotten_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True,

@@ -27,7 +27,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import write_audit_log
 from app.core.database import get_db_session
 from app.modules.organisations.service import get_org_settings
-from app.modules.staff.models import StaffMember, StaffRosterViewToken
+from app.modules.staff.models import (
+    StaffLocationAssignment,
+    StaffMember,
+    StaffRosterViewToken,
+)
 from app.modules.staff.roster_delivery import (
     REASON_NO_EMAIL,
     REASON_NO_PHONE,
@@ -46,10 +50,13 @@ from app.modules.staff.schemas import (
     RosterEmailRequest,
     RosterSendResponse,
     RosterSmsRequest,
+    StaffListKpisResponse,
     StaffMemberCreate,
     StaffMemberListResponse,
     StaffMemberResponse,
     StaffMemberUpdate,
+    StaffMetricValue,
+    StaffMonthStatsResponse,
     StaffPayRateListResponse,
     UtilisationReportResponse,
 )
@@ -226,6 +233,159 @@ async def labour_cost_report(
     svc = StaffService(db)
     data = await svc.get_labour_costs(org_id, date_from, date_to, staff_id=staff_id)
     return LabourCostResponse(**data)
+
+
+@router.get(
+    "/kpis",
+    response_model=StaffListKpisResponse,
+    summary="Org-wide staff list KPIs",
+)
+async def get_list_kpis(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+) -> StaffListKpisResponse:
+    """Return the org-wide staff list KPIs surfaced on the Staff list page.
+
+    Module-gated (404 ``not_enabled`` when ``staff_management`` is off for the
+    org). Maps the ``StaffListKpis`` service dataclass onto the response model.
+
+    Declared here — among the static-suffix routes — so it is registered
+    BEFORE the dynamic ``/{staff_id}`` handler. Otherwise FastAPI would parse
+    the literal ``kpis`` segment as a ``staff_id`` UUID path param and 422.
+
+    **Validates: Requirements 1.6, 14.5.**
+    """
+    await _require_staff_management_module(request, db)
+    org_id = _get_org_id(request)
+    svc = StaffService(db)
+    kpis = await svc.get_list_kpis(org_id)
+    return StaffListKpisResponse(
+        total_staff=kpis.total_staff,
+        employee_count=kpis.employee_count,
+        with_login_count=kpis.with_login_count,
+        avg_hourly_rate=kpis.avg_hourly_rate,
+    )
+
+
+@router.get(
+    "/{staff_id}/stats",
+    response_model=StaffMonthStatsResponse,
+    summary="Staff month stats (this month metrics + last sign-in)",
+)
+async def get_staff_stats(
+    staff_id: UUID,
+    request: Request,
+    period: str = Query("this_month", pattern="^this_month$"),
+    db: AsyncSession = Depends(get_db_session),
+) -> StaffMonthStatsResponse:
+    """Return the "this month" metrics + last sign-in for one staff member.
+
+    Module-gated (404 ``not_enabled`` when ``staff_management`` is off) and
+    access-controlled per R13:
+
+    - ``org_admin`` / ``salesperson`` — any staff member in the org.
+    - ``branch_admin`` — only staff whose ``staff_location_assignments``
+      intersect the admin's ``request.state.branch_ids`` (else 403).
+    - ``staff_member`` — only their own record where
+      ``staff.user_id == request.state.user_id`` (else 403).
+
+    A target in another org surfaces as 404 (``get_staff`` filters by
+    ``org_id``). The path-based RBAC middleware already admits all four
+    roles to this GET; the self-scope / branch-scope check below is the
+    authoritative data gate (do NOT rely on ``rbac.py`` prefix lists).
+
+    **Validates: Requirements 11.1, 13.1, 13.2, 13.3, 13.4, 13.5, 13.6, 14.5.**
+    """
+    await _require_staff_management_module(request, db)
+    org_id = _get_org_id(request)
+    role = str(getattr(request.state, "role", "") or "")
+    user_id = getattr(request.state, "user_id", None)
+
+    svc = StaffService(db)
+    staff = await svc.get_staff(org_id, staff_id)
+    if staff is None:
+        # Covers both a genuinely missing record and a record belonging
+        # to another org (R13.6 — get_staff filters by org_id).
+        raise HTTPException(status_code=404, detail="Staff member not found")
+
+    # ------------------------------------------------------------------
+    # RBAC / self-scope access-control matrix (R13.2–R13.5)
+    # ------------------------------------------------------------------
+    if role in ("org_admin", "global_admin", "salesperson"):
+        # Any staff member in the requester's org (R13.2).
+        pass
+    elif role == "branch_admin":
+        # Allowed only when the target staff member is assigned to a
+        # location in the admin's branch scope (R13.3).
+        branch_ids_raw = getattr(request.state, "branch_ids", None) or []
+        branch_uuids: list[UUID] = []
+        for raw in branch_ids_raw:
+            try:
+                branch_uuids.append(UUID(str(raw)))
+            except (ValueError, TypeError):
+                continue
+        in_scope = False
+        if branch_uuids:
+            scoped = (
+                await db.execute(
+                    select(StaffLocationAssignment.id)
+                    .where(
+                        StaffLocationAssignment.staff_id == staff_id,
+                        StaffLocationAssignment.location_id.in_(branch_uuids),
+                    )
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            in_scope = scoped is not None
+        if not in_scope:
+            raise HTTPException(
+                status_code=403,
+                detail="Staff member is outside your branch scope",
+            )
+    elif role == "staff_member":
+        # Self-scope: only the requester's own staff record (R13.4, R13.5).
+        requester_user_id = None
+        if user_id is not None:
+            try:
+                requester_user_id = UUID(str(user_id))
+            except (ValueError, TypeError):
+                requester_user_id = None
+        if staff.user_id is None or staff.user_id != requester_user_id:
+            raise HTTPException(
+                status_code=403,
+                detail="You may only view your own staff stats",
+            )
+    else:
+        # Any other role has no scope to staff stats.
+        raise HTTPException(
+            status_code=403,
+            detail="You are not permitted to view staff stats",
+        )
+
+    stats = await svc.get_staff_month_stats(org_id, staff_id)
+
+    return StaffMonthStatsResponse(
+        staff_id=staff_id,
+        period="this_month",
+        hours_logged=StaffMetricValue(
+            value=stats.hours_logged,
+            has_data=stats.hours_logged_has_data,
+        ),
+        jobs_completed=StaffMetricValue(
+            value=Decimal(stats.jobs_completed),
+            has_data=stats.jobs_completed_has_data,
+        ),
+        billable_ratio=StaffMetricValue(
+            value=Decimal(stats.billable_ratio),
+            has_data=stats.billable_ratio_has_data,
+        ),
+        on_time_rate=StaffMetricValue(
+            value=Decimal(stats.on_time_rate),
+            has_data=stats.on_time_rate_has_data,
+        ),
+        last_sign_in=stats.last_sign_in,
+        user_role=stats.user_role,
+    )
 
 
 # ---------------------------------------------------------------------------

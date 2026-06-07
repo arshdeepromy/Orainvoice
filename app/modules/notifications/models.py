@@ -121,6 +121,29 @@ class NotificationLog(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+    # Send-email-modal audit columns (migration 0214, send-email-modal spec
+    # Data Models §2, R11.1). Record whether the user edited the default
+    # subject/body before sending and persist a SHA-256 hash of the edited
+    # value (never the raw content) plus the cc/bcc recipient lists. Empty
+    # cc/bcc persist as [] (never null) via default=list + server_default.
+    subject_was_edited: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    body_was_edited: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    edited_subject_hash: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    edited_body_hash: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    cc_recipients: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="'[]'"
+    )
+    bcc_recipients: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="'[]'"
+    )
 
     __table_args__ = (
         CheckConstraint(

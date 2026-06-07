@@ -22,6 +22,7 @@ class JobCardItemType(str, Enum):
 class JobCardStatus(str, Enum):
     open = "open"
     in_progress = "in_progress"
+    awaiting_parts = "awaiting_parts"
     completed = "completed"
     invoiced = "invoiced"
 

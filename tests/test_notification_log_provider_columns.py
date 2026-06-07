@@ -202,6 +202,152 @@ class TestLogEmailSentProviderColumns:
 
 
 # ---------------------------------------------------------------------------
+# log_email_sent — persists send-email-modal audit columns (R11.2–11.6)
+# ---------------------------------------------------------------------------
+
+
+class TestLogEmailSentAuditColumns:
+    """log_email_sent must accept and persist the six audit kwargs."""
+
+    @staticmethod
+    def _make_db():
+        """Build an AsyncMock db that records added entries."""
+        db = AsyncMock()
+        added: list[NotificationLog] = []
+        db.add = lambda obj: added.append(obj)
+
+        async def fake_flush():
+            pass
+
+        async def fake_refresh(obj):
+            obj.id = uuid.uuid4()
+            obj.created_at = datetime.now(timezone.utc)
+
+        db.flush = fake_flush
+        db.refresh = fake_refresh
+        return db, added
+
+    @pytest.mark.asyncio
+    async def test_persists_edited_audit_fields(self):
+        """All six audit kwargs are stored when supplied (R11.2, 11.3, 11.5)."""
+        db, added = self._make_db()
+
+        result = await log_email_sent(
+            db,
+            org_id=ORG_ID,
+            recipient="user@example.com",
+            template_type="invoice_issued",
+            subject="REVISED Invoice INV-0001",
+            status="sent",
+            subject_was_edited=True,
+            body_was_edited=True,
+            edited_subject_hash="a" * 64,
+            edited_body_hash="b" * 64,
+            cc_recipients=["accountant@example.com"],
+            bcc_recipients=["records@example.com"],
+        )
+
+        entry = added[0]
+        assert entry.subject_was_edited is True
+        assert entry.body_was_edited is True
+        assert entry.edited_subject_hash == "a" * 64
+        assert entry.edited_body_hash == "b" * 64
+        assert entry.cc_recipients == ["accountant@example.com"]
+        assert entry.bcc_recipients == ["records@example.com"]
+
+        assert result["subject_was_edited"] is True
+        assert result["body_was_edited"] is True
+        assert result["edited_subject_hash"] == "a" * 64
+        assert result["edited_body_hash"] == "b" * 64
+        assert result["cc_recipients"] == ["accountant@example.com"]
+        assert result["bcc_recipients"] == ["records@example.com"]
+
+    @pytest.mark.asyncio
+    async def test_defaults_to_no_edit_values(self):
+        """Omitting the audit kwargs yields no-edit defaults (R11.4, 11.5)."""
+        db, added = self._make_db()
+
+        result = await log_email_sent(
+            db,
+            org_id=ORG_ID,
+            recipient="user@example.com",
+            template_type="invoice_issued",
+            subject="Invoice INV-0001",
+            status="queued",
+        )
+
+        entry = added[0]
+        assert entry.subject_was_edited is False
+        assert entry.body_was_edited is False
+        assert entry.edited_subject_hash is None
+        assert entry.edited_body_hash is None
+        # Empty cc/bcc persist as [] (never None) — R11.5
+        assert entry.cc_recipients == []
+        assert entry.bcc_recipients == []
+
+        assert result["subject_was_edited"] is False
+        assert result["body_was_edited"] is False
+        assert result["edited_subject_hash"] is None
+        assert result["edited_body_hash"] is None
+        assert result["cc_recipients"] == []
+        assert result["bcc_recipients"] == []
+
+    @pytest.mark.asyncio
+    async def test_none_cc_bcc_coerced_to_empty_list(self):
+        """Explicit None cc/bcc still persist as [] (never null) — R11.5."""
+        db, added = self._make_db()
+
+        await log_email_sent(
+            db,
+            org_id=ORG_ID,
+            recipient="user@example.com",
+            template_type="quote_sent",
+            subject="Quote",
+            status="sent",
+            cc_recipients=None,
+            bcc_recipients=None,
+        )
+
+        entry = added[0]
+        assert entry.cc_recipients == []
+        assert entry.bcc_recipients == []
+
+    @pytest.mark.asyncio
+    async def test_preserves_provider_fields_alongside_audit(self):
+        """Provider/status/sent_at behaviour is preserved with audit set (R11.6)."""
+        db, added = self._make_db()
+        sent_at = datetime(2026, 6, 6, 9, 0, tzinfo=timezone.utc)
+
+        result = await log_email_sent(
+            db,
+            org_id=ORG_ID,
+            recipient="user@example.com",
+            template_type="invoice_issued",
+            subject="Invoice",
+            status="sent",
+            sent_at=sent_at,
+            provider_key="brevo",
+            provider_message_id="<msg-1@brevo>",
+            subject_was_edited=True,
+            edited_subject_hash="c" * 64,
+        )
+
+        entry = added[0]
+        assert entry.provider_key == "brevo"
+        assert entry.provider_message_id == "<msg-1@brevo>"
+        assert entry.status == "sent"
+        assert entry.sent_at == sent_at
+        # Audit fields coexist with provider fields
+        assert entry.subject_was_edited is True
+        assert entry.edited_subject_hash == "c" * 64
+        assert entry.body_was_edited is False
+        assert entry.cc_recipients == []
+
+        assert result["provider_key"] == "brevo"
+        assert result["sent_at"] == sent_at.isoformat()
+
+
+# ---------------------------------------------------------------------------
 # update_log_status — updates new provider tracking columns (Req 16.3)
 # ---------------------------------------------------------------------------
 
@@ -227,6 +373,13 @@ def _make_log_entry(**overrides) -> NotificationLog:
     entry.bounced_at = overrides.get("bounced_at", None)
     entry.bounce_reason = overrides.get("bounce_reason", None)
     entry.delivered_at = overrides.get("delivered_at", None)
+    # Send-email-modal audit columns (R11.5–11.8)
+    entry.subject_was_edited = overrides.get("subject_was_edited", False)
+    entry.body_was_edited = overrides.get("body_was_edited", False)
+    entry.edited_subject_hash = overrides.get("edited_subject_hash", None)
+    entry.edited_body_hash = overrides.get("edited_body_hash", None)
+    entry.cc_recipients = overrides.get("cc_recipients", [])
+    entry.bcc_recipients = overrides.get("bcc_recipients", [])
     return entry
 
 
@@ -404,3 +557,113 @@ class TestLogEntryToDictNewFields:
         assert result["bounced_at"] is None
         assert result["bounce_reason"] is None
         assert result["delivered_at"] is None
+
+
+# ---------------------------------------------------------------------------
+# _log_entry_to_dict + NotificationLogEntry — send-email-modal audit columns
+# (R11.5, 11.6, 11.7, 11.8)
+# ---------------------------------------------------------------------------
+
+
+class TestLogEntryToDictAuditColumns:
+    """_log_entry_to_dict must surface the six send-email-modal audit columns."""
+
+    def test_serialises_edited_send_audit_fields(self):
+        """An edited send populates flags, hashes, and cc/bcc lists (R11.5–11.8)."""
+        entry = _make_log_entry(
+            subject_was_edited=True,
+            body_was_edited=True,
+            edited_subject_hash="a" * 64,
+            edited_body_hash="b" * 64,
+            cc_recipients=["accountant@example.com"],
+            bcc_recipients=["records@example.com", "owner@example.com"],
+        )
+
+        result = _log_entry_to_dict(entry)
+
+        # All six keys must be present
+        for key in (
+            "subject_was_edited",
+            "body_was_edited",
+            "edited_subject_hash",
+            "edited_body_hash",
+            "cc_recipients",
+            "bcc_recipients",
+        ):
+            assert key in result
+
+        assert result["subject_was_edited"] is True
+        assert result["body_was_edited"] is True
+        assert result["edited_subject_hash"] == "a" * 64
+        assert result["edited_body_hash"] == "b" * 64
+        assert result["cc_recipients"] == ["accountant@example.com"]
+        assert result["bcc_recipients"] == [
+            "records@example.com",
+            "owner@example.com",
+        ]
+
+    def test_default_send_audit_fields(self):
+        """A default (unedited) send serialises false flags, null hashes, [] lists."""
+        entry = _make_log_entry()
+
+        result = _log_entry_to_dict(entry)
+
+        assert result["subject_was_edited"] is False
+        assert result["body_was_edited"] is False
+        assert result["edited_subject_hash"] is None
+        assert result["edited_body_hash"] is None
+        # Empty cc/bcc must be [] (never None) — R11.5
+        assert result["cc_recipients"] == []
+        assert result["bcc_recipients"] == []
+
+    def test_none_cc_bcc_coerced_to_empty_list(self):
+        """A legacy row with NULL cc/bcc still serialises as [] (never None)."""
+        entry = _make_log_entry(cc_recipients=None, bcc_recipients=None)
+
+        result = _log_entry_to_dict(entry)
+
+        assert result["cc_recipients"] == []
+        assert result["bcc_recipients"] == []
+
+    def test_schema_round_trips_audit_fields(self):
+        """NotificationLogEntry retains the six audit fields (Pydantic Rule 8)."""
+        from app.modules.notifications.schemas import NotificationLogEntry
+
+        entry = _make_log_entry(
+            subject_was_edited=True,
+            body_was_edited=False,
+            edited_subject_hash="c" * 64,
+            cc_recipients=["cc@example.com"],
+            bcc_recipients=["bcc@example.com"],
+        )
+
+        dumped = NotificationLogEntry(**_log_entry_to_dict(entry)).model_dump()
+
+        assert dumped["subject_was_edited"] is True
+        assert dumped["body_was_edited"] is False
+        assert dumped["edited_subject_hash"] == "c" * 64
+        assert dumped["edited_body_hash"] is None
+        assert dumped["cc_recipients"] == ["cc@example.com"]
+        assert dumped["bcc_recipients"] == ["bcc@example.com"]
+
+    def test_schema_defaults_when_audit_fields_absent(self):
+        """A dict without the audit keys still validates with safe defaults."""
+        from app.modules.notifications.schemas import NotificationLogEntry
+
+        minimal = {
+            "id": str(uuid.uuid4()),
+            "channel": "email",
+            "recipient": "user@example.com",
+            "template_type": "invoice_issued",
+            "status": "sent",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        dumped = NotificationLogEntry(**minimal).model_dump()
+
+        assert dumped["subject_was_edited"] is False
+        assert dumped["body_was_edited"] is False
+        assert dumped["edited_subject_hash"] is None
+        assert dumped["edited_body_hash"] is None
+        assert dumped["cc_recipients"] == []
+        assert dumped["bcc_recipients"] == []

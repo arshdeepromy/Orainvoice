@@ -639,6 +639,326 @@ async def get_customer_statement(
     }
 
 
+async def email_customer_statement(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    customer_id: uuid.UUID,
+    base_url: str | None = None,
+    recipients: list[str] | None = None,
+    cc: list[str] | None = None,
+    bcc: list[str] | None = None,
+    subject: str | None = None,
+    body_html: str | None = None,
+    attachments: list[str] | None = None,
+    subject_was_edited: bool = False,
+    body_was_edited: bool = False,
+    override_blocklist: bool = False,
+) -> dict:
+    """Email a customer account statement via the Send Email Modal.
+
+    This is the modal-triggered customer-statement send (Send Email Modal task
+    8.5, surface ``customer_statement``). It builds the same default subject +
+    body the preview's ``customer_statement`` default-render produces (see
+    ``email_compose.service._build_statement_surface`` /
+    ``build_email_preview``) so "send default" is byte-equivalent to the
+    preview (Property P1 / R3.6), then threads the full Send-Email-Modal
+    override set:
+
+    - ``recipients`` non-empty → ``to_email = recipients[0]`` and
+      ``recipients[1:]`` merge into the Cc list; ``cc`` / ``bcc`` thread into
+      ``EmailMessage.cc`` / ``.bcc``.
+    - ``subject`` (with ``subject_was_edited``) overrides the rendered subject.
+    - ``body_html`` (with ``body_was_edited``) is server-sanitised and used as
+      the HTML body; when omitted the default render runs (also sanitised, to
+      match the preview byte-for-byte).
+    - ``attachments`` (when not ``None``) are validated as HMAC tokens via
+      :func:`validate_attachment_token`; any miss raises
+      :class:`InvalidAttachmentSelection`. The statement surface offers the
+      ``customer_statement_pdf`` (required, R7.7), which is re-resolved
+      server-side via :func:`get_customer_statement` +
+      ``reports.export.render_report_pdf``.
+    - ``override_blocklist`` threads into ``send_email(allow_blocklisted=…)``
+      (org_admin-gated by the router, R13.5).
+
+    The customer is loaded org-scoped; a miss raises ``ValueError`` (the router
+    maps it to 404). A missing recipient also raises ``ValueError``. On send
+    failure :class:`EmailSendFailure` carries the final ``failure_kind`` so the
+    router maps it to the right HTTP status (R8.5–R8.8). On success the six
+    notification_log audit columns are written via :func:`log_email_sent` with
+    ``template_type="customer_statement"``.
+
+    Requirements: 2.5, 7.6, 8.1, 8.3, 8.4, 8.5, 8.6, 8.7, 8.8, 8.9, 8.10,
+                  11.2, 11.3, 11.5
+    """
+    from app.config import settings
+    from app.integrations.email_sender import (
+        EmailAttachment,
+        EmailMessage,
+        render_transactional_html,
+        send_email,
+    )
+    from app.integrations.html_sanitise import sanitise_email_html
+    from app.modules.email_compose.service import (
+        EmailSendFailure,
+        InvalidAttachmentSelection,
+        build_variable_context,
+        compute_audit_hashes,
+        validate_attachment_token,
+    )
+    from app.modules.invoices.service import get_currency_symbol
+    from app.modules.notifications.service import log_email_sent, resolve_template
+    from app.modules.reports.export import render_report_pdf
+
+    # --- Load the customer org-scoped (a miss -> ValueError -> router 404). ---
+    cust_result = await db.execute(
+        select(Customer).where(
+            Customer.id == customer_id,
+            Customer.org_id == org_id,
+        )
+    )
+    customer = cust_result.scalar_one_or_none()
+    if customer is None:
+        raise ValueError("Customer not found in this organisation")
+
+    # --- Org + sender context (mirrors _build_statement_surface). ---
+    org_result = await db.execute(
+        select(Organisation).where(Organisation.id == org_id)
+    )
+    org = org_result.scalar_one_or_none()
+    org_settings = (org.settings or {}) if org else {}
+    org_name = org.name if org else "Your Company"
+    org_email = org_settings.get("email") or org_settings.get("business_email") or ""
+    org_phone = org_settings.get("phone") or org_settings.get("business_phone") or ""
+
+    # --- Default statement period: last 12 months ending today (matches the
+    # preview default-render and ``_resolve_customer_statement_pdf``). ---
+    today = date.today()
+    period_start = today.replace(year=today.year - 1)
+    period_end = today
+
+    statement = await get_customer_statement(
+        db, org_id, customer_id, period_start, period_end
+    )
+    closing_balance = (statement.get("closing_balance") if statement else None) or 0
+    currency = getattr(org, "base_currency", None) or "NZD"
+    currency_symbol = get_currency_symbol(currency)
+    total_outstanding = (
+        f"{currency_symbol}{closing_balance:.2f}"
+        if isinstance(closing_balance, (int, float, Decimal))
+        else f"{currency_symbol}{closing_balance}"
+    )
+
+    # --- Statement link (mirrors _build_statement_surface origin resolution). ---
+    origin = (
+        base_url or settings.frontend_base_url or "http://localhost"
+    ).rstrip("/")
+    statement_link = (
+        f"{origin}/portal/{customer.portal_token}" if customer.portal_token else ""
+    )
+
+    # --- Resolve the recipient: recipients[0] wins, else customer email. ---
+    _cc_list: list[str] = list(cc) if cc else []
+    _bcc_list: list[str] = list(bcc) if bcc else []
+    recipient_email: str | None = None
+    if recipients:
+        recipient_email = recipients[0]
+        _cc_list = [*recipients[1:], *_cc_list]
+    if not recipient_email:
+        recipient_email = customer.email if customer.email else None
+    if not recipient_email:
+        raise ValueError(
+            "Customer has no email address on file. Provide a recipient."
+        )
+
+    # --- Build the default subject + body (byte-equivalent to the preview). ---
+    extra = {
+        "statement_period_start": str(period_start),
+        "statement_period_end": str(period_end),
+        "total_outstanding": total_outstanding,
+        "statement_link": statement_link,
+        "org_name": org_name,
+        "org_email": org_email,
+        "org_phone": org_phone,
+    }
+    variables = build_variable_context(
+        "customer_statement",
+        entity=customer,
+        org=org,
+        customer=customer,
+        extra=extra,
+    )
+
+    customer_first_name = customer.first_name or ""
+    _default_subject = f"Your account statement from {org_name}"
+    _default_body_text = (
+        f"Hi {customer_first_name or 'there'},\n\n"
+        f"Please find your account statement for the period "
+        f"{period_start} to {period_end}.\n\n"
+        f"Total outstanding: {total_outstanding}\n\n"
+        f"If you have any questions, please contact us.\n\n"
+        f"Kind regards,\n{org_name}\n"
+    )
+
+    # Resolve the org's configured template (R3.3) or use the hardcoded
+    # fallback (R3.4), exactly as build_email_preview does.
+    rendered = await resolve_template(
+        db,
+        org_id=org_id,
+        template_type="customer_statement",
+        channel="email",
+        variables=variables,
+    )
+    if rendered is not None:
+        email_subject = rendered.subject
+        body_text = rendered.body
+        cta_url = rendered.cta_url or None
+        cta_label = rendered.cta_label or None
+    else:
+        email_subject = _default_subject
+        body_text = _default_body_text
+        cta_url = None
+        cta_label = None
+
+    signature_html = None
+    if org_settings.get("email_signature_enabled") and (
+        org_settings.get("email_signature") or ""
+    ).strip():
+        signature_html = org_settings.get("email_signature")
+
+    # Render the default HTML body and sanitise it — matching the preview's
+    # default-render path (build_email_preview sanitises the rendered HTML),
+    # so "send default" is byte-equivalent to the preview (Property P1).
+    raw_html = render_transactional_html(
+        body_text,
+        subject=email_subject,
+        signature_html=signature_html,
+        cta_url=cta_url,
+        cta_label=cta_label,
+    )
+    html_body = sanitise_email_html(raw_html)
+
+    # --- Send Email Modal subject override (R8.1). ---
+    if subject is not None:
+        email_subject = subject
+
+    # --- Send Email Modal body override (R8.1, R10.1). ---
+    if body_html is not None:
+        html_body = sanitise_email_html(body_html)
+
+    # Audit hashes over the FINAL (post-sanitisation) strings (R11.2, R11.3 / P4).
+    _audit_hashes = compute_audit_hashes(email_subject, html_body)
+    _edited_subject_hash = (
+        _audit_hashes["subject_hash"] if subject_was_edited else None
+    )
+    _edited_body_hash = _audit_hashes["body_hash"] if body_was_edited else None
+
+    # --- Send Email Modal attachment override (R7.6, R8.1). ---
+    # When ``attachments`` is provided, validate EVERY token against this
+    # org+customer and re-resolve the file server-side. When ``None`` we keep
+    # the default no-attachment behaviour for byte-equivalence (Property P1).
+    email_attachments: list[EmailAttachment] = []
+    if attachments is not None:
+        _resolved_kinds: list[str] = []
+        for _token in attachments:
+            _kind = validate_attachment_token(_token, org_id, customer_id)
+            if _kind is None:
+                raise InvalidAttachmentSelection("Invalid attachment selection.")
+            _resolved_kinds.append(_kind)
+
+        for _kind in _resolved_kinds:
+            if _kind == "customer_statement_pdf":
+                try:
+                    _stmt_bytes = (
+                        await render_report_pdf("customer_statement", statement, org)
+                        if statement
+                        else None
+                    )
+                    if _stmt_bytes:
+                        email_attachments.append(
+                            EmailAttachment(
+                                filename="Customer-Statement.pdf",
+                                content=_stmt_bytes,
+                                mime_type="application/pdf",
+                            )
+                        )
+                except Exception:
+                    logger.warning(
+                        "Failed to resolve customer statement PDF for customer %s",
+                        customer_id,
+                    )
+
+    # --- Dispatch via the unified sender. ---
+    message = EmailMessage(
+        to_email=recipient_email,
+        to_name="",
+        subject=email_subject,
+        html_body=html_body,
+        text_body=body_text,
+        attachments=email_attachments,
+        cc=_cc_list,
+        bcc=_bcc_list,
+        org_id=org_id,
+    )
+    result = await send_email(db, message, allow_blocklisted=override_blocklist)
+
+    if not result.success:
+        last_error = result.error or "send failed"
+        try:
+            await log_email_sent(
+                db,
+                org_id=org_id,
+                recipient=recipient_email,
+                template_type="customer_statement",
+                subject=email_subject,
+                status="failed",
+                error_message=str(last_error),
+            )
+        except Exception:
+            logger.warning(
+                "Failed to log email failure for customer statement %s", customer_id
+            )
+
+        _last_attempt = result.attempts[-1] if result.attempts else None
+        _failure_kind = _last_attempt.failure_kind if _last_attempt else None
+        raise EmailSendFailure(
+            _failure_kind,
+            attempts=len(result.attempts),
+            error=str(last_error),
+        )
+
+    # --- Success-path notification_log row with the six audit columns. ---
+    try:
+        await log_email_sent(
+            db,
+            org_id=org_id,
+            recipient=recipient_email,
+            template_type="customer_statement",
+            subject=email_subject,
+            status="sent",
+            channel="email",
+            provider_key=result.provider_key,
+            provider_message_id=result.provider_message_id,
+            subject_was_edited=subject_was_edited,
+            body_was_edited=body_was_edited,
+            edited_subject_hash=_edited_subject_hash,
+            edited_body_hash=_edited_body_hash,
+            cc_recipients=_cc_list,
+            bcc_recipients=_bcc_list,
+        )
+    except Exception:
+        logger.warning(
+            "Failed to log success for customer statement %s", customer_id
+        )
+
+    return {
+        "customer_id": customer_id,
+        "customer_name": f"{customer.first_name or ''} {customer.last_name or ''}".strip(),
+        "recipient_email": recipient_email,
+        "status": "sent",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Carjam Usage Report
 # ---------------------------------------------------------------------------

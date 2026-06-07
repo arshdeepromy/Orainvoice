@@ -9,7 +9,7 @@ OraInvoice is a multi-tenant SaaS invoicing and business management platform bui
 ## Tech Stack
 
 - Backend: Python 3.11, FastAPI, SQLAlchemy (async), Alembic migrations, PostgreSQL 16 with RLS
-- Frontend: React 18, TypeScript, Vite 6, Tailwind CSS, Headless UI
+- Frontend: React 18+, TypeScript, Vite, Tailwind CSS, Headless UI. The active web app is **`frontend-v2/`** (the redesign). `frontend/` is **archived** (see `frontend/ARCHIVED.md`) — no further development.
 - Infrastructure: Docker Compose, Nginx reverse proxy, Redis 7 (caching/rate limiting)
 - Auth: JWT + Firebase tokens, MFA (TOTP, SMS, Passkeys, backup codes)
 - Payments: Stripe integration (subscriptions, payment methods)
@@ -22,7 +22,8 @@ OraInvoice is a multi-tenant SaaS invoicing and business management platform bui
 - `app/` — FastAPI backend (modules pattern: auth, admin, billing, customers, invoices, inventory, etc.)
 - `app/core/` — Database, encryption, branch context, module registry
 - `app/modules/` — Feature modules (each has router.py, service.py, models.py, schemas.py)
-- `frontend/` — React SPA (Vite, pages/, components/, contexts/, hooks/, api/)
+- `frontend-v2/` — **ACTIVE** React SPA redesign (Vite, pages/, components/, contexts/, hooks/, api/). Served live in local dev under `/new/` (root redirects there) via `docker-compose.dev-v2.yml` + `nginx/nginx.dev-v2.conf`.
+- `frontend/` — **ARCHIVED** legacy React SPA (v1.13.0 era). Reference only; do not develop here (`frontend/ARCHIVED.md`).
 - `alembic/versions/` — Database migrations (currently at revision 0182)
 - `tests/` — pytest tests, property-based tests (Hypothesis), e2e tests (Playwright)
 - `scripts/` — Utility scripts (seeding, deployment, checks)

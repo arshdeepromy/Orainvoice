@@ -1,0 +1,90 @@
+# Implementation Plan
+
+- [x] 1. Extract a shared inner-body fragment renderer (backend)
+  - [x] 1.1 Add `render_body_fragment_html` to `app/integrations/email_sender.py`
+    - Add `render_body_fragment_html(text_body: str, *, signature_html: str | None = None) -> str` returning ONLY the inner editable body: the `<p>` paragraphs (via the existing `_text_to_paragraphs_html`) plus the optional signature block (the same `<hr ...>{sig}` markup `render_transactional_html` uses). No `<!DOCTYPE>`, `<html>`, `<head>`, `<title>`, `<body>`, `<div>` chrome, and NO CTA button table.
+    - Refactor `render_transactional_html` to build its inner content by calling `render_body_fragment_html` (single source of truth) so the document body and the fragment can never drift. Its full-document output, CTA block, and signature MUST remain byte-identical to today.
+    - _Requirements: 2.1, 3.2_
+  - [x] 1.2 Add a unit test asserting the shared-helper invariant
+    - In a backend test, assert the body region produced by `render_transactional_html(text, signature_html=…)` contains exactly the markup `render_body_fragment_html(text, signature_html=…)` produces (paragraphs + signature), and that the fragment contains no `<!DOCTYPE>/<head>/<title>`.
+    - Run via `docker compose exec app python -m pytest`.
+    - _Requirements: 2.1, 3.2_
+
+- [x] 2. Return an editable fragment field from the preview (backend)
+  - [x] 2.1 Add `body_editable_html` to `EmailPreviewResponse`
+    - In `app/modules/email_compose/schemas.py` add `body_editable_html: str` alongside the existing `body_html: str`. Leave `OverrideSendPayload.body_html` unchanged.
+    - _Requirements: 2.1, 2.3_
+  - [x] 2.2 Compute `body_editable_html` in `build_email_preview`
+    - In `app/modules/email_compose/service.py`, keep `body_html` as the existing full-document render (`sanitise_email_html(render_transactional_html(...))`) UNCHANGED.
+    - Additionally compute `body_editable_html = sanitise_email_html(render_body_fragment_html(body_text, signature_html=...))`. For surfaces already producing HTML bodies (`body_is_html` reminders, `rendered is None` path), set the editable fragment to the sanitised body HTML directly (it is already a fragment).
+    - Return `body_editable_html` in the response dict.
+    - _Bug_Condition: body_html is a full document whose <title> text leaks into the editor_
+    - _Expected_Behavior: editable fragment contains no chrome/subject (Requirements 2.1)_
+    - _Preservation: body_html full-document field and default render unchanged (Requirements 3.1, 3.2)_
+    - _Requirements: 2.1, 2.3, 3.1, 3.2_
+
+- [x] 3. Fix preview link-origin at the router (GET has no Origin header)
+  - [x] 3.1 Resolve preview `base_url` from the `Host` fallback, not bare `origin`
+    - In `app/modules/email_compose/router.py`, import `extract_request_base_url` from `app/core/request_utils.py` and replace `base_url=request.headers.get("origin") or None` with `base_url=extract_request_base_url(request)`.
+    - Rationale: the preview endpoint is a GET; browsers omit the `Origin` header on same-origin GETs, so the bare `origin` read is `None` and resolution falls back to `settings.frontend_base_url`/`localhost`. `extract_request_base_url` falls back to the `Host` header (set by nginx), matching the public origin the POST send paths already see.
+    - Do NOT change the surface builders (they already resolve correctly from `base_url`) and do NOT change the send routers (their POSTs already carry `Origin`).
+    - _Bug_Condition: GET preview has no Origin header → base_url None → localhost fallback while POST send uses the real host_
+    - _Expected_Behavior: preview origin == send origin via the Host fallback (Requirements 2.2)_
+    - _Preservation: when Origin IS present (or Host already correct) the resolved value is unchanged (Requirements 3.6)_
+    - _Requirements: 2.2, 3.6_
+
+- [x] 4. Bind the web editor to the fragment + add dual-mode editing
+  - [x] 4.1 Add `body_editable_html` to the web type
+    - In `frontend-v2/src/components/email/types.ts` add `body_editable_html: string` to `EmailPreviewResponse`.
+    - _Requirements: 2.1_
+  - [x] 4.2 Seed the editor from the fragment in `SendEmailModal.tsx`
+    - In `hydrateFromPreview`, set `defaultBodyRef.current` and the initial `bodyHtml` from `data.body_editable_html ?? ''` (was `data.body_html`). Keep the omit-unchanged payload logic (`if (bodyWasEdited) payload.body_html = bodyHtml`) and the unedited-omit rule unchanged. Use `?.` / `?? ''`.
+    - _Bug_Condition: editor seeded with full document → subject leaks_
+    - _Expected_Behavior: editor seeded with fragment → no leak, display matches sent (Requirements 2.1, 2.3)_
+    - _Preservation: edited override still sends the fragment (Requirements 3.3)_
+    - _Requirements: 2.1, 2.3, 3.3_
+  - [x] 4.3 Add rich/HTML mode toggle to `BodyEditor.tsx`
+    - Add `mode: 'rich' | 'html'` state (default `'rich'`) and a Tab-reachable segmented toggle ("Rich text" / "HTML") in the toolbar, styled like the existing `ToolbarButton` with `aria-pressed`.
+    - Rich mode: keep the existing TipTap editor (StarterKit + configured Link) with the crash-fix guards (`immediatelyRender: false`, `if (!editor || editor.isDestroyed) return`).
+    - HTML mode: a `font-mono` `<textarea>` bound to the current fragment HTML; edits call `onChange(rawHtml)`. Rich→HTML seeds the textarea from `editor.getHTML()`; HTML→Rich calls `editor.commands.setContent(rawHtml, { emitUpdate: false })`.
+    - `body_was_edited` flips on first divergence from `defaultBodyRef.current` in EITHER mode (existing `handleBodyChange`). Reset-to-default restores the fragment in the active mode.
+    - _Requirements: new dual-mode requirement, 3.3_
+  - [x] 4.4 Harden HTML-mode paste against full-document re-leak
+    - Extend `stripUnsafePastedHtml` (or add a sibling) to also strip `<!DOCTYPE>`, `<html>`, `<head>`, `<title>`, `<body>` — when a full document is detected, reduce to `body.innerHTML` — before the value reaches `onChange`. Server `sanitise_email_html` remains the authoritative defence.
+    - _Requirements: new dual-mode requirement, 2.1_
+
+- [x] 5. Mirror the editor changes on mobile
+  - [x] 5.1 Seed the mobile sheet from the fragment
+    - In `mobile/src/components/email/SendEmailSheet.tsx`, seed `defaultBodyRef.current` / `bodyHtml` from `data.body_editable_html ?? ''`.
+    - No mobile type edit needed: `mobile/src/components/email/types.ts` re-exports `EmailPreviewResponse` from the web contract via `@email-contract`, so the field added in task 4.1 is already available.
+    - _Requirements: 2.1, 2.3_
+  - [x] 5.2 Add rich/HTML mode toggle to `MobileBodyEditor.tsx`
+    - Same dual-mode toggle + `font-mono` textarea + paste hardening as web. Touch targets ≥44px (`min-h-[44px]`), dark-mode `dark:` variants on all new elements.
+    - _Requirements: new dual-mode requirement, 3.3_
+
+- [x] 6. Tests
+  - [x] 6.1 Exploratory bug-condition tests (run on UNFIXED behavior first)
+    - Backend: assert the current `build_email_preview().body_html` contains `<title>` and the subject string.
+    - Frontend: a `BodyEditor` test mounting the REAL editor (not the textarea stub) with a full-document `valueHtml`, asserting the rendered editor text contains the subject (closes the CI gap where the stub hid `useEditor`).
+    - _Requirements: 2.1_
+  - [x] 6.2 New backend regression property — editable fragment is clean
+    - Add `tests/test_email_preview_editable_fragment.py` (Hypothesis): for all supported surfaces, `body_editable_html` contains no `<!DOCTYPE>/<head>/<title>` and its text does not contain the subject.
+    - Add a router-level test (FastAPI `TestClient`) asserting that a preview GET with NO `Origin` header but a `Host` header resolves links from `Host` (not `localhost`), and that an explicit `Origin` is honoured — proving preview origin == send origin.
+    - Run via `docker compose exec app python -m pytest tests/test_email_preview_editable_fragment.py`.
+    - _Requirements: 2.1, 2.2, 4.1, 4.2, 4.3_
+  - [x] 6.3 Preserve Property 1
+    - Run `tests/test_email_compose_default_equivalence.py` unchanged and confirm it passes after the `render_transactional_html` refactor (full-document output must stay byte-identical).
+    - _Requirements: 3.1, 3.2_
+  - [x] 6.4 Component tests for dual-mode + fixtures
+    - Update `SendEmailModal.test.tsx` and `mobile/.../SendEmailSheet.test.tsx` fixtures to include `body_editable_html`.
+    - Add `BodyEditor` / `MobileBodyEditor` tests: Rich↔HTML round-trip preserves content (Property 6); HTML-mode paste of a full document degrades to its body fragment; `body_was_edited` flips in both modes; reset restores the fragment.
+    - Mobile tests + `tsc` run on the HOST in `mobile/`.
+    - _Requirements: new dual-mode requirement, 3.3_
+
+- [ ] 7. Manual verification checkpoint
+  - Open Send Invoice → no subject line appears in the body; the "View Invoice" link uses the request origin (not localhost).
+  - Send default (no edits) → received email body (minus the CTA-button presentation) matches the displayed fragment.
+  - Toggle to HTML mode → paste a styled `<table>` template → send → received email body equals the authored fragment (tables/inline styles preserved by the sanitiser).
+  - Toggle HTML→Rich→HTML preserves content; mobile sheet behaves the same with ≥44px targets and dark mode.
+  - Confirm Property 1 and the new fragment property both pass.
+  - _Requirements: 2.1, 2.2, 2.3, 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 4.1, 4.2, 4.3_

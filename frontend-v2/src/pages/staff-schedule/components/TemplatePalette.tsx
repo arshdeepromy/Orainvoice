@@ -14,9 +14,9 @@
  */
 
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
 import { listTemplates } from '@/api/schedule'
 import type { ShiftTemplateResponse } from '@/types/schedule'
+import ShiftTemplateModal from '@/components/staff-schedule/ShiftTemplateModal'
 
 export interface TemplatePaletteProps {
   selectedTemplate: ShiftTemplateResponse | null
@@ -33,6 +33,8 @@ export default function TemplatePalette({
   const [templates, setTemplates] = useState<ShiftTemplateResponse[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [createOpen, setCreateOpen] = useState(false)
+  const [reloadKey, setReloadKey] = useState(0)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -62,7 +64,7 @@ export default function TemplatePalette({
     }
     load()
     return () => controller.abort()
-  }, [])
+  }, [reloadKey])
 
   return (
     <aside
@@ -83,12 +85,13 @@ export default function TemplatePalette({
       {!isLoading && !error && templates.length === 0 && (
         <div className="mt-3 text-xs text-muted">
           <p>No shift templates.</p>
-          <Link
-            to="/settings/shift-templates"
+          <button
+            type="button"
+            onClick={() => setCreateOpen(true)}
             className="mt-2 inline-block text-accent hover:underline"
           >
-            Create one in Settings
-          </Link>
+            Create one
+          </button>
         </div>
       )}
       {!isLoading && !error && templates.length > 0 && (
@@ -118,6 +121,21 @@ export default function TemplatePalette({
           })}
         </ul>
       )}
+      {!isLoading && !error && templates.length > 0 && (
+        <button
+          type="button"
+          onClick={() => setCreateOpen(true)}
+          disabled={disabled}
+          className="mt-3 w-full rounded-ctl border border-dashed border-border bg-card px-2 py-1.5 text-left text-xs text-accent hover:bg-canvas disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          + New template
+        </button>
+      )}
+      <ShiftTemplateModal
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        onCreated={() => setReloadKey((k) => k + 1)}
+      />
     </aside>
   )
 }

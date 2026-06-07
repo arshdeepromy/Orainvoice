@@ -4452,6 +4452,42 @@ async def generate_invoice_pdf(
     return pdf_bytes
 
 
+async def _resolve_customer_statement_pdf(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    customer_id: uuid.UUID,
+) -> bytes | None:
+    """Resolve a customer-statement PDF server-side for the Send Email Modal.
+
+    Builds the statement data via ``reports.service.get_customer_statement``
+    (last 12 months ending today, matching the preview default in
+    ``email_compose.service._build_statement_surface``) and renders it through
+    the reports WeasyPrint pipeline. Returns the PDF bytes, or ``None`` when
+    the customer/statement is unavailable.
+
+    Used only by the explicit-attachment override path in :func:`email_invoice`
+    (R7.6); the default no-attachment send never calls this.
+    """
+    from datetime import date as _date
+
+    from app.modules.reports.export import render_report_pdf
+    from app.modules.reports.service import get_customer_statement
+
+    today = _date.today()
+    period_start = today.replace(year=today.year - 1)
+    statement = await get_customer_statement(
+        db, org_id, customer_id, period_start, today
+    )
+    if not statement:
+        return None
+
+    org = (
+        await db.execute(select(Organisation).where(Organisation.id == org_id))
+    ).scalar_one_or_none()
+    return await render_report_pdf("customer_statement", statement, org)
+
+
 async def email_invoice(
     db: AsyncSession,
     *,
@@ -4459,6 +4495,15 @@ async def email_invoice(
     invoice_id: uuid.UUID,
     recipient_email: str | None = None,
     base_url: str | None = None,
+    recipients: list[str] | None = None,
+    cc: list[str] | None = None,
+    bcc: list[str] | None = None,
+    subject: str | None = None,
+    body_html: str | None = None,
+    attachments: list[str] | None = None,
+    subject_was_edited: bool = False,
+    body_was_edited: bool = False,
+    override_blocklist: bool = False,
 ) -> dict:
     """Generate the invoice PDF and send an email to the customer.
 
@@ -4469,7 +4514,31 @@ async def email_invoice(
     not provided the customer's email on file is used. Returns a summary
     dict with the recipient and status.
 
-    Requirements: 6.1, 6.3, 6.4, 32.3
+    Send Email Modal overrides (send-email-modal task 8.1): the optional
+    ``recipients`` / ``cc`` / ``bcc`` / ``subject`` / ``body_html`` /
+    ``attachments`` / ``subject_was_edited`` / ``body_was_edited`` /
+    ``override_blocklist`` params let the modal override the default-render
+    content. When NONE of them are supplied the function behaves byte-for-byte
+    identically to the pre-modal auto-send path (Property P1):
+
+    - ``recipients`` non-empty → ``to_email = recipients[0]`` and
+      ``recipients[1:]`` are merged into the Cc list; ``cc`` / ``bcc`` thread
+      into ``EmailMessage.cc`` / ``.bcc``.
+    - ``subject`` (with ``subject_was_edited``) overrides the rendered subject.
+    - ``body_html`` (with ``body_was_edited``) is server-sanitised and used as
+      the HTML body; when omitted the unchanged default render runs.
+    - ``attachments`` (when not ``None``) are validated as HMAC tokens via
+      :func:`validate_attachment_token`; any miss raises
+      :class:`InvalidAttachmentSelection`. The matching files are re-resolved
+      server-side and attached (the default no-override path attaches no PDF
+      to avoid Gmail filtering).
+    - On send failure the override path raises :class:`EmailSendFailure`
+      carrying the ``failure_kind`` so the router maps it to the right HTTP
+      status; the legacy (no-override) path keeps raising ``ValueError``.
+    - ``override_blocklist`` is threaded to ``send_email(allow_blocklisted=…)``.
+
+    Requirements: 6.1, 6.3, 6.4, 32.3, 2.1, 7.6, 8.1, 8.3, 8.4, 8.5, 8.6, 8.7,
+                  8.8, 8.9, 8.10, 9.3, 10.1, 11.2, 11.3, 11.5, 13.5, 15.2, 16.5
     """
     from app.integrations.email_sender import (
         EmailAttachment,
@@ -4477,8 +4546,33 @@ async def email_invoice(
         send_email,
     )
 
+    # Did the caller pass any Send-Email-Modal override field? When False the
+    # function runs the original code path byte-for-byte (Property P1) and
+    # keeps its legacy ValueError-on-failure contract. ``recipient_email`` is
+    # the pre-existing legacy param and is NOT part of the override set.
+    _is_override_call = (
+        recipients is not None
+        or cc is not None
+        or bcc is not None
+        or subject is not None
+        or body_html is not None
+        or attachments is not None
+        or subject_was_edited
+        or body_was_edited
+        or override_blocklist
+    )
+
     # Fetch invoice to get customer email if needed
     invoice_dict = await get_invoice(db, org_id=org_id, invoice_id=invoice_id)
+
+    # Resolve the override recipient list (R8.1). recipients[0] becomes the
+    # primary To; recipients[1:] merge into the Cc list. cc/bcc thread into
+    # the EmailMessage below.
+    _cc_list: list[str] = list(cc) if cc else []
+    _bcc_list: list[str] = list(bcc) if bcc else []
+    if recipients:
+        recipient_email = recipients[0]
+        _cc_list = [*recipients[1:], *_cc_list]
 
     if recipient_email is None:
         cust_result = await db.execute(
@@ -4620,23 +4714,32 @@ async def email_invoice(
     # "Pay Online" button while the invoice is payable, so online payment stays
     # reachable for unpaid invoices. The dedicated "Send Payment Link" action
     # (payments/service.py) is unaffected and still sends the payment page.
-    _inv_data_for_share = invoice_dict.get("invoice_data_json") or {}
-    _share_token = _inv_data_for_share.get("share_token")
-    if not _share_token:
-        import secrets as _secrets
-        from sqlalchemy.orm.attributes import flag_modified as _flag_modified
+    # Read the persisted share token from the actual invoice row. NOTE:
+    # ``get_invoice()`` does not surface ``invoice_data_json``, so reading the
+    # token from ``invoice_dict`` would always miss and regenerate a fresh
+    # token on every send — overwriting the stored one and producing a
+    # different invoice-view URL each time (breaking the stable-share-link
+    # guarantee and preview/send byte-equivalence, R3.6). Load the row and
+    # reuse its existing token; only mint+persist one when genuinely absent.
+    import secrets as _secrets
+    from sqlalchemy.orm.attributes import flag_modified as _flag_modified
 
-        _share_token = _secrets.token_urlsafe(32)
-        _inv_share_result = await db.execute(
-            select(Invoice).where(Invoice.id == invoice_id)
-        )
-        _inv_share_obj = _inv_share_result.scalar_one_or_none()
-        if _inv_share_obj:
-            _data = _inv_share_obj.invoice_data_json or {}
+    _inv_share_result = await db.execute(
+        select(Invoice).where(Invoice.id == invoice_id)
+    )
+    _inv_share_obj = _inv_share_result.scalar_one_or_none()
+    _share_token = None
+    if _inv_share_obj is not None:
+        _share_token = (_inv_share_obj.invoice_data_json or {}).get("share_token")
+        if not _share_token:
+            _share_token = _secrets.token_urlsafe(32)
+            _data = dict(_inv_share_obj.invoice_data_json or {})
             _data["share_token"] = _share_token
             _inv_share_obj.invoice_data_json = _data
             _flag_modified(_inv_share_obj, "invoice_data_json")
             await db.flush()
+    if not _share_token:
+        _share_token = _secrets.token_urlsafe(32)
     from app.config import settings as _app_settings_cta
 
     # Resolve the base origin for the invoice-view URL. Mirror how the payment
@@ -4777,6 +4880,11 @@ async def email_invoice(
     if not _payment_cta_url:
         _payment_cta_url = _invoice_view_url
 
+    # --- Send Email Modal subject override (R8.1) ---
+    # Replace the rendered/fallback subject when the modal supplied one.
+    if subject is not None:
+        _email_subject = subject
+
     # Build HTML body with conditional email signature.
     # Use the unified transactional-HTML renderer so Gmail / Outlook
     # see a well-formed HTML document (proper <!DOCTYPE>, charset,
@@ -4806,6 +4914,26 @@ async def email_invoice(
         cta_label="View Invoice",
     )
 
+    # --- Send Email Modal body override (R8.1, R10.1) ---
+    # When the modal supplied an edited body_html, server-sanitise it and use
+    # it as the HTML body. When omitted (the common "send default" case) the
+    # default-rendered _html_body above is used unchanged (byte-equivalence,
+    # Property P1 / R3.6).
+    if body_html is not None:
+        from app.integrations.html_sanitise import sanitise_email_html
+
+        _html_body = sanitise_email_html(body_html)
+
+    # Compute the audit hashes over the FINAL (post-sanitisation) strings so
+    # notification_log records what was actually sent (R11.2, R11.3 / P4).
+    from app.modules.email_compose.service import compute_audit_hashes as _cah
+
+    _audit_hashes = _cah(_email_subject, _html_body)
+    _edited_subject_hash = (
+        _audit_hashes["subject_hash"] if subject_was_edited else None
+    )
+    _edited_body_hash = _audit_hashes["body_hash"] if body_was_edited else None
+
     # Build attachments list: invoice PDF first, then any extra files
     # downloaded above (file_name → filename, mime_type → mime_type).
     # PDF is NOT attached to avoid Gmail's content filter silently
@@ -4814,6 +4942,57 @@ async def email_invoice(
     # the public invoice view where customers can view and download the PDF.
     # Once domain reputation is established, this can be re-enabled.
     _email_attachments: list[EmailAttachment] = []
+
+    # --- Send Email Modal attachment override (R7.6, R8.1) ---
+    # When ``attachments`` is provided, validate EVERY token against this
+    # org+invoice and re-resolve the file server-side. Unlike the default
+    # no-attachment path above, an explicit modal selection DOES attach the
+    # resolved files. When ``attachments`` is None we keep the default
+    # no-attachment behaviour for byte-equivalence (Property P1).
+    if attachments is not None:
+        from app.modules.email_compose.service import (
+            InvalidAttachmentSelection,
+            validate_attachment_token,
+        )
+
+        _resolved_kinds: list[str] = []
+        for _token in attachments:
+            _kind = validate_attachment_token(_token, org_id, invoice_id)
+            if _kind is None:
+                raise InvalidAttachmentSelection("Invalid attachment selection.")
+            _resolved_kinds.append(_kind)
+
+        for _kind in _resolved_kinds:
+            if _kind in ("invoice_pdf", "invoice_pdf_paid"):
+                _email_attachments.append(
+                    EmailAttachment(
+                        filename=f"Invoice-{inv_number}.pdf",
+                        content=pdf_bytes,
+                        mime_type="application/pdf",
+                    )
+                )
+            elif _kind == "customer_statement_pdf":
+                # Re-resolve the customer statement PDF server-side via the
+                # reports module (statement generation), scoped to this org.
+                try:
+                    _stmt_bytes = await _resolve_customer_statement_pdf(
+                        db,
+                        org_id=org_id,
+                        customer_id=invoice_dict["customer_id"],
+                    )
+                    if _stmt_bytes:
+                        _email_attachments.append(
+                            EmailAttachment(
+                                filename="Customer-Statement.pdf",
+                                content=_stmt_bytes,
+                                mime_type="application/pdf",
+                            )
+                        )
+                except Exception:
+                    logger.warning(
+                        "Failed to resolve customer statement PDF for invoice %s",
+                        invoice_id,
+                    )
 
     # Dispatch via the unified sender. Failover, error classification,
     # per-attempt + total time budgets are all handled inside.
@@ -4824,9 +5003,11 @@ async def email_invoice(
         html_body=_html_body,
         text_body=_final_text_body,
         attachments=_email_attachments,
+        cc=_cc_list,
+        bcc=_bcc_list,
         org_id=org_id,
     )
-    result = await send_email(db, _message)
+    result = await send_email(db, _message, allow_blocklisted=override_blocklist)
 
     if not result.success:
         last_error = result.error or "send failed"
@@ -4861,6 +5042,22 @@ async def email_invoice(
                 "error_message": str(last_error),
             },
         )
+
+        # For Send Email Modal override calls, surface the failure_kind so the
+        # router can map it to the right HTTP status (R8.5–R8.8). The legacy
+        # (no-override) path keeps raising ValueError for backward compat.
+        if _is_override_call:
+            from app.modules.email_compose.service import EmailSendFailure
+
+            _last_attempt = result.attempts[-1] if result.attempts else None
+            _failure_kind = (
+                _last_attempt.failure_kind if _last_attempt else None
+            )
+            raise EmailSendFailure(
+                _failure_kind,
+                attempts=len(result.attempts),
+                error=str(last_error),
+            )
 
         raise ValueError(error_msg)
 
@@ -4918,6 +5115,12 @@ async def email_invoice(
             status="sent", channel="email",
             provider_key=result.provider_key,
             provider_message_id=result.provider_message_id,
+            subject_was_edited=subject_was_edited,
+            body_was_edited=body_was_edited,
+            edited_subject_hash=_edited_subject_hash,
+            edited_body_hash=_edited_body_hash,
+            cc_recipients=_cc_list,
+            bcc_recipients=_bcc_list,
         )
     except Exception:
         logger.warning("Failed to log success for invoice %s", invoice_id)
@@ -4943,6 +5146,127 @@ async def email_invoice(
         "invoice_number": inv_number,
         "recipient_email": recipient_email,
         "pdf_size_bytes": len(pdf_bytes),
+        "status": "sent",
+    }
+
+
+async def email_invoice_receipt(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    invoice_id: uuid.UUID,
+    base_url: str | None = None,
+    recipients: list[str] | None = None,
+    cc: list[str] | None = None,
+    bcc: list[str] | None = None,
+    subject: str | None = None,
+    body_html: str | None = None,
+    attachments: list[str] | None = None,
+    subject_was_edited: bool = False,
+    body_was_edited: bool = False,
+    override_blocklist: bool = False,
+) -> dict:
+    """Resend a payment receipt for an invoice via the Send Email Modal.
+
+    This is the modal-triggered receipt resend (Send Email Modal task 8.3,
+    surface ``payment_received``). It is a thin wrapper around
+    :func:`app.modules.payments.service._send_receipt_email` with
+    ``template_type="payment_received"`` that threads the full override set
+    (``recipients`` / ``cc`` / ``bcc`` / ``subject`` / ``body_html`` /
+    ``attachments`` / ``subject_was_edited`` / ``body_was_edited`` /
+    ``override_blocklist``). ``_send_receipt_email`` already implements the
+    sanitisation, HMAC attachment-token validation, FailureKind→HTTP mapping
+    (via :class:`EmailSendFailure`), and audit-column logging — this function
+    does not duplicate any of that (R8.1–R8.10, R11.2, R11.3, R11.5).
+
+    The receipt's ``pay_amount`` defaults to ``invoice.amount_paid`` (the
+    cumulative amount paid to date), which is also what the
+    ``payment_received`` byte-equivalence property test (P1) renders.
+
+    This is distinct from — and does **not** replace — the Stripe-webhook
+    auto-receipt path (``payments.service.handle_stripe_webhook`` →
+    ``_send_receipt_email``), which remains untouched (R16.3).
+
+    The invoice is loaded org-scoped; an unknown invoice raises ``ValueError``
+    (the router maps it to 404). On send failure an override call raises
+    :class:`EmailSendFailure`; an attachment-token miss raises
+    :class:`InvalidAttachmentSelection` — the router maps both to HTTP.
+
+    Requirements: 2.3, 7.6, 8.1, 8.3, 8.4, 8.5, 8.6, 8.7, 8.8, 8.9, 8.10,
+                  11.2, 11.3, 11.5, 16.3
+    """
+    from app.modules.payments.service import _send_receipt_email
+
+    # Load the invoice scoped to the org (RLS + explicit org filter). A miss
+    # raises ValueError so the router can return 404.
+    inv_result = await db.execute(
+        select(Invoice).where(
+            Invoice.id == invoice_id,
+            Invoice.org_id == org_id,
+        )
+    )
+    invoice = inv_result.scalar_one_or_none()
+    if invoice is None:
+        raise ValueError("Invoice not found in this organisation")
+
+    # Resolve the recipient: the modal's first override recipient wins;
+    # otherwise the customer's email on file. (_send_receipt_email also
+    # resolves recipients[0] internally, but we need a concrete To here to
+    # fail fast with a clear error when nothing is available.)
+    _to_email: str | None = recipients[0] if recipients else None
+    if not _to_email:
+        cust_result = await db.execute(
+            select(Customer).where(
+                Customer.id == invoice.customer_id,
+                Customer.org_id == org_id,
+            )
+        )
+        customer = cust_result.scalar_one_or_none()
+        _to_email = customer.email if customer else None
+    if not _to_email:
+        raise ValueError(
+            "Customer has no email address on file. Provide a recipient."
+        )
+
+    # The receipt amount defaults to the cumulative amount paid to date.
+    _pay_amount = invoice.amount_paid if invoice.amount_paid is not None else Decimal("0")
+
+    await _send_receipt_email(
+        db,
+        to_email=_to_email,
+        invoice=invoice,
+        pay_amount=_pay_amount,
+        template_type="payment_received",
+        recipients=recipients,
+        cc=cc,
+        bcc=bcc,
+        subject_override=subject,
+        body_html=body_html,
+        attachments=attachments,
+        subject_was_edited=subject_was_edited,
+        body_was_edited=body_was_edited,
+        override_blocklist=override_blocklist,
+    )
+
+    await write_audit_log(
+        db,
+        action="invoice.receipt_emailed",
+        entity_type="invoice",
+        entity_id=invoice_id,
+        org_id=org_id,
+        after_value={
+            "recipient": _to_email,
+            "invoice_number": invoice.invoice_number or str(invoice.id),
+            "pay_amount": str(_pay_amount),
+        },
+    )
+    await db.flush()
+
+    return {
+        "invoice_id": invoice_id,
+        "invoice_number": invoice.invoice_number or str(invoice.id),
+        "recipient_email": _to_email,
+        "pdf_size_bytes": 0,
         "status": "sent",
     }
 

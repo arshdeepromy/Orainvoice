@@ -163,9 +163,13 @@ async def process_recurring_billing_task() -> dict:
                     except Exception as exc:
                         logger.warning("Failed to compute Carjam overage for org %s: %s", org.id, exc)
 
-                    # 2c-bis. Compute PPSR overage count (Phase 1 — counter-reset only;
-                    # PPSR overage is not yet billed via total_excl_gst_cents — that lands
-                    # in a follow-up once BillingReceipt has PPSR columns).
+                    # 2c-bis. Compute PPSR overage charges (excl. GST). PPSR
+                    # mirrors CarJam usage-based billing: lookups beyond the
+                    # plan's included quota are charged at the configured
+                    # ``ppsr_per_check_cost_nzd``. (Hidden-plate lookups share
+                    # the same per-check cost; they are also counted toward the
+                    # PPSR counter at lookup time.)
+                    ppsr_overage_cents = 0
                     ppsr_overage_count = 0
                     try:
                         ppsr_overage_count = max(
@@ -173,8 +177,39 @@ async def process_recurring_billing_task() -> dict:
                             (org.ppsr_lookups_this_month or 0)
                             - (plan.ppsr_lookups_included or 0),
                         )
+                        if ppsr_overage_count > 0:
+                            from app.modules.admin.service import (
+                                get_carjam_ppsr_per_check_cost,
+                            )
+                            ppsr_per_check_cost = await get_carjam_ppsr_per_check_cost(session)
+                            ppsr_overage_cents = round(
+                                ppsr_overage_count * ppsr_per_check_cost * 100
+                            )
                     except Exception as exc:
                         logger.warning("Failed to compute PPSR overage for org %s: %s", org.id, exc)
+
+                    # 2c-ter. Compute ownership (owner_check) overage charges
+                    # (excl. GST). Mirrors PPSR/CarJam usage-based billing:
+                    # owner_check lookups beyond the plan's included quota are
+                    # charged at the configured ``owner_check_per_check_cost_nzd``.
+                    owner_check_overage_cents = 0
+                    owner_check_overage_count = 0
+                    try:
+                        owner_check_overage_count = max(
+                            0,
+                            (org.owner_check_lookups_this_month or 0)
+                            - (plan.owner_check_lookups_included or 0),
+                        )
+                        if owner_check_overage_count > 0:
+                            from app.modules.admin.service import (
+                                get_carjam_owner_check_per_check_cost,
+                            )
+                            owner_check_cost = await get_carjam_owner_check_per_check_cost(session)
+                            owner_check_overage_cents = round(
+                                owner_check_overage_count * owner_check_cost * 100
+                            )
+                    except Exception as exc:
+                        logger.warning("Failed to compute owner_check overage for org %s: %s", org.id, exc)
 
                     # 2d. Compute storage add-on charge (excl. GST)
                     # This is ONLY for extra storage purchased by the user,
@@ -195,8 +230,8 @@ async def process_recurring_billing_task() -> dict:
                     except Exception as exc:
                         logger.warning("Failed to compute storage addon for org %s: %s", org.id, exc)
 
-                    # 2e. Total excl. GST = plan + SMS overage + Carjam overage + storage addon
-                    total_excl_gst_cents = amount_cents + sms_overage_cents + carjam_overage_cents + storage_addon_cents
+                    # 2e. Total excl. GST = plan + SMS overage + Carjam overage + PPSR overage + storage addon
+                    total_excl_gst_cents = amount_cents + sms_overage_cents + carjam_overage_cents + ppsr_overage_cents + owner_check_overage_cents + storage_addon_cents
 
                     # Skip free plans with no overages
                     if total_excl_gst_cents <= 0:
@@ -213,6 +248,8 @@ async def process_recurring_billing_task() -> dict:
                         if ppsr_overage_count > 0:
                             org.ppsr_lookups_this_month = 0
                             org.ppsr_hidden_plate_lookups_this_month = 0
+                        if owner_check_overage_count > 0:
+                            org.owner_check_lookups_this_month = 0
                         skipped += 1
                         continue
 
@@ -270,6 +307,10 @@ async def process_recurring_billing_task() -> dict:
                             "sms_overage_count": str(sms_overage_count),
                             "carjam_overage_cents": str(carjam_overage_cents),
                             "carjam_overage_count": str(carjam_overage_count),
+                            "ppsr_overage_cents": str(ppsr_overage_cents),
+                            "ppsr_overage_count": str(ppsr_overage_count),
+                            "owner_check_overage_cents": str(owner_check_overage_cents),
+                            "owner_check_overage_count": str(owner_check_overage_count),
                             "storage_addon_cents": str(storage_addon_cents),
                             "storage_addon_gb": str(storage_addon_gb),
                             "subtotal_excl_gst_cents": str(total_excl_gst_cents),
@@ -296,6 +337,8 @@ async def process_recurring_billing_task() -> dict:
                     if ppsr_overage_count > 0:
                         org.ppsr_lookups_this_month = 0
                         org.ppsr_hidden_plate_lookups_this_month = 0
+                    if owner_check_overage_count > 0:
+                        org.owner_check_lookups_this_month = 0
 
                     await session.flush()
 
@@ -309,6 +352,8 @@ async def process_recurring_billing_task() -> dict:
                         plan_amount_cents=amount_cents,
                         sms_overage_cents=sms_overage_cents,
                         carjam_overage_cents=carjam_overage_cents,
+                        ppsr_overage_cents=ppsr_overage_cents,
+                        owner_check_overage_cents=owner_check_overage_cents,
                         storage_addon_cents=storage_addon_cents,
                         subtotal_excl_gst_cents=total_excl_gst_cents,
                         gst_amount_cents=breakdown["gst_amount_cents"],
@@ -317,6 +362,8 @@ async def process_recurring_billing_task() -> dict:
                         plan_name=plan.name,
                         sms_overage_count=sms_overage_count,
                         carjam_overage_count=carjam_overage_count,
+                        ppsr_overage_count=ppsr_overage_count,
+                        owner_check_overage_count=owner_check_overage_count,
                         storage_addon_gb=storage_addon_gb,
                         currency="nzd",
                         status="paid",

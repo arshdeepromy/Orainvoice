@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>OraInvoice Mobile — v2 Redesign</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="mobile-v2/ds-mobile.css" />
+<style>
+  html, body { margin: 0; height: 100%; }
+  body {
+    font-family: 'IBM Plex Sans', system-ui, sans-serif;
+    background:
+      radial-gradient(120% 90% at 50% 0%, #1a2233 0%, #0e1420 46%, #090d15 100%);
+    overflow: hidden;
+  }
+  #root { height: 100vh; }
+  .device-wrap { position: fixed; inset: 0; display: grid; place-items: center; }
+  .device {
+    width: 408px; height: 862px; flex-shrink: 0;
+    background: #0a0a0c; border-radius: 56px; padding: 9px;
+    box-shadow: 0 0 0 2px #26282f, 0 50px 90px -30px rgba(0,0,0,0.8), 0 0 0 11px rgba(255,255,255,0.015);
+    transform-origin: center center;
+  }
+  .screen-area {
+    position: relative; width: 390px; height: 844px;
+    border-radius: 47px; overflow: hidden; background: var(--canvas);
+    isolation: isolate;
+  }
+  .app-root { position: absolute; top: 50px; left: 0; right: 0; bottom: 0; overflow: hidden; display: flex; flex-direction: column; }
+  .layers { position: relative; flex: 1; overflow: hidden; }
+  .layer { position: absolute; inset: 0; }
+  .home-indicator {
+    position: absolute; bottom: 9px; left: 50%; transform: translateX(-50%);
+    width: 134px; height: 5px; border-radius: 3px; background: var(--text); opacity: 0.32; z-index: 14;
+    pointer-events: none;
+  }
+
+  @keyframes slideInRight { from { transform: translateX(100%); } to { transform: translateX(0); } }
+  @keyframes slideOutRight { from { transform: translateX(0); } to { transform: translateX(100%); } }
+  @keyframes revealLeft { from { transform: translateX(-24%); filter: brightness(0.94); } to { transform: translateX(0); filter: none; } }
+  @keyframes fadeIn { from { transform: scale(0.985); } to { transform: scale(1); } }
+  .anim-push { animation: slideInRight .32s cubic-bezier(.32,.72,0,1); will-change: transform; }
+  .anim-pop  { animation: revealLeft .32s cubic-bezier(.32,.72,0,1); }
+  .anim-leave { animation: slideOutRight .32s cubic-bezier(.32,.72,0,1) forwards; box-shadow: -10px 0 30px rgba(0,0,0,.18); will-change: transform; }
+  .anim-fade { animation: fadeIn .24s ease; }
+
+  @media (max-width: 460px) {
+    body { background: var(--canvas, #f4f6f9); }
+  }
+</style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <template id="__bundler_thumbnail">
+    <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+      <rect width="100" height="100" rx="22" fill="#2F62F0"/>
+      <rect x="34" y="22" width="32" height="56" rx="7" fill="#fff"/>
+      <rect x="39" y="29" width="22" height="3.5" rx="1.75" fill="#2F62F0"/>
+      <rect x="39" y="38" width="22" height="14" rx="3" fill="#cdd9fb"/>
+      <rect x="39" y="56" width="22" height="3" rx="1.5" fill="#cdd9fb"/>
+      <rect x="39" y="62" width="15" height="3" rx="1.5" fill="#cdd9fb"/>
+    </svg>
+  </template>
+
+  <script>
+    // The preview environment's password-manager autofill agent throws on our
+    // inputs (null autoCompleteType). It is external to this prototype — swallow
+    // just that rejection so it doesn't pollute the console.
+    window.addEventListener('unhandledrejection', function (e) {
+      var msg = (e && e.reason && (e.reason.message || e.reason)) + '';
+      if (msg.indexOf('autoCompleteType') !== -1 || msg.indexOf('autofillFieldData') !== -1) {
+        e.preventDefault();
+      }
+    });
+  </script>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+  <script src="mobile-v2/data.js"></script>
+  <script type="text/babel" src="mobile-v2/tweaks-panel.jsx"></script>
+  <script type="text/babel" src="mobile-v2/icons.jsx"></script>
+  <script type="text/babel" src="mobile-v2/ui.jsx"></script>
+  <script type="text/babel" src="mobile-v2/ui-extra.jsx"></script>
+  <script type="text/babel" src="mobile-v2/screens-lists.jsx"></script>
+  <script type="text/babel" src="mobile-v2/screens-detail.jsx"></script>
+  <script type="text/babel" src="mobile-v2/screens-modules.jsx"></script>
+  <script type="text/babel" src="mobile-v2/screens-detail2.jsx"></script>
+  <script type="text/babel" src="mobile-v2/screens-modules2.jsx"></script>
+  <script type="text/babel" src="mobile-v2/screens-extra.jsx"></script>
+  <script type="text/babel" src="mobile-v2/screens-reports.jsx"></script>
+  <script type="text/babel" src="mobile-v2/screens-settings.jsx"></script>
+  <script type="text/babel" src="mobile-v2/app.jsx"></script>
+</body>
+</html>

@@ -18,6 +18,8 @@ import { ModuleGate } from '@/components/common/ModuleGate'
 import { PullRefresh } from '@/components/gestures/PullRefresh'
 import { buildPortalUrl, canSharePortalLink } from '@/utils/portalLink'
 import apiClient from '@/api/client'
+import SendEmailSheet from '@/components/email/SendEmailSheet'
+import { SURFACE_REGISTRY } from '@/components/email/surfaceRegistry'
 
 /* ------------------------------------------------------------------ */
 /* Types                                                              */
@@ -126,7 +128,7 @@ export default function QuoteDetailScreen() {
   const [error, setError] = useState<string | null>(null)
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [showActions, setShowActions] = useState(false)
-  const [isSending, setIsSending] = useState(false)
+  const [showEmailSheet, setShowEmailSheet] = useState(false)
   const [isConverting, setIsConverting] = useState(false)
   const [toast, setToast] = useState<{ message: string; variant: 'success' | 'error' } | null>(null)
 
@@ -167,19 +169,21 @@ export default function QuoteDetailScreen() {
     await fetchQuote(controller.signal, true)
   }, [fetchQuote])
 
-  const handleSend = useCallback(async () => {
+  // Open the shared "Send Email" composer instead of sending directly. The
+  // sheet pre-loads the quote_sent defaults, lets the user review/edit
+  // recipients/subject/body/attachments, and dispatches via the override
+  // endpoint. `onSent` (handleRefresh) re-fetches the quote and shows the
+  // existing success toast (task 15.3).
+  const handleSend = useCallback(() => {
     if (!id) return
-    setIsSending(true)
-    const ok = await sendQuote(id)
-    setIsSending(false)
-    if (ok) {
-      setToast({ message: 'Quote sent', variant: 'success' })
-      await handleRefresh()
-    } else {
-      setToast({ message: 'Failed to send quote', variant: 'error' })
-    }
     setShowActions(false)
-  }, [id, handleRefresh])
+    setShowEmailSheet(true)
+  }, [id])
+
+  const handleEmailSent = useCallback(async () => {
+    setToast({ message: 'Quote sent', variant: 'success' })
+    await handleRefresh()
+  }, [handleRefresh])
 
   const handleConvertToInvoice = useCallback(async () => {
     if (!id) return
@@ -603,10 +607,9 @@ export default function QuoteDetailScreen() {
                     <HapticButton
                       large
                       onClick={handleSend}
-                      disabled={isSending}
                       className="w-full"
                     >
-                      {isSending ? 'Sending…' : 'Send Quote'}
+                      Send Quote
                     </HapticButton>
                   )}
                   {(status === 'sent' || status === 'accepted') && (
@@ -638,6 +641,18 @@ export default function QuoteDetailScreen() {
             )}
           </div>
         </PullRefresh>
+
+        {quote && (
+          <SendEmailSheet
+            open={showEmailSheet}
+            onClose={() => setShowEmailSheet(false)}
+            templateType="quote_sent"
+            entityType="quote"
+            entityId={quote.id}
+            onSent={handleEmailSent}
+            surfaceLabel={SURFACE_REGISTRY['quote_sent'].surfaceLabel}
+          />
+        )}
       </Page>
     </ModuleGate>
   )

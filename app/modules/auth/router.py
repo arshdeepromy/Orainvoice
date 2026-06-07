@@ -77,6 +77,7 @@ from app.modules.auth.service import (
     generate_passkey_register_options,
     invalidate_all_sessions,
     list_passkey_credentials,
+    resolve_webauthn_params,
     list_user_sessions,
     remove_passkey,
     rename_passkey,
@@ -563,11 +564,13 @@ async def passkey_register_options(
             content={"detail": "Authentication required"},
         )
 
+    rp_id, _ = resolve_webauthn_params(request.headers.get("origin"))
     try:
         options = await generate_passkey_register_options(
             db=db,
             user=user,
             device_name=payload.device_name,
+            rp_id=rp_id,
         )
     except Exception as exc:
         return JSONResponse(
@@ -600,11 +603,14 @@ async def passkey_register_verify(
             content={"detail": "Authentication required"},
         )
 
+    rp_id, expected_origin = resolve_webauthn_params(request.headers.get("origin"))
     try:
         result = await verify_passkey_registration(
             db=db,
             user=user,
             credential_response=payload.credential,
+            rp_id=rp_id,
+            expected_origin=expected_origin,
         )
     except ValueError as exc:
         return JSONResponse(
@@ -632,6 +638,7 @@ async def passkey_register_verify(
 )
 async def passkey_login_options(
     payload: PasskeyLoginOptionsRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db_session),
 ):
     """Generate WebAuthn authentication options for a user.
@@ -659,9 +666,11 @@ async def passkey_login_options(
                 status_code=400,
                 content={"detail": "No account found or account inactive"},
             )
+        rp_id, _ = resolve_webauthn_params(request.headers.get("origin"))
         options = await generate_passkey_login_options(
             db=db,
             user_id=user.id,
+            rp_id=rp_id,
         )
     except ValueError as exc:
         return JSONResponse(
@@ -710,6 +719,7 @@ async def passkey_login_verify(
             "user_handle": payload.user_handle,
         }
 
+        rp_id, expected_origin = resolve_webauthn_params(request.headers.get("origin"))
         result = await verify_passkey_login(
             db=db,
             user_id=uuid.UUID(session_data["user_id"]),
@@ -718,6 +728,8 @@ async def passkey_login_verify(
             device_type=device_type,
             browser=browser,
             user_agent=user_agent,
+            rp_id=rp_id,
+            expected_origin=expected_origin,
         )
     except ValueError as exc:
         return JSONResponse(

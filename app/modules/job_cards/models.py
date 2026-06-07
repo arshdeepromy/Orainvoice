@@ -84,7 +84,7 @@ class JobCard(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "status IN ('open','in_progress','completed','invoiced')",
+            "status IN ('open','in_progress','awaiting_parts','completed','invoiced')",
             name="ck_job_cards_status",
         ),
     )

@@ -212,6 +212,45 @@ def _apply_calc_to_payslip(payslip: Payslip, calc: PayslipCalc) -> None:
     payslip.net_pay = calc.net
 
 
+async def deduction_subtotals_for(
+    db: AsyncSession,
+    payslip_ids: list[uuid.UUID],
+) -> dict[uuid.UUID, dict[str, Decimal]]:
+    """Aggregate ``payslip_deductions`` into per-payslip, per-kind sums.
+
+    Returns ``{ payslip_id: { kind: summed_amount, ... } }`` containing
+    only the kinds present for each payslip — the router fills absent
+    kinds from the schema's per-field zero defaults when it constructs
+    ``PayslipDeductionSubtotals``. Derived purely from the existing
+    deduction rows (the source of truth), so the subtotals can never
+    drift from the lines.
+
+    One grouped query regardless of how many payslips are passed (no
+    N+1). The caller supplies ids drawn only from org-scoped payslip
+    selects, and ``payslip_deductions`` is RLS-scoped, so no cross-org
+    line is ever aggregated.
+    """
+    if not payslip_ids:
+        return {}
+
+    rows = (
+        await db.execute(
+            select(
+                PayslipDeduction.payslip_id,
+                PayslipDeduction.kind,
+                func.sum(PayslipDeduction.amount),
+            )
+            .where(PayslipDeduction.payslip_id.in_(payslip_ids))
+            .group_by(PayslipDeduction.payslip_id, PayslipDeduction.kind)
+        )
+    ).all()
+
+    result: dict[uuid.UUID, dict[str, Decimal]] = {}
+    for payslip_id, kind, amount in rows:
+        result.setdefault(payslip_id, {})[kind] = amount or Decimal("0")
+    return result
+
+
 async def _attach_kiwisaver_lines(
     db: AsyncSession,
     *,

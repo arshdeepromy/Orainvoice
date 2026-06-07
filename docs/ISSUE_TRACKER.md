@@ -6082,3 +6082,23 @@ Combined with ISSUE-169's `email_invoice` change (which also derives the link or
 - `tests/test_record_payment_email_base_url.py` (new AST-based regression guard — fails on unfixed code, passes with fix)
 
 **Note**: There is no per-org canonical public-domain field in the data model; the request `Origin` is the source of truth for customer-facing link hosts (per the email-delivery-visibility-fixes Bug 3 pattern). If staff access the app directly via the LAN IP, links will reflect that — the durable fix is to ensure staff use the public domain (and optionally set `FRONTEND_BASE_URL` on Pi to the public domain as the background-task fallback).
+
+### ISSUE-171: create_quote crashes (500) when a line item omits tax_rate
+
+- **Date**: 2026-06-06
+- **Severity**: medium
+- **Status**: open
+- **Reporter**: send-email-modal e2e (task 16.1)
+- **Related**: —
+
+**Symptoms**: `POST /api/v1/quotes` returns 500 Internal Server Error when a line item is posted without a `tax_rate` field. The request body validates fine, but the service layer raises `decimal.InvalidOperation: [<class 'decimal.ConversionSyntax'>]`.
+
+**Root Cause**: In `app/modules/quotes/service.py::create_quote` (line ~448) the line-item build does `tax_rate=Decimal(str(item_data.get("tax_rate", 15)))`. The request schema `QuoteLineItemCreate.tax_rate` is `Decimal | None = Field(default=None, ...)`, so when the client omits the field it arrives as the key `tax_rate` present-with-value `None` (not absent). `item_data.get("tax_rate", 15)` therefore returns `None`, and `Decimal(str(None))` → `Decimal("None")` raises `ConversionSyntax`. The `15` fallback only fires when the key is fully absent, which Pydantic's populated default prevents.
+
+**Fix (suggested, NOT applied — outside send-email-modal scope)**: coerce null to the default before the Decimal conversion, e.g. `Decimal(str(item_data.get("tax_rate") or 15))`, or set the schema default to `Decimal("15")` to match `QuoteLineItemUpdate`.
+
+**Workaround in e2e**: `scripts/test_send_email_modal_e2e.py` posts an explicit `"tax_rate": "15"` on its quote line item so the `quote_sent` surface can be exercised. Filed here per send-email-modal R23 (log bugs found in adjacent code paths).
+
+**Files Implicated**:
+- `app/modules/quotes/service.py` (`create_quote`, ~line 448)
+- `app/modules/quotes/schemas.py` (`QuoteLineItemCreate.tax_rate` default)

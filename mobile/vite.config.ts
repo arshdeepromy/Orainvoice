@@ -13,12 +13,19 @@ export default defineConfig({
     alias: {
       '@': path.resolve(__dirname, './src'),
       '@shared': path.resolve(__dirname, '../shared'),
+      '@email-contract': path.resolve(__dirname, '../frontend-v2/src/components/email'),
     },
   },
   server: {
     port: 5173,
     host: '0.0.0.0',
     allowedHosts: true,
+    // Allow Vite to serve the shared email contract that lives in frontend-v2/
+    // (outside the mobile project root) — the contract is imported via the
+    // `@email-contract` alias (R1.10 / R18.2: single source of truth, no dupes).
+    fs: {
+      allow: [path.resolve(__dirname, '..')],
+    },
     hmr: {
       host: process.env.HMR_HOST || undefined,
       clientPort: process.env.HMR_CLIENT_PORT ? Number(process.env.HMR_CLIENT_PORT) : undefined,

@@ -22,6 +22,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db_session
+from app.modules.auth.rbac import require_role
+from app.modules.email_compose.schemas import ReminderResendOverrideRequest
 from app.modules.notifications.schemas import (
     EMAIL_TEMPLATE_TYPES,
     SMS_TEMPLATE_TYPES,
@@ -47,6 +49,7 @@ from app.modules.notifications.service import (
     list_sms_templates,
     list_templates,
     render_template_preview,
+    resend_notification_log_entry,
     update_sms_template,
     update_template,
 )
@@ -281,6 +284,151 @@ async def get_notification_log(
         total=result["total"],
         page=result["page"],
         page_size=result["page_size"],
+    )
+
+
+
+# ---------------------------------------------------------------------------
+# POST /log/{log_id}/resend — Resend a vehicle-reminder notification
+# (Send Email Modal, send-email-modal task 8.7). Registered under both
+# /api/v1/notifications and /api/v2/notifications; the modal uses the v2 path
+# POST /api/v2/notifications/log/{log_id}/resend.
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/log/{log_id}/resend",
+    responses={
+        200: {"description": "Reminder resent"},
+        400: {"description": "Invalid attachment selection / unsupported log type"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org role required / vehicles module disabled"},
+        404: {"description": "Notification log entry not found"},
+        413: {"description": "Email too large"},
+        502: {"description": "Email provider authentication failed"},
+        503: {"description": "Delivery temporarily failed"},
+    },
+    summary="Resend a vehicle-reminder notification (Send Email Modal)",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def resend_notification_log_endpoint(
+    log_id: uuid.UUID,
+    request: Request,
+    payload: ReminderResendOverrideRequest | None = None,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Resend a vehicle expiry reminder (``customer_vehicle`` surface).
+
+    This is the Send Email Modal "Resend" surface (send-email-modal task 8.7).
+    It wraps ``notifications.service.resend_notification_log_entry``, which
+    loads the original ``notification_log`` row, verifies it is one of the four
+    vehicle reminder types, checks the ``vehicles`` module is enabled, rebuilds
+    the byte-equivalent reminder default content, and threads the full
+    Send-Email-Modal override set.
+
+    ``override_blocklist`` is org_admin-gated (R13.5); the vehicles-module-
+    disabled error maps to 403 with the exact message; attachment-token misses
+    (reminders offer no attachments) map to 400; send failures map their
+    ``failure_kind`` to the right HTTP status (R8.5–R8.8); a missing log row
+    maps to 404 and an unsupported log type maps to 400.
+
+    Requirements: 2.7, 7.6, 8.1, 8.3, 8.4, 8.5, 8.6, 8.7, 8.8, 8.9, 8.10,
+                  11.2, 11.3, 11.5, 22.2, 25.6
+    """
+    from app.modules.email_compose.service import (
+        EmailSendFailure,
+        InvalidAttachmentSelection,
+    )
+    from app.modules.notifications.service import VehiclesModuleDisabled
+
+    org_uuid, _, _ = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    recipients = None
+    cc = None
+    bcc = None
+    subject = None
+    body_html = None
+    attachments = None
+    subject_was_edited = False
+    body_was_edited = False
+    override_blocklist = False
+    if payload is not None:
+        recipients = payload.recipients
+        cc = payload.cc
+        bcc = payload.bcc
+        subject = payload.subject
+        body_html = payload.body_html
+        attachments = payload.attachments
+        subject_was_edited = payload.subject_was_edited
+        body_was_edited = payload.body_was_edited
+        override_blocklist = payload.override_blocklist
+
+    # Honour override_blocklist only for org_admin (R13.5).
+    if override_blocklist:
+        role = getattr(request.state, "role", None)
+        if role != "org_admin":
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "detail": "Only an organisation admin can override the "
+                    "bounce blocklist."
+                },
+            )
+
+    try:
+        result = await resend_notification_log_entry(
+            db,
+            org_id=org_uuid,
+            log_id=log_id,
+            base_url=request.headers.get("origin") or None,
+            recipients=recipients,
+            cc=cc,
+            bcc=bcc,
+            subject=subject,
+            body_html=body_html,
+            attachments=attachments,
+            subject_was_edited=subject_was_edited,
+            body_was_edited=body_was_edited,
+            override_blocklist=override_blocklist,
+        )
+    except VehiclesModuleDisabled:
+        return JSONResponse(
+            status_code=403,
+            content={
+                "detail": "Vehicles module is not enabled for this organisation."
+            },
+        )
+    except InvalidAttachmentSelection:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid attachment selection."},
+        )
+    except EmailSendFailure as exc:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+        )
+    except ValueError as exc:
+        # A missing log row -> 404; an unsupported log type -> 400.
+        _msg = str(exc)
+        _status = 404 if "not found" in _msg.lower() else 400
+        return JSONResponse(status_code=_status, content={"detail": _msg})
+
+    await db.commit()
+
+    return JSONResponse(
+        status_code=200,
+        content={
+            "log_id": str(result["log_id"]),
+            "recipient_email": result["recipient_email"],
+            "template_type": result["template_type"],
+            "status": result["status"],
+        },
     )
 
 

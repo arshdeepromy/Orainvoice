@@ -45,6 +45,7 @@ export interface Plan {
   per_carjam_lookup_cost_nzd: number
   ppsr_lookups_included: number
   ppsr_hidden_plate_lookups_included: number
+  owner_check_lookups_included: number
   enabled_modules: string[]
   is_public: boolean
   is_archived: boolean
@@ -284,6 +285,7 @@ interface PlanFormData {
   per_carjam_lookup_cost_nzd: number
   ppsr_lookups_included: number
   ppsr_hidden_plate_lookups_included: number
+  owner_check_lookups_included: number
   enabled_modules: string[]
   is_public: boolean
   storage_tier_pricing: StorageTier[]
@@ -333,6 +335,7 @@ const EMPTY_FORM: PlanFormData = {
   per_carjam_lookup_cost_nzd: 0,
   ppsr_lookups_included: 0,
   ppsr_hidden_plate_lookups_included: 0,
+  owner_check_lookups_included: 0,
   enabled_modules: [],
   is_public: true,
   storage_tier_pricing: [],
@@ -369,6 +372,7 @@ function PlanFormModal({ open, onClose, onSave, saving, editPlan, modules }: {
           per_carjam_lookup_cost_nzd: editPlan.per_carjam_lookup_cost_nzd ?? 0,
           ppsr_lookups_included: editPlan.ppsr_lookups_included ?? 0,
           ppsr_hidden_plate_lookups_included: editPlan.ppsr_hidden_plate_lookups_included ?? 0,
+          owner_check_lookups_included: editPlan.owner_check_lookups_included ?? 0,
           enabled_modules: editPlan.enabled_modules,
           is_public: editPlan.is_public,
           storage_tier_pricing: editPlan.storage_tier_pricing ?? [],
@@ -592,6 +596,37 @@ function PlanFormModal({ open, onClose, onSave, saving, editPlan, modules }: {
                       value={String(form.ppsr_hidden_plate_lookups_included)}
                       onChange={e => set('ppsr_hidden_plate_lookups_included', Math.max(0, Number(e.target.value)))}
                       helperText="PPSR hidden-plate lookups included per month"
+                    />
+                  </div>
+                </div>
+              )}
+            </fieldset>
+
+            {/* Ownership (owner_check) lookups — only relevant for automotive trades */}
+            <fieldset className="rounded-ctl border border-border p-3 space-y-2">
+              <legend className="text-sm font-medium text-text px-1">Ownership checks</legend>
+              <label className="flex items-center gap-2 text-sm cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={form.owner_check_lookups_included > 0}
+                  onChange={e => set('owner_check_lookups_included', e.target.checked ? 100 : 0)}
+                />
+                <span>
+                  <span className="font-medium">Include ownership checks</span>
+                  <br />
+                  <span className="text-xs text-muted">CarJam owner_check lookups. Only needed for automotive trades (workshops, mechanics, fleet). Leave off for other industries.</span>
+                </span>
+              </label>
+              {form.owner_check_lookups_included > 0 && (
+                <div className="ml-6 space-y-3">
+                  <div className="grid grid-cols-2 gap-3">
+                    <Input
+                      label="Included check quota"
+                      type="number"
+                      min="0"
+                      value={String(form.owner_check_lookups_included)}
+                      onChange={e => set('owner_check_lookups_included', Math.max(0, Number(e.target.value)))}
+                      helperText="Ownership checks included per month"
                     />
                   </div>
                 </div>

@@ -102,18 +102,6 @@ function formatDate(iso: string | null | undefined): string {
   })
 }
 
-function formatCurrency(cents: number | null | undefined): string {
-  if (cents == null) return '—'
-  try {
-    return new Intl.NumberFormat('en-NZ', {
-      style: 'currency',
-      currency: 'NZD',
-    }).format((cents ?? 0) / 100)
-  } catch {
-    return `${((cents ?? 0) / 100).toFixed(2)}`
-  }
-}
-
 // ===========================================================================
 // Props
 // ===========================================================================
@@ -268,6 +256,12 @@ export function PpsrHistoryTable({
               </th>
               <th
                 scope="col"
+                className="mono border-b border-border px-4 py-3 text-left text-[10.5px] font-medium uppercase tracking-[0.08em] text-muted-2"
+              >
+                Ownership
+              </th>
+              <th
+                scope="col"
                 className="mono border-b border-border px-4 py-3 text-right text-[10.5px] font-medium uppercase tracking-[0.08em] text-muted-2"
               >
                 Statements
@@ -277,12 +271,6 @@ export function PpsrHistoryTable({
                 className="mono border-b border-border px-4 py-3 text-left text-[10.5px] font-medium uppercase tracking-[0.08em] text-muted-2"
               >
                 By
-              </th>
-              <th
-                scope="col"
-                className="mono border-b border-border px-4 py-3 text-right text-[10.5px] font-medium uppercase tracking-[0.08em] text-muted-2"
-              >
-                Charge
               </th>
             </tr>
           </thead>
@@ -313,12 +301,6 @@ export function PpsrHistoryTable({
             {(items ?? []).map((row) => {
               const chip = chipForMatch(row?.match ?? null)
               const isForgotten = row?.forgotten_at != null
-              const chargeCents =
-                typeof (row as unknown as { charges_cents?: number | null })
-                  ?.charges_cents === 'number'
-                  ? ((row as unknown as { charges_cents?: number | null })
-                      .charges_cents ?? null)
-                  : null
               const userLabel =
                 (row as unknown as { user_display_name?: string | null })
                   ?.user_display_name ??
@@ -365,14 +347,32 @@ export function PpsrHistoryTable({
                       </span>
                     )}
                   </td>
+                  <td className="px-4 py-2 text-sm">
+                    {row?.owner_check_match == null ? (
+                      <span className="text-muted-2">—</span>
+                    ) : row.owner_check_match ? (
+                      <span
+                        className="inline-flex items-center gap-1.5 rounded-full border border-ok/40 bg-ok-soft px-2.5 py-0.5 text-xs font-medium text-ok"
+                        aria-label="Ownership confirmed"
+                      >
+                        <span aria-hidden="true">✅</span>
+                        Confirmed
+                      </span>
+                    ) : (
+                      <span
+                        className="inline-flex items-center gap-1.5 rounded-full border border-danger/40 bg-danger-soft px-2.5 py-0.5 text-xs font-medium text-danger"
+                        aria-label="Ownership not confirmed"
+                      >
+                        <span aria-hidden="true">❌</span>
+                        Not confirmed
+                      </span>
+                    )}
+                  </td>
                   <td className="mono px-4 py-2 text-right text-sm text-text">
                     {row?.statement_count ?? 0}
                   </td>
                   <td className="px-4 py-2 text-sm text-muted">
                     {userLabel}
-                  </td>
-                  <td className="mono px-4 py-2 text-right text-sm text-muted">
-                    {formatCurrency(chargeCents)}
                   </td>
                 </tr>
               )

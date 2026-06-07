@@ -28,6 +28,8 @@ __all__ = [
     "PpsrQuotaExceededError",
     "PpsrS241PurposeRequiredError",
     "PpsrOwnerLookupsDisabledError",
+    "PpsrOwnerCheckValidationError",
+    "PpsrOwnerCheckNotAllowedError",
     "PpsrSearchNotFoundError",
     "PpsrSearchForbiddenError",
     "PpsrSearchForgottenError",
@@ -76,6 +78,29 @@ class PpsrOwnerLookupsDisabledError(PpsrError):
     """Owner-lookup requested while ``ppsr_owner_lookups_enabled`` is
     false on the org's CarJam config (R7.3). Router maps to HTTP 422
     ``s241_not_authorised``.
+    """
+
+
+class PpsrOwnerCheckValidationError(PpsrError):
+    """Owner-check inputs failed validation.
+
+    Raised when the per-type owner-check fields are incomplete /
+    invalid — either caught locally by the request-schema validator or
+    surfaced from CarJam's ``err-owner-check-validation``. Carries the
+    upstream/validation message so the router can return it in the 422
+    body. Router maps to HTTP 422 ``owner_check_validation``.
+    """
+
+    def __init__(self, message: str = "owner_check_validation") -> None:
+        self.message = message
+        super().__init__(message)
+
+
+class PpsrOwnerCheckNotAllowedError(PpsrError):
+    """CarJam account lacks the ``owner_check`` API product
+    (``err-api-product-not-allowed``). Router maps to HTTP 422
+    ``owner_check_not_allowed`` — this is a platform-config issue, not
+    user input.
     """
 
 

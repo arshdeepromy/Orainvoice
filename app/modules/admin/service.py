@@ -494,6 +494,8 @@ async def _send_org_admin_invitation_email(
 # Default per-lookup overage cost when not configured in integration_configs
 _DEFAULT_CARJAM_PER_LOOKUP_COST_NZD = 0.15
 _DEFAULT_CARJAM_ABCD_PER_LOOKUP_COST_NZD = 0.05
+_DEFAULT_CARJAM_PPSR_PER_CHECK_COST_NZD = 2.00
+_DEFAULT_CARJAM_OWNER_CHECK_PER_CHECK_COST_NZD = 2.00
 
 
 async def get_carjam_per_lookup_cost(db: AsyncSession) -> float:
@@ -543,6 +545,63 @@ async def get_carjam_abcd_per_lookup_cost(db: AsyncSession) -> float:
     except (json.JSONDecodeError, ValueError, KeyError) as exc:
         logger.warning("Failed to read Carjam ABCD per-lookup cost; using default: %s", exc)
         return _DEFAULT_CARJAM_ABCD_PER_LOOKUP_COST_NZD
+
+
+async def get_carjam_ppsr_per_check_cost(db: AsyncSession) -> float:
+    """Return the PPSR per-check cost from integration_configs.
+
+    The Carjam integration config may contain a ``ppsr_per_check_cost_nzd``
+    field. Falls back to the default (2.00) if not configured or not
+    decryptable.
+    """
+    from app.modules.admin.models import IntegrationConfig
+    from app.core.encryption import envelope_decrypt_str
+
+    result = await db.execute(
+        select(IntegrationConfig).where(IntegrationConfig.name == "carjam")
+    )
+    config = result.scalar_one_or_none()
+    if config is None:
+        return _DEFAULT_CARJAM_PPSR_PER_CHECK_COST_NZD
+
+    try:
+        decrypted = envelope_decrypt_str(config.config_encrypted)
+        data = json.loads(decrypted)
+        return float(data.get("ppsr_per_check_cost_nzd", _DEFAULT_CARJAM_PPSR_PER_CHECK_COST_NZD))
+    except (json.JSONDecodeError, ValueError, KeyError) as exc:
+        logger.warning("Failed to read Carjam PPSR per-check cost; using default: %s", exc)
+        return _DEFAULT_CARJAM_PPSR_PER_CHECK_COST_NZD
+
+
+async def get_carjam_owner_check_per_check_cost(db: AsyncSession) -> float:
+    """Return the ownership (owner_check) per-check cost from integration_configs.
+
+    The Carjam integration config may contain an
+    ``owner_check_per_check_cost_nzd`` field. Falls back to the default
+    (2.00) if not configured or not decryptable.
+    """
+    from app.modules.admin.models import IntegrationConfig
+    from app.core.encryption import envelope_decrypt_str
+
+    result = await db.execute(
+        select(IntegrationConfig).where(IntegrationConfig.name == "carjam")
+    )
+    config = result.scalar_one_or_none()
+    if config is None:
+        return _DEFAULT_CARJAM_OWNER_CHECK_PER_CHECK_COST_NZD
+
+    try:
+        decrypted = envelope_decrypt_str(config.config_encrypted)
+        data = json.loads(decrypted)
+        return float(
+            data.get(
+                "owner_check_per_check_cost_nzd",
+                _DEFAULT_CARJAM_OWNER_CHECK_PER_CHECK_COST_NZD,
+            )
+        )
+    except (json.JSONDecodeError, ValueError, KeyError) as exc:
+        logger.warning("Failed to read Carjam owner_check per-check cost; using default: %s", exc)
+        return _DEFAULT_CARJAM_OWNER_CHECK_PER_CHECK_COST_NZD
 
 
 def compute_carjam_overage(total_lookups: int, included: int) -> int:
@@ -1250,6 +1309,8 @@ async def save_carjam_config(
     endpoint_url: str | None = None,
     per_lookup_cost_nzd: float | None = None,
     abcd_per_lookup_cost_nzd: float | None = None,
+    ppsr_per_check_cost_nzd: float | None = None,
+    owner_check_per_check_cost_nzd: float | None = None,
     global_rate_limit_per_minute: int | None = None,
     ppsr_cache_ttl_minutes: int | None = None,
     ppsr_owner_lookups_enabled: bool | None = None,
@@ -1296,6 +1357,8 @@ async def save_carjam_config(
             "endpoint_url": "https://www.carjam.co.nz",
             "per_lookup_cost_nzd": 0.50,
             "abcd_per_lookup_cost_nzd": 0.05,
+            "ppsr_per_check_cost_nzd": 2.00,
+            "owner_check_per_check_cost_nzd": 2.00,
             "global_rate_limit_per_minute": 60,
         }
 
@@ -1316,6 +1379,10 @@ async def save_carjam_config(
         current_data["per_lookup_cost_nzd"] = per_lookup_cost_nzd
     if abcd_per_lookup_cost_nzd is not None:
         current_data["abcd_per_lookup_cost_nzd"] = abcd_per_lookup_cost_nzd
+    if ppsr_per_check_cost_nzd is not None:
+        current_data["ppsr_per_check_cost_nzd"] = ppsr_per_check_cost_nzd
+    if owner_check_per_check_cost_nzd is not None:
+        current_data["owner_check_per_check_cost_nzd"] = owner_check_per_check_cost_nzd
     if global_rate_limit_per_minute is not None:
         current_data["global_rate_limit_per_minute"] = global_rate_limit_per_minute
     if ppsr_cache_ttl_minutes is not None:
@@ -1354,6 +1421,10 @@ async def save_carjam_config(
         audit_data["per_lookup_cost_nzd"] = per_lookup_cost_nzd
     if abcd_per_lookup_cost_nzd is not None:
         audit_data["abcd_per_lookup_cost_nzd"] = abcd_per_lookup_cost_nzd
+    if ppsr_per_check_cost_nzd is not None:
+        audit_data["ppsr_per_check_cost_nzd"] = ppsr_per_check_cost_nzd
+    if owner_check_per_check_cost_nzd is not None:
+        audit_data["owner_check_per_check_cost_nzd"] = owner_check_per_check_cost_nzd
     if global_rate_limit_per_minute is not None:
         audit_data["global_rate_limit_per_minute"] = global_rate_limit_per_minute
     if ppsr_cache_ttl_minutes is not None:
@@ -1385,6 +1456,8 @@ async def save_carjam_config(
         "endpoint_url": current_data["endpoint_url"],
         "per_lookup_cost_nzd": current_data["per_lookup_cost_nzd"],
         "abcd_per_lookup_cost_nzd": current_data.get("abcd_per_lookup_cost_nzd", 0.05),
+        "ppsr_per_check_cost_nzd": current_data.get("ppsr_per_check_cost_nzd", 2.00),
+        "owner_check_per_check_cost_nzd": current_data.get("owner_check_per_check_cost_nzd", 2.00),
         "global_rate_limit_per_minute": current_data["global_rate_limit_per_minute"],
         "api_key_last4": saved_api_key[-4:] if len(saved_api_key) >= 4 else saved_api_key,
         "is_verified": False,
@@ -1781,6 +1854,8 @@ _SAFE_FIELDS: dict[str, list[str]] = {
         "endpoint_url",
         "per_lookup_cost_nzd",
         "abcd_per_lookup_cost_nzd",
+        "ppsr_per_check_cost_nzd",
+        "owner_check_per_check_cost_nzd",
         "global_rate_limit_per_minute",
         # PPSR Phase 1 (G-CODE-11): non-secret platform-wide PPSR config.
         "ppsr_cache_ttl_minutes",
@@ -1916,6 +1991,7 @@ async def create_plan(
     interval_config: list[dict] | None = None,
     ppsr_lookups_included: int = 0,
     ppsr_hidden_plate_lookups_included: int = 0,
+    owner_check_lookups_included: int = 0,
     created_by: uuid.UUID | None = None,
     ip_address: str | None = None,
 ) -> dict:
@@ -1959,6 +2035,7 @@ async def create_plan(
         interval_config=resolved_interval_config,
         ppsr_lookups_included=ppsr_lookups_included,
         ppsr_hidden_plate_lookups_included=ppsr_hidden_plate_lookups_included,
+        owner_check_lookups_included=owner_check_lookups_included,
     )
     db.add(plan)
     await db.flush()
@@ -1988,6 +2065,7 @@ async def create_plan(
         "carjam_lookups_included": plan.carjam_lookups_included,
         "ppsr_lookups_included": plan.ppsr_lookups_included,
         "ppsr_hidden_plate_lookups_included": plan.ppsr_hidden_plate_lookups_included,
+        "owner_check_lookups_included": plan.owner_check_lookups_included,
         "enabled_modules": plan.enabled_modules,
         "is_public": plan.is_public,
         "is_archived": plan.is_archived,
@@ -2034,6 +2112,7 @@ async def list_plans(
             "carjam_lookups_included": p.carjam_lookups_included,
             "ppsr_lookups_included": p.ppsr_lookups_included,
             "ppsr_hidden_plate_lookups_included": p.ppsr_hidden_plate_lookups_included,
+            "owner_check_lookups_included": p.owner_check_lookups_included,
             "enabled_modules": p.enabled_modules,
             "is_public": p.is_public,
             "is_archived": p.is_archived,
@@ -2073,6 +2152,7 @@ async def get_plan(
         "carjam_lookups_included": p.carjam_lookups_included,
         "ppsr_lookups_included": p.ppsr_lookups_included,
         "ppsr_hidden_plate_lookups_included": p.ppsr_hidden_plate_lookups_included,
+        "owner_check_lookups_included": p.owner_check_lookups_included,
         "enabled_modules": p.enabled_modules,
         "is_public": p.is_public,
         "is_archived": p.is_archived,
@@ -2179,6 +2259,7 @@ async def update_plan(
         "sms_included", "per_sms_cost_nzd", "sms_included_quota",
         "sms_package_pricing", "interval_config",
         "ppsr_lookups_included", "ppsr_hidden_plate_lookups_included",
+        "owner_check_lookups_included",
     }
 
     # Validate interval_config if provided
@@ -2238,6 +2319,7 @@ async def update_plan(
         "carjam_lookups_included": plan.carjam_lookups_included,
         "ppsr_lookups_included": plan.ppsr_lookups_included,
         "ppsr_hidden_plate_lookups_included": plan.ppsr_hidden_plate_lookups_included,
+        "owner_check_lookups_included": plan.owner_check_lookups_included,
         "enabled_modules": plan.enabled_modules,
         "is_public": plan.is_public,
         "is_archived": plan.is_archived,
@@ -2323,6 +2405,7 @@ async def archive_plan(
         "carjam_lookups_included": plan.carjam_lookups_included,
         "ppsr_lookups_included": plan.ppsr_lookups_included,
         "ppsr_hidden_plate_lookups_included": plan.ppsr_hidden_plate_lookups_included,
+        "owner_check_lookups_included": plan.owner_check_lookups_included,
         "enabled_modules": plan.enabled_modules,
         "is_public": plan.is_public,
         "is_archived": plan.is_archived,

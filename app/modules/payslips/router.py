@@ -89,6 +89,7 @@ from app.modules.payslips.schemas import (
     PayPeriodUpdate,
     PayslipAllowanceResponse,
     PayslipDeductionResponse,
+    PayslipDeductionSubtotals,
     PayslipDetailResponse,
     PayslipLeaveLineResponse,
     PayslipListResponse,
@@ -361,6 +362,16 @@ async def _serialise_payslip_detail(
 
     base = PayslipResponse.model_validate(payslip).model_dump()
     base["pay_period"] = period_resp.model_dump() if period_resp else None
+    # Populate the inherited subtotals from the already-loaded deduction
+    # lines (no extra query) so detail stays consistent with the list.
+    detail_subtotals: dict[str, Decimal] = {}
+    for d in deductions:
+        detail_subtotals[d.kind] = detail_subtotals.get(
+            d.kind, Decimal("0"),
+        ) + d.amount
+    base["deduction_subtotals"] = PayslipDeductionSubtotals(
+        **detail_subtotals
+    ).model_dump()
     return PayslipDetailResponse(
         **base,
         allowances=a_resp,
@@ -589,8 +600,20 @@ async def list_period_payslips(
             .limit(limit)
         )
     ).scalars().all()
+    subtotals = await payslips_service.deduction_subtotals_for(
+        db, [r.id for r in rows],
+    )
     return PayslipListResponse(
-        items=[PayslipResponse.model_validate(r) for r in rows],
+        items=[
+            PayslipResponse.model_validate(r).model_copy(
+                update={
+                    "deduction_subtotals": PayslipDeductionSubtotals(
+                        **subtotals.get(r.id, {})
+                    ),
+                },
+            )
+            for r in rows
+        ],
         total=int(total),
     )
 
@@ -622,8 +645,20 @@ async def generate_period_payslips(
     except payslips_service.PayslipServiceError as exc:
         _raise_payslip_service_error(exc)
 
+    subtotals = await payslips_service.deduction_subtotals_for(
+        db, [p.id for p in created],
+    )
     return PayslipListResponse(
-        items=[PayslipResponse.model_validate(p) for p in created],
+        items=[
+            PayslipResponse.model_validate(p).model_copy(
+                update={
+                    "deduction_subtotals": PayslipDeductionSubtotals(
+                        **subtotals.get(p.id, {})
+                    ),
+                },
+            )
+            for p in created
+        ],
         total=len(created),
     )
 
@@ -880,8 +915,20 @@ async def list_staff_payslips(
             .limit(limit)
         )
     ).scalars().all()
+    subtotals = await payslips_service.deduction_subtotals_for(
+        db, [r.id for r in rows],
+    )
     return PayslipListResponse(
-        items=[PayslipResponse.model_validate(r) for r in rows],
+        items=[
+            PayslipResponse.model_validate(r).model_copy(
+                update={
+                    "deduction_subtotals": PayslipDeductionSubtotals(
+                        **subtotals.get(r.id, {})
+                    ),
+                },
+            )
+            for r in rows
+        ],
         total=int(total),
     )
 

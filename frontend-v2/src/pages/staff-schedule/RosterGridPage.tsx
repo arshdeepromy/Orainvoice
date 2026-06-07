@@ -1065,6 +1065,28 @@ export default function RosterGridPage() {
           >
             <button
               type="button"
+              onClick={() => {
+                setEditingEntry(null)
+                setModalDefaults({ entry_type: 'job' })
+                setModalOpen(true)
+              }}
+              className="min-h-[36px] rounded-ctl bg-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-accent-press focus:outline-none focus:ring-2 focus:ring-accent"
+            >
+              + New Entry
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setEditingEntry(null)
+                setModalDefaults({ entry_type: 'leave' })
+                setModalOpen(true)
+              }}
+              className="min-h-[36px] rounded-ctl border border-border-strong bg-canvas px-3 py-1.5 text-sm font-medium text-text hover:bg-border focus:outline-none focus:ring-2 focus:ring-accent"
+            >
+              + Add Leave
+            </button>
+            <button
+              type="button"
               onClick={goToday}
               className="min-h-[36px] rounded-ctl border border-border bg-card px-3 py-1.5 text-sm font-medium text-text hover:bg-canvas hover:border-border-strong focus:outline-none focus:ring-2 focus:ring-accent"
             >

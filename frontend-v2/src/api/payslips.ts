@@ -184,6 +184,24 @@ export interface PayslipLeaveLine {
 // Payslips (admin view)
 // ---------------------------------------------------------------------------
 
+/**
+ * Per-payslip deduction subtotals (one figure per DeductionKind), derived
+ * server-side from the payslip's deduction lines. `kiwisaver_employee` and
+ * `kiwisaver_employer` are separate — only the employee portion reduces net
+ * pay. `total` is the sum of all seven. Decimals serialised as strings.
+ * Mirrors `PayslipDeductionSubtotals` in `app/modules/payslips/schemas.py`.
+ */
+export interface PayslipDeductionSubtotals {
+  paye: string
+  acc_levy: string
+  kiwisaver_employee: string
+  kiwisaver_employer: string
+  student_loan: string
+  child_support: string
+  voluntary: string
+  total: string
+}
+
 export interface Payslip {
   id: string
   org_id: string
@@ -210,6 +228,8 @@ export interface Payslip {
   gross_ytd: string
   /** Decimal serialised as string. */
   net_pay: string
+  /** Per-kind deduction subtotals (PAYE / KiwiSaver / ACC / …). */
+  deduction_subtotals: PayslipDeductionSubtotals
   pdf_file_key: string | null
   emailed_at: string | null
   finalised_at: string | null

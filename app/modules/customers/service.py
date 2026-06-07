@@ -2251,6 +2251,16 @@ async def send_portal_link(
     customer_id: uuid.UUID,
     ip_address: str | None = None,
     base_url: str | None = None,
+    # --- Send Email Modal override set (send-email-modal task 8.6) ---
+    recipients: list[str] | None = None,
+    cc: list[str] | None = None,
+    bcc: list[str] | None = None,
+    subject: str | None = None,
+    body_html: str | None = None,
+    attachments: list[str] | None = None,
+    subject_was_edited: bool = False,
+    body_was_edited: bool = False,
+    override_blocklist: bool = False,
 ) -> dict:
     """Send the customer portal link to the customer's email address.
 
@@ -2258,12 +2268,49 @@ async def send_portal_link(
     token, and an email address on file. Sends the portal URL via the
     platform email infrastructure.
 
-    Requirements: 13.1, 13.2, 13.3, 13.4
+    This function serves two callers:
+
+    1. **Auto-send / non-modal path** (the ``enable_portal`` transition in
+       :func:`update_customer`, and any caller passing no override fields).
+       This path is left EXACTLY as it was: it logs a ``"queued"``
+       notification_log row and dispatches fire-and-forget via the async
+       ``send_email_task``. The default subject/body strings are unchanged so
+       the Send-Email-Modal byte-equivalence property (Property P1, portal_link
+       case) holds.
+
+    2. **Send Email Modal override path** (``POST
+       /api/v2/customers/{id}/send-portal-link`` with an override payload).
+       When ANY override field is set, the send switches to a **direct,
+       synchronous** :func:`send_email` so the endpoint receives a
+       ``SendResult`` and can map ``FailureKind`` → HTTP (R8.5–R8.8). It
+       threads the full override set (recipients/cc/bcc, subject, sanitised
+       body, ``allow_blocklisted``), writes the six notification_log audit
+       columns on success, and raises :class:`EmailSendFailure` on failure.
+       The portal_link surface offers NO attachments (R7.7) — any
+       ``attachments`` token therefore raises
+       :class:`InvalidAttachmentSelection`.
+
+    Requirements: 2.6, 7.6, 8.1, 8.3, 8.4, 8.5, 8.6, 8.7, 8.8, 8.9, 8.10,
+                  11.2, 11.3, 11.5, 16.2
     """
     from app.config import settings
     from app.modules.admin.models import Organisation
     from app.modules.notifications.service import log_email_sent
     from app.tasks.notifications import send_email_task
+
+    # An override call is any invocation that sets at least one Send-Email-Modal
+    # field. When none are set we are on the unchanged auto-send/queued path.
+    _is_override_call = (
+        recipients is not None
+        or cc is not None
+        or bcc is not None
+        or subject is not None
+        or body_html is not None
+        or attachments is not None
+        or subject_was_edited
+        or body_was_edited
+        or override_blocklist
+    )
 
     # Fetch customer
     result = await db.execute(
@@ -2283,8 +2330,10 @@ async def send_portal_link(
     if customer.portal_token is None:
         raise ValueError("Customer does not have a portal token. Enable portal access first.")
 
-    # Validate customer has an email address (Req 13.3)
-    if not customer.email:
+    # Validate customer has an email address (Req 13.3). On the override path
+    # the recipient may instead come from ``recipients``; that path resolves
+    # and validates the recipient below.
+    if not _is_override_call and not customer.email:
         raise ValueError("Customer has no email address on file")
 
     # Fetch org for branding
@@ -2318,6 +2367,145 @@ async def send_portal_link(
         f"Kind regards,\n{org_name}"
     )
 
+    # ------------------------------------------------------------------
+    # Send Email Modal override path — direct synchronous send (R8.x).
+    # ------------------------------------------------------------------
+    if _is_override_call:
+        from app.integrations.email_sender import EmailMessage, send_email
+        from app.integrations.html_sanitise import sanitise_email_html
+        from app.modules.email_compose.service import (
+            EmailSendFailure,
+            InvalidAttachmentSelection,
+            compute_audit_hashes,
+        )
+
+        # The portal_link surface offers no attachments (R7.7). Any token is
+        # therefore invalid; reject a non-empty selection. ``None`` or an empty
+        # list proceeds with no attachments.
+        if attachments:
+            raise InvalidAttachmentSelection("Invalid attachment selection.")
+
+        # Resolve the recipient: recipients[0] wins, else the customer email.
+        _cc_list: list[str] = list(cc) if cc else []
+        _bcc_list: list[str] = list(bcc) if bcc else []
+        recipient_email: str | None = None
+        if recipients:
+            recipient_email = recipients[0]
+            _cc_list = [*recipients[1:], *_cc_list]
+        if not recipient_email:
+            recipient_email = customer.email if customer.email else None
+        if not recipient_email:
+            raise ValueError(
+                "Customer has no email address on file. Provide a recipient."
+            )
+
+        # Subject override or default (R8.1).
+        final_subject = subject if subject is not None else email_subject
+
+        # Body override (server-sanitised) or the default html body (R8.1, R10.1).
+        final_html = (
+            sanitise_email_html(body_html) if body_html is not None else html_body
+        )
+
+        # Audit hashes over the FINAL strings (R11.2, R11.3 / Property P4).
+        _audit_hashes = compute_audit_hashes(final_subject, final_html)
+        _edited_subject_hash = (
+            _audit_hashes["subject_hash"] if subject_was_edited else None
+        )
+        _edited_body_hash = _audit_hashes["body_hash"] if body_was_edited else None
+
+        message = EmailMessage(
+            to_email=recipient_email,
+            to_name=customer_name,
+            subject=final_subject,
+            html_body=final_html,
+            text_body=text_body,
+            attachments=[],
+            cc=_cc_list,
+            bcc=_bcc_list,
+            org_id=org_id,
+        )
+        send_result = await send_email(
+            db, message, allow_blocklisted=override_blocklist
+        )
+
+        if not send_result.success:
+            last_error = send_result.error or "send failed"
+            try:
+                await log_email_sent(
+                    db,
+                    org_id=org_id,
+                    recipient=recipient_email,
+                    template_type="portal_link",
+                    subject=final_subject,
+                    status="failed",
+                    error_message=str(last_error),
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to log portal-link email failure for customer %s",
+                    customer_id,
+                )
+
+            _last_attempt = (
+                send_result.attempts[-1] if send_result.attempts else None
+            )
+            _failure_kind = (
+                _last_attempt.failure_kind if _last_attempt else None
+            )
+            raise EmailSendFailure(
+                _failure_kind,
+                attempts=len(send_result.attempts),
+                error=str(last_error),
+            )
+
+        # Success — write the notification_log row with the six audit columns.
+        try:
+            await log_email_sent(
+                db,
+                org_id=org_id,
+                recipient=recipient_email,
+                template_type="portal_link",
+                subject=final_subject,
+                status="sent",
+                channel="email",
+                sent_at=datetime.now(timezone.utc),
+                provider_key=send_result.provider_key,
+                provider_message_id=send_result.provider_message_id,
+                subject_was_edited=subject_was_edited,
+                body_was_edited=body_was_edited,
+                edited_subject_hash=_edited_subject_hash,
+                edited_body_hash=_edited_body_hash,
+                cc_recipients=_cc_list,
+                bcc_recipients=_bcc_list,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to log portal-link email success for customer %s",
+                customer_id,
+            )
+
+        # Audit log
+        await write_audit_log(
+            session=db,
+            org_id=org_id,
+            user_id=user_id,
+            action="customer.portal_link_sent",
+            entity_type="customer",
+            entity_id=customer_id,
+            before_value=None,
+            after_value={"channel": "email", "has_email": True},
+            ip_address=ip_address,
+        )
+
+        return {
+            "message": "Portal link sent successfully",
+            "recipient": recipient_email,
+        }
+
+    # ------------------------------------------------------------------
+    # Default (non-modal) auto-send path — UNCHANGED queued behaviour.
+    # ------------------------------------------------------------------
     # Log the email and dispatch via the async email task
     log_entry = await log_email_sent(
         db,

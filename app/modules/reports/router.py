@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db_session
 from app.modules.admin.models import Organisation
 from app.modules.auth.rbac import require_role
+from app.modules.email_compose.schemas import StatementEmailOverrideRequest
 from app.modules.reports.export import render_report_csv, render_report_pdf
 from app.modules.reports.schemas import (
     AgedReceivablesResponse,
@@ -40,6 +41,7 @@ from app.modules.reports.schemas import (
     TopServicesResponse,
 )
 from app.modules.reports.service import (
+    email_customer_statement,
     get_aged_receivables,
     get_balance_sheet,
     get_carjam_usage,
@@ -397,6 +399,132 @@ async def customer_statement_report(
     if maybe is not None:
         return maybe
     return CustomerStatementResponse(**data)
+
+
+# ---------------------------------------------------------------------------
+# POST /reports/customer-statement/{id}/email — Email customer statement
+# (Send Email Modal, send-email-modal task 8.5)
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/customer-statement/{customer_id}/email",
+    responses={
+        200: {"description": "Statement emailed"},
+        400: {"description": "Invalid attachment selection"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org role required"},
+        404: {"description": "Customer not found"},
+        413: {"description": "Email too large"},
+        502: {"description": "Email provider authentication failed"},
+        503: {"description": "Delivery temporarily failed"},
+    },
+    summary="Email a customer account statement (Send Email Modal)",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def email_customer_statement_endpoint(
+    customer_id: uuid.UUID,
+    request: Request,
+    payload: StatementEmailOverrideRequest | None = None,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Email the customer account statement (``customer_statement`` surface).
+
+    This is the Send Email Modal "Send Statement" surface (send-email-modal
+    task 8.5). It wraps ``reports.service.email_customer_statement``, which
+    builds the statement defaults via ``get_customer_statement`` and threads
+    the full Send-Email-Modal override set.
+
+    Accepts the Send Email Modal override payload
+    (``recipients`` / ``cc`` / ``bcc`` / ``subject`` / ``body_html`` /
+    ``attachments`` / ``subject_was_edited`` / ``body_was_edited`` /
+    ``override_blocklist``). ``override_blocklist`` is org_admin-gated (R13.5);
+    attachment-token misses map to 400; send failures map their ``failure_kind``
+    to the right HTTP status (R8.5–R8.8); a missing customer maps to 404.
+
+    Requirements: 2.5, 7.6, 8.1, 8.3, 8.4, 8.5, 8.6, 8.7, 8.8, 8.9, 8.10,
+                  11.2, 11.3, 11.5
+    """
+    from app.modules.email_compose.service import (
+        EmailSendFailure,
+        InvalidAttachmentSelection,
+    )
+
+    org_id = _extract_org_id(request)
+    if not org_id:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    recipients = None
+    cc = None
+    bcc = None
+    subject = None
+    body_html = None
+    attachments = None
+    subject_was_edited = False
+    body_was_edited = False
+    override_blocklist = False
+    if payload is not None:
+        recipients = payload.recipients
+        cc = payload.cc
+        bcc = payload.bcc
+        subject = payload.subject
+        body_html = payload.body_html
+        attachments = payload.attachments
+        subject_was_edited = payload.subject_was_edited
+        body_was_edited = payload.body_was_edited
+        override_blocklist = payload.override_blocklist
+
+    # Honour override_blocklist only for org_admin (R13.5).
+    if override_blocklist:
+        role = getattr(request.state, "role", None)
+        if role != "org_admin":
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "detail": "Only an organisation admin can override the "
+                    "bounce blocklist."
+                },
+            )
+
+    try:
+        result = await email_customer_statement(
+            db,
+            org_id=org_id,
+            customer_id=customer_id,
+            base_url=request.headers.get("origin") or None,
+            recipients=recipients,
+            cc=cc,
+            bcc=bcc,
+            subject=subject,
+            body_html=body_html,
+            attachments=attachments,
+            subject_was_edited=subject_was_edited,
+            body_was_edited=body_was_edited,
+            override_blocklist=override_blocklist,
+        )
+    except InvalidAttachmentSelection:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid attachment selection."},
+        )
+    except EmailSendFailure as exc:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    await db.commit()
+
+    return JSONResponse(status_code=200, content={
+        "customer_id": str(result["customer_id"]),
+        "customer_name": result["customer_name"],
+        "recipient_email": result["recipient_email"],
+        "status": result["status"],
+    })
 
 
 # ---------------------------------------------------------------------------

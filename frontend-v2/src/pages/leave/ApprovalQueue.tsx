@@ -31,9 +31,11 @@ import axios from 'axios'
 import {
   approveLeaveRequest,
   listApprovalQueue,
+  listLeaveTypes,
   rejectLeaveRequest,
   type LeaveRequest,
   type LeaveRequestStatus,
+  type LeaveType,
 } from '@/api/leave'
 import { Badge, Button, Modal, Spinner } from '@/components/ui'
 import type { BadgeVariant } from '@/components/ui'
@@ -47,7 +49,25 @@ const TABS: { id: FilterTab; label: string }[] = [
   { id: 'all', label: 'All' },
 ]
 
-const PAGE_SIZE = 50
+const PAGE_SIZE = 200
+
+/** Local YYYY-MM-DD (date-only strings compare lexicographically). */
+function localDateStr(d: Date): string {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+/** Real KPI summary computed from the pending + approved request sets. */
+interface KpiStats {
+  awaiting: number
+  awaitingSoon: number
+  onLeaveToday: number
+  approvedThisMonth: number
+  upcoming: number
+  upcomingHours: number
+}
 
 const STATUS_BADGE: Record<
   LeaveRequestStatus,
@@ -118,6 +138,119 @@ function truncate(text: string | null | undefined, max = 60): string {
   return `${text.slice(0, max - 1)}…`
 }
 
+/* ── Design presentation helpers (LeaveApprovals.html) ── */
+
+/** Initials from a staff name, e.g. "Sina Faleolo" → "SF". */
+function initials(name: string | null): string {
+  return (
+    (name || '?')
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((w) => w[0]?.toUpperCase() ?? '')
+      .join('') || '?'
+  )
+}
+
+/** Stable avatar tint from the name (matches the prototype's row-av tones). */
+const AVATAR_TONES = [
+  { bg: 'var(--accent-soft)', fg: 'var(--accent)' },
+  { bg: 'var(--warn-soft)', fg: 'var(--warn)' },
+  { bg: 'var(--ok-soft)', fg: 'var(--ok)' },
+  { bg: 'var(--purple-soft)', fg: 'var(--purple)' },
+]
+function avatarTone(name: string | null): { bg: string; fg: string } {
+  const s = name || ''
+  let h = 0
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0
+  return AVATAR_TONES[h % AVATAR_TONES.length]
+}
+
+/** Leave-type swatch colour, derived from the type code (no colour in the API). */
+function leaveTypeColor(code: string | null): string {
+  switch ((code || '').toLowerCase()) {
+    case 'annual':
+    case 'annual_leave':
+      return 'var(--accent)'
+    case 'sick':
+    case 'sick_leave':
+      return 'var(--danger)'
+    case 'bereavement':
+      return 'var(--purple)'
+    case 'public_holiday':
+    case 'alternative_holiday':
+    case 'alternative':
+      return 'var(--ok)'
+    case 'family_violence':
+      return 'var(--warn)'
+    default: {
+      // Stable colour for any other/custom leave type, hashed off its code.
+      const palette = ['var(--accent)', 'var(--ok)', 'var(--purple)', 'var(--warn)', 'var(--info)']
+      const s = code || ''
+      let h = 0
+      for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0
+      return palette[h % palette.length]
+    }
+  }
+}
+
+/** "requested today" / "requested 28 May" from an ISO timestamp. */
+function formatRequested(iso: string | null | undefined): string {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  const now = new Date()
+  if (d.toDateString() === now.toDateString()) return 'requested today'
+  return `requested ${d.toLocaleDateString('en-NZ', { day: 'numeric', month: 'short' })}`
+}
+
+/* ── KPI cards (design .kpi) ── */
+
+const ICON_CLOCK = 'M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z'
+const ICON_CAL = 'M8 7V3m8 4V3M3 11h18M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z'
+const ICON_CHECK = 'M20 6L9 17l-5-5'
+
+const KPI_TONES: Record<string, { bg: string; fg: string }> = {
+  amber: { bg: 'var(--warn-soft)', fg: 'var(--warn)' },
+  blue: { bg: 'var(--accent-soft)', fg: 'var(--accent)' },
+  green: { bg: 'var(--ok-soft)', fg: 'var(--ok)' },
+  purple: { bg: 'var(--purple-soft)', fg: 'var(--purple)' },
+}
+
+function KpiCard({
+  label,
+  value,
+  tone,
+  iconPath,
+  delta,
+}: {
+  label: string
+  value: number
+  tone: keyof typeof KPI_TONES
+  iconPath: string
+  delta?: string
+}) {
+  const t = KPI_TONES[tone]
+  return (
+    <div className="rounded-card border border-border bg-card p-5 shadow-card">
+      <div className="flex items-start justify-between">
+        <span className="text-[13px] text-muted">{label}</span>
+        <span
+          className="grid h-8 w-8 place-items-center rounded-[9px]"
+          style={{ background: t.bg, color: t.fg }}
+          aria-hidden="true"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.9} className="h-[18px] w-[18px]">
+            <path d={iconPath} />
+          </svg>
+        </span>
+      </div>
+      <div className="mt-3 text-[28px] font-bold tracking-[-0.02em] text-text">{value.toLocaleString()}</div>
+      {delta && <div className="mt-1 text-[12px] text-muted-2">{delta}</div>}
+    </div>
+  )
+}
+
 interface RejectModalState {
   request: LeaveRequest | null
   notes: string
@@ -142,6 +275,10 @@ export default function ApprovalQueue() {
   const [busyRowId, setBusyRowId] = useState<string | null>(null)
   const [rejectState, setRejectState] = useState<RejectModalState>(EMPTY_REJECT)
   const [refreshKey, setRefreshKey] = useState<number>(0)
+  const [search, setSearch] = useState<string>('')
+  const [typeFilter, setTypeFilter] = useState<string>('') // leave_type_id, '' = all
+  const [leaveTypes, setLeaveTypes] = useState<LeaveType[]>([])
+  const [kpis, setKpis] = useState<KpiStats | null>(null)
 
   const refresh = useCallback(() => setRefreshKey((k) => k + 1), [])
 
@@ -176,6 +313,75 @@ export default function ApprovalQueue() {
       controller.abort()
     }
   }, [activeTab, refreshKey])
+
+  // Leave types — for the "Leave type" filter dropdown (loaded once).
+  useEffect(() => {
+    const controller = new AbortController()
+    listLeaveTypes({ limit: 100 }, controller.signal)
+      .then((res) => {
+        if (!controller.signal.aborted) setLeaveTypes(res.items ?? [])
+      })
+      .catch(() => {
+        /* non-critical — the filter just shows no options. */
+      })
+    return () => controller.abort()
+  }, [])
+
+  // KPI summary — computed from real pending + approved request sets. Refreshes
+  // after every approve/decline (refreshKey). Capped at PAGE_SIZE per status.
+  useEffect(() => {
+    const controller = new AbortController()
+    const load = async () => {
+      try {
+        const [pending, approved] = await Promise.all([
+          listApprovalQueue({ status: 'pending', limit: PAGE_SIZE }, controller.signal),
+          listApprovalQueue({ status: 'approved', limit: PAGE_SIZE }, controller.signal),
+        ])
+        if (controller.signal.aborted) return
+        const now = new Date()
+        const today = localDateStr(now)
+        const in7 = localDateStr(new Date(now.getTime() + 7 * 86400000))
+        const in30 = localDateStr(new Date(now.getTime() + 30 * 86400000))
+        const ym = today.slice(0, 7)
+
+        const pendingItems = pending.items ?? []
+        const approvedItems = approved.items ?? []
+
+        // On leave today — distinct staff whose approved leave spans today.
+        const onLeaveStaff = new Set<string>()
+        let upcoming = 0
+        let upcomingHours = 0
+        let approvedThisMonth = 0
+        for (const r of approvedItems) {
+          if (r.start_date && r.end_date && r.start_date <= today && today <= r.end_date) {
+            onLeaveStaff.add(r.staff_id)
+          }
+          if (r.start_date && r.start_date >= today && r.start_date <= in30) {
+            upcoming += 1
+            upcomingHours += parseFloat(r.hours_requested ?? '') || 0
+          }
+          if ((r.decided_at ?? '').slice(0, 7) === ym) approvedThisMonth += 1
+        }
+
+        const awaitingSoon = pendingItems.filter(
+          (r) => r.start_date && r.start_date >= today && r.start_date <= in7,
+        ).length
+
+        setKpis({
+          awaiting: pending.total ?? pendingItems.length,
+          awaitingSoon,
+          onLeaveToday: onLeaveStaff.size,
+          approvedThisMonth,
+          upcoming,
+          upcomingHours,
+        })
+      } catch {
+        if (!controller.signal.aborted) setKpis(null)
+      }
+    }
+    void load()
+    return () => controller.abort()
+  }, [refreshKey])
 
   const handleApprove = useCallback(
     async (req: LeaveRequest) => {
@@ -218,7 +424,16 @@ export default function ApprovalQueue() {
     }
   }, [rejectState, refresh])
 
-  const filteredItems = useMemo(() => items ?? [], [items])
+  // Client-side staff search + leave-type filter over the loaded page (the
+  // backend approvals endpoint has no leave_type param, so this filters the
+  // fetched rows — matches the design's "Search staff…" + "Leave type" tools).
+  const filteredItems = useMemo(() => {
+    let list = items ?? []
+    const q = search.trim().toLowerCase()
+    if (q) list = list.filter((r) => (r.staff_name ?? '').toLowerCase().includes(q))
+    if (typeFilter) list = list.filter((r) => r.leave_type_id === typeFilter)
+    return list
+  }, [items, search, typeFilter])
 
   const TH =
     'mono border-b border-border px-4 py-3 text-left text-[10.5px] font-medium uppercase tracking-[0.08em] text-muted-2'
@@ -230,40 +445,88 @@ export default function ApprovalQueue() {
           <div className="eyebrow">People · Leave</div>
           <h1>Leave approvals</h1>
           <p className="sub">
-            Review and decide on leave requests submitted by staff.
+            {loading
+              ? 'Review and decide on leave requests submitted by staff.'
+              : `${total.toLocaleString()} ${activeTab === 'all' ? '' : `${activeTab} `}request${total === 1 ? '' : 's'} in this view`}
           </p>
-        </div>
-        <div className="head-actions text-sm text-muted">
-          {(total ?? 0).toLocaleString()} total
         </div>
       </div>
 
-      {/* Tab strip */}
-      <div
-        role="tablist"
-        aria-label="Approval queue filter"
-        className="mb-4 flex flex-wrap gap-1 border-b border-border"
-      >
-        {TABS.map((tab) => {
-          const active = activeTab === tab.id
-          return (
-            <button
-              key={tab.id}
-              role="tab"
-              type="button"
-              aria-selected={active}
-              data-testid={`approval-tab-${tab.id}`}
-              onClick={() => setActiveTab(tab.id)}
-              className={`-mb-px min-h-[44px] border-b-2 px-4 py-2 text-sm font-medium transition-colors ${
-                active
-                  ? 'border-accent text-accent'
-                  : 'border-transparent text-muted hover:text-text'
-              }`}
-            >
-              {tab.label}
-            </button>
-          )
-        })}
+      {/* KPI summary — real counts from the pending + approved sets. */}
+      {kpis && (
+        <div className="mb-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <KpiCard
+            label="Awaiting approval"
+            value={kpis.awaiting}
+            tone="amber"
+            iconPath={ICON_CLOCK}
+            delta={kpis.awaitingSoon > 0 ? `${kpis.awaitingSoon} within 7 days` : undefined}
+          />
+          <KpiCard label="On leave today" value={kpis.onLeaveToday} tone="blue" iconPath={ICON_CAL} />
+          <KpiCard label="Approved this month" value={kpis.approvedThisMonth} tone="green" iconPath={ICON_CHECK} />
+          <KpiCard
+            label="Upcoming (30d)"
+            value={kpis.upcoming}
+            tone="purple"
+            iconPath={ICON_CAL}
+            delta={kpis.upcomingHours > 0 ? `${formatHours(String(kpis.upcomingHours))} total` : undefined}
+          />
+        </div>
+      )}
+
+      {/* Toolbar — segmented status control + staff search + type filter. */}
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <div
+          role="tablist"
+          aria-label="Approval queue filter"
+          className="inline-flex rounded-ctl border border-border bg-canvas p-1"
+        >
+          {TABS.map((tab) => {
+            const active = activeTab === tab.id
+            return (
+              <button
+                key={tab.id}
+                role="tab"
+                type="button"
+                aria-selected={active}
+                data-testid={`approval-tab-${tab.id}`}
+                onClick={() => setActiveTab(tab.id)}
+                className={`min-h-[34px] rounded-[7px] px-3 text-[13px] font-medium transition-colors ${
+                  active ? 'bg-card text-text shadow-card' : 'text-muted hover:text-text'
+                }`}
+              >
+                {tab.label}
+              </button>
+            )
+          })}
+        </div>
+        <div className="flex-1" />
+        <div className="flex h-9 items-center gap-2 rounded-ctl border border-border bg-card px-3 text-muted-2">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-[17px] w-[17px]">
+            <path d="M21 21l-5-5m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+          </svg>
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search staff…"
+            aria-label="Search staff"
+            className="w-44 bg-transparent text-[13.5px] text-text placeholder:text-muted-2 focus:outline-none"
+          />
+        </div>
+        <select
+          value={typeFilter}
+          onChange={(e) => setTypeFilter(e.target.value)}
+          aria-label="Filter by leave type"
+          data-testid="leave-type-filter"
+          className="h-9 rounded-ctl border border-border bg-card px-3 text-[13.5px] text-text focus:border-accent focus:outline-none"
+        >
+          <option value="">All leave types</option>
+          {leaveTypes.map((lt) => (
+            <option key={lt.id} value={lt.id}>
+              {lt.name}
+            </option>
+          ))}
+        </select>
       </div>
 
       {error && (
@@ -299,12 +562,12 @@ export default function ApprovalQueue() {
             <table className="w-full border-collapse text-sm">
               <thead>
                 <tr>
-                  <th scope="col" className={TH}>Staff</th>
-                  <th scope="col" className={TH}>Leave type</th>
-                  <th scope="col" className={TH}>Date range</th>
+                  <th scope="col" className={TH}>Employee</th>
+                  <th scope="col" className={TH}>Type</th>
+                  <th scope="col" className={TH}>Dates</th>
                   <th scope="col" className={`${TH} text-right`}>Hours</th>
-                  <th scope="col" className={TH}>Status</th>
                   <th scope="col" className={TH}>Reason</th>
+                  <th scope="col" className={TH}>Status</th>
                   <th scope="col" className={`${TH} text-right`}>Actions</th>
                 </tr>
               </thead>
@@ -316,38 +579,61 @@ export default function ApprovalQueue() {
                   const isBusy = busyRowId === req.id
                   const errMessage =
                     rowError && rowError.id === req.id ? rowError.message : null
+                  const tone = avatarTone(req.staff_name)
                   return (
                     <tr
                       key={req.id}
                       data-testid={`approval-row-${req.id}`}
                       className="border-b border-border last:border-b-0 hover:bg-canvas"
                     >
-                      <td className="whitespace-nowrap px-4 py-3 text-[13.5px] text-text">
-                        {req.staff_name ?? '—'}
+                      {/* Employee — avatar + name */}
+                      <td className="whitespace-nowrap px-4 py-3">
+                        <div className="flex items-center gap-3">
+                          <span
+                            className="grid h-9 w-9 flex-shrink-0 place-items-center rounded-[10px] text-[12px] font-bold"
+                            style={{ background: tone.bg, color: tone.fg }}
+                            aria-hidden="true"
+                          >
+                            {initials(req.staff_name)}
+                          </span>
+                          <span className="text-[13.5px] font-medium text-text">
+                            {req.staff_name ?? '—'}
+                          </span>
+                        </div>
                       </td>
-                      <td className="whitespace-nowrap px-4 py-3 text-[13.5px] text-text">
+                      {/* Type — colour swatch + name (+ confidential badge) */}
+                      <td className="whitespace-nowrap px-4 py-3">
                         <div className="flex items-center gap-2">
-                          <span>{req.leave_type_name ?? req.leave_type_code ?? '—'}</span>
+                          <span className="inline-flex items-center gap-[7px] text-[13px] font-medium text-text">
+                            <span
+                              className="h-[9px] w-[9px] flex-shrink-0 rounded-[3px]"
+                              style={{ background: leaveTypeColor(req.leave_type_code) }}
+                              aria-hidden="true"
+                            />
+                            {req.leave_type_name ?? req.leave_type_code ?? '—'}
+                          </span>
                           {isConfidential && (
-                            <Badge
-                              variant="info"
-                              className="text-[10px] uppercase"
-                            >
-                              <span data-testid={`confidential-badge-${req.id}`}>
-                                Confidential
-                              </span>
+                            <Badge variant="info" className="text-[10px] uppercase">
+                              <span data-testid={`confidential-badge-${req.id}`}>Confidential</span>
                             </Badge>
                           )}
                         </div>
                       </td>
-                      <td className="mono whitespace-nowrap px-4 py-3 text-[13px] text-muted">
-                        {formatDateRange(req.start_date, req.end_date)}
-                      </td>
-                      <td className="mono whitespace-nowrap px-4 py-3 text-right text-[13px] text-text">
-                        {formatHours(req.hours_requested)}
-                      </td>
+                      {/* Dates — range + requested-on */}
                       <td className="whitespace-nowrap px-4 py-3">
-                        <Badge variant={status.variant}>{status.label}</Badge>
+                        <div className="flex flex-col">
+                          <span className="text-[13.5px] font-medium text-text">
+                            {formatDateRange(req.start_date, req.end_date)}
+                          </span>
+                          {formatRequested(req.created_at) && (
+                            <span className="mono text-[12px] text-muted-2">
+                              {formatRequested(req.created_at)}
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="mono whitespace-nowrap px-4 py-3 text-right text-[13px] font-semibold text-text">
+                        {formatHours(req.hours_requested)}
                       </td>
                       <td
                         className="max-w-[16rem] px-4 py-3 text-[13px] text-muted"
@@ -357,9 +643,21 @@ export default function ApprovalQueue() {
                           ? <span className="italic text-muted-2">Hidden</span>
                           : truncate(req.reason, 60) || '—'}
                       </td>
+                      <td className="whitespace-nowrap px-4 py-3">
+                        <Badge variant={status.variant}>{status.label}</Badge>
+                      </td>
                       <td className="whitespace-nowrap px-4 py-3 text-right">
                         {isPending ? (
                           <div className="flex items-center justify-end gap-2">
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              data-testid={`reject-${req.id}`}
+                              onClick={() => openRejectModal(req)}
+                              disabled={isBusy}
+                            >
+                              Decline
+                            </Button>
                             <Button
                               size="sm"
                               data-testid={`approve-${req.id}`}
@@ -369,24 +667,12 @@ export default function ApprovalQueue() {
                             >
                               Approve
                             </Button>
-                            <Button
-                              size="sm"
-                              variant="danger"
-                              data-testid={`reject-${req.id}`}
-                              onClick={() => openRejectModal(req)}
-                              disabled={isBusy}
-                            >
-                              Reject
-                            </Button>
                           </div>
                         ) : (
                           <span className="text-xs text-muted-2">—</span>
                         )}
                         {errMessage && (
-                          <p
-                            role="alert"
-                            className="mt-1 text-xs text-danger"
-                          >
+                          <p role="alert" className="mt-1 text-xs text-danger">
                             {errMessage}
                           </p>
                         )}
@@ -397,17 +683,25 @@ export default function ApprovalQueue() {
               </tbody>
             </table>
           </div>
+          {/* Pagination info (design .pagination — count only; the queue is a
+              single page of up to PAGE_SIZE, so no page controls are shown). */}
+          <div className="flex items-center justify-between border-t border-border px-4 py-3 text-[13px] text-muted">
+            <span>
+              Showing <span className="mono">{filteredItems.length}</span>{' '}
+              {activeTab === 'all' ? '' : `${activeTab} `}request{filteredItems.length === 1 ? '' : 's'}
+            </span>
+          </div>
         </section>
       )}
 
       <Modal
         open={rejectState.request !== null}
         onClose={closeRejectModal}
-        title="Reject leave request"
+        title="Decline leave request"
       >
         <div className="space-y-3">
           <p className="text-sm text-muted">
-            Add an optional note explaining why this request is being rejected.
+            Add an optional note explaining why this request is being declined.
             The staff member will see this on their leave history.
           </p>
           <label className="block text-[12.5px] font-medium text-text">
@@ -448,7 +742,7 @@ export default function ApprovalQueue() {
               loading={rejectState.submitting}
               disabled={rejectState.submitting}
             >
-              Reject request
+              Decline request
             </Button>
           </div>
         </div>

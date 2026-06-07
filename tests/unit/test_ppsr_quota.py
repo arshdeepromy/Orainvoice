@@ -720,3 +720,128 @@ class TestPpsrCounterResetSharedBoundary:
 # validate the conditional-reset contract in isolation; the E2E run
 # verifies it against a real Postgres + Stripe-test setup.
 # ---------------------------------------------------------------------------
+
+
+# ===========================================================================
+# 4. Owner-check-only search — PPSR lookup must be skipped
+# ===========================================================================
+#
+# Regression guard: when the caller asks ONLY for an ownership check (no
+# money-owing / warnings / FWS / hidden-plate / owner-reveal), the service
+# must NOT call ``lookup_ppsr`` at all — otherwise an owner-check-only
+# search needlessly consumes the PPSR budget and can hit the PPSR monthly
+# cap, surfacing as ``carjam_upstream_error``.
+
+
+from app.integrations.carjam import CarjamOwnerCheckResponse
+
+
+class _FakeCarjamClientWithOwnerCheck:
+    """Tracks both ``lookup_ppsr`` and ``lookup_owner_check`` calls."""
+
+    def __init__(self) -> None:
+        self.ppsr_calls: list[dict] = []
+        self.owner_check_calls: list[dict] = []
+
+    async def lookup_ppsr(self, rego: str, **kwargs: Any) -> CarjamPpsrResponse:
+        self.ppsr_calls.append({"rego": rego, **kwargs})
+        return _carjam_response(rego=rego)
+
+    async def lookup_owner_check(
+        self, rego: str, **kwargs: Any
+    ) -> CarjamOwnerCheckResponse:
+        self.owner_check_calls.append({"rego": rego, **kwargs})
+        return CarjamOwnerCheckResponse(
+            rego=rego,
+            check_type=kwargs.get("check_type", "person_names"),
+            match=True,
+            ref="OC123",
+            charges_cents=155,
+            raw_response="{}",
+            requested_options={},
+        )
+
+
+class TestOwnerCheckOnlySkipsPpsr:
+    @pytest.mark.asyncio
+    async def test_owner_check_only_does_not_call_lookup_ppsr(
+        self, patched_module_enabled, patched_carjam_client_factory,
+    ):
+        resets_at = datetime.now(timezone.utc) + timedelta(days=15)
+        db = _FakeDB(
+            carjam_config=_make_carjam_config_row(),
+            quota_row=(0, 0, resets_at, 10, 0),
+        )
+        _, set_client = patched_carjam_client_factory
+        fake = _FakeCarjamClientWithOwnerCheck()
+        set_client(fake)
+        user = _make_user()
+        svc = PpsrService(db, _FakeRedis())
+
+        result = await svc.search(
+            org_id=db.org_id,
+            user_id=user.id,
+            current_user=user,
+            rego="ABC123",
+            options=PpsrSearchOptions(
+                owner_check_type="person_names",
+                owner_last_name="Smith",
+                owner_first_name="Jane",
+            ),
+        )
+
+        # PPSR lookup must NOT have fired — only the owner-check call.
+        assert fake.ppsr_calls == []
+        assert len(fake.owner_check_calls) == 1
+        assert result.owner_check_match is True
+        assert result.owner_check_type == "person_names"
+
+        # Only the owner-check counter is bumped — never the PPSR counter.
+        org_updates = [
+            s for s in db.update_statements
+            if _update_target_table(s) == "organisations"
+        ]
+        assert len(org_updates) == 1
+        cols = _update_columns(org_updates[0])
+        assert "owner_check_lookups_this_month" in cols
+        assert "ppsr_lookups_this_month" not in cols
+
+    @pytest.mark.asyncio
+    async def test_owner_check_with_money_owing_calls_both(
+        self, patched_module_enabled, patched_carjam_client_factory,
+    ):
+        resets_at = datetime.now(timezone.utc) + timedelta(days=15)
+        db = _FakeDB(
+            carjam_config=_make_carjam_config_row(),
+            quota_row=(0, 0, resets_at, 10, 0),
+        )
+        _, set_client = patched_carjam_client_factory
+        fake = _FakeCarjamClientWithOwnerCheck()
+        set_client(fake)
+        user = _make_user()
+        svc = PpsrService(db, _FakeRedis())
+
+        await svc.search(
+            org_id=db.org_id,
+            user_id=user.id,
+            current_user=user,
+            rego="ABC123",
+            options=PpsrSearchOptions(
+                include_money_owing=True,
+                owner_check_type="company",
+                owner_company_name="Acme Ltd",
+            ),
+        )
+
+        # Both products fire when both are requested.
+        assert len(fake.ppsr_calls) == 1
+        assert len(fake.owner_check_calls) == 1
+
+        cols = _update_columns(
+            [
+                s for s in db.update_statements
+                if _update_target_table(s) == "organisations"
+            ][0]
+        )
+        assert "ppsr_lookups_this_month" in cols
+        assert "owner_check_lookups_this_month" in cols

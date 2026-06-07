@@ -192,7 +192,7 @@ function QuotaStrip({ refreshKey, onQuotaChange }: QuotaStripProps) {
                 PPSR checks:{' '}
                 <span
                   className={`mono ${
-                    exhausted ? 'text-danger' : 'text-text'
+                    exhausted ? 'text-warn' : 'text-text'
                   }`}
                   data-testid="ppsr-quota-counter"
                 >
@@ -251,6 +251,7 @@ function QuotaStrip({ refreshKey, onQuotaChange }: QuotaStripProps) {
 
 interface SearchFormState {
   rego: string
+  include_money_owing: boolean
   include_warnings: boolean
   include_fws: boolean
   check_hidden_plates: boolean
@@ -258,12 +259,20 @@ interface SearchFormState {
   include_ownership_history: boolean
   s241_purpose: string
   force_refresh: boolean
+  // Ownership check (CarJam owner_check)
+  ownership_check: boolean
+  owner_check_type: 'person_names' | 'person_dl' | 'company'
+  owner_last_name: string
+  owner_first_name: string
+  owner_dob: string
+  owner_driver_licence: string
+  owner_company_name: string
 }
 
 interface SearchFormProps {
   initialRego?: string
   loading: boolean
-  /** Disabled by the parent when quota.used >= quota.included. */
+  /** True when monthly included quota is used; lookups still proceed and are billed per check. */
   quotaExhausted: boolean
   /** From CarJam config — gates the owner-lookup checkboxes. */
   ownerLookupsEnabled: boolean
@@ -278,13 +287,21 @@ function defaultFormState(
 ): SearchFormState {
   return {
     rego: normaliseRego(initialRego ?? ''),
-    include_warnings: true,
+    include_money_owing: false,
+    include_warnings: false,
     include_fws: false,
     check_hidden_plates: false,
     include_current_owner: false,
     include_ownership_history: false,
     s241_purpose: s241Default ?? '',
     force_refresh: false,
+    ownership_check: false,
+    owner_check_type: 'person_names',
+    owner_last_name: '',
+    owner_first_name: '',
+    owner_dob: '',
+    owner_driver_licence: '',
+    owner_company_name: '',
   }
 }
 
@@ -339,18 +356,36 @@ function SearchForm({
   void ownerCheckboxesDisabled
   void ownerTooltip
 
+  // Ownership-check validity: the per-type required fields must be present
+  // before the search can run (mirrors the CarJam owner_check contract).
+  const ownerCheckValid = (() => {
+    if (!form.ownership_check) return true
+    if (form.owner_check_type === 'company') {
+      return form.owner_company_name.trim().length > 0
+    }
+    if (form.owner_check_type === 'person_dl') {
+      return form.owner_driver_licence.trim().length > 0
+    }
+    // person_names — last name required + (first name OR dob)
+    return (
+      form.owner_last_name.trim().length > 0 &&
+      (form.owner_first_name.trim().length > 0 ||
+        form.owner_dob.trim().length > 0)
+    )
+  })()
+
   const submitDisabled =
     loading ||
-    quotaExhausted ||
     !REGO_PATTERN.test(form.rego) ||
-    (ownerSectionVisible && form.s241_purpose.trim().length === 0)
+    (ownerSectionVisible && form.s241_purpose.trim().length === 0) ||
+    !ownerCheckValid
 
-  const submitTooltip = quotaExhausted
-    ? 'PPSR quota exhausted. Ask your org admin to grant more in your subscription plan.'
-    : !REGO_PATTERN.test(form.rego)
-      ? 'Enter a valid NZ rego (1-8 letters / digits).'
-      : ownerSectionVisible && form.s241_purpose.trim().length === 0
-        ? 'Owner lookups require an s241 purpose code.'
+  const submitTooltip = !REGO_PATTERN.test(form.rego)
+    ? 'Enter a valid NZ rego (1-8 letters / digits).'
+    : ownerSectionVisible && form.s241_purpose.trim().length === 0
+      ? 'Owner lookups require an s241 purpose code.'
+      : !ownerCheckValid
+        ? 'Complete the ownership-check fields before running the search.'
         : ''
 
   const handleSubmit = useCallback(
@@ -364,6 +399,7 @@ function SearchForm({
       setRegoError(null)
       const payload: PpsrSearchRequest = {
         rego: cleanRego,
+        include_money_owing: form.include_money_owing,
         include_warnings: form.include_warnings,
         include_fws: form.include_fws,
         check_hidden_plates: form.check_hidden_plates,
@@ -373,6 +409,18 @@ function SearchForm({
           ? form.s241_purpose.trim() || null
           : null,
         force_refresh: form.force_refresh,
+      }
+      if (form.ownership_check) {
+        payload.owner_check_type = form.owner_check_type
+        if (form.owner_check_type === 'company') {
+          payload.owner_company_name = form.owner_company_name.trim()
+        } else if (form.owner_check_type === 'person_dl') {
+          payload.owner_driver_licence = form.owner_driver_licence.trim()
+        } else {
+          payload.owner_last_name = form.owner_last_name.trim()
+          payload.owner_first_name = form.owner_first_name.trim() || null
+          payload.owner_dob = form.owner_dob.trim() || null
+        }
       }
       onSearch(payload)
     },
@@ -442,22 +490,21 @@ function SearchForm({
             Include
           </legend>
 
-          {/* Money owing — always on, disabled */}
+          {/* Money owing */}
           <label className="inline-flex items-start gap-2 text-sm text-muted">
             <input
               type="checkbox"
-              checked
-              disabled
-              aria-disabled
-              className="mt-0.5 h-4 w-4 rounded border-border text-accent focus:ring-accent disabled:opacity-60"
+              checked={form.include_money_owing}
+              onChange={(e) =>
+                setForm((prev) => ({
+                  ...prev,
+                  include_money_owing: e.target.checked,
+                }))
+              }
+              className="mt-0.5 h-4 w-4 rounded border-border text-accent focus:ring-accent"
               data-testid="ppsr-include-money-owing"
             />
-            <span>
-              Money owing{' '}
-              <span className="text-xs text-muted-2">
-                (always on)
-              </span>
-            </span>
+            <span>Money owing</span>
           </label>
 
           {/* Warnings & recalls */}
@@ -517,45 +564,217 @@ function SearchForm({
             </span>
           </label>
 
-          {/* Current owner */}
-          <label
-            className="inline-flex items-start gap-2 text-sm cursor-not-allowed text-muted-2"
-          >
+          {/* Ownership check (CarJam owner_check) */}
+          <label className="inline-flex items-start gap-2 text-sm text-muted">
             <input
               type="checkbox"
-              checked={false}
-              disabled
-              className="mt-0.5 h-4 w-4 rounded border-border text-accent focus:ring-accent disabled:opacity-60"
-              data-testid="ppsr-include-current-owner"
+              checked={form.ownership_check}
+              onChange={(e) =>
+                setForm((prev) => ({
+                  ...prev,
+                  ownership_check: e.target.checked,
+                }))
+              }
+              className="mt-0.5 h-4 w-4 rounded border-border text-accent focus:ring-accent"
+              data-testid="ppsr-include-ownership-check"
             />
             <span>
-              Current owner
-              <span className="ml-1 text-xs text-muted-2">
-                — Not available
-              </span>
-            </span>
-          </label>
-
-          {/* Ownership history */}
-          <label
-            className="inline-flex items-start gap-2 text-sm cursor-not-allowed text-muted-2"
-          >
-            <input
-              type="checkbox"
-              checked={false}
-              disabled
-              className="mt-0.5 h-4 w-4 rounded border-border text-accent focus:ring-accent disabled:opacity-60"
-              data-testid="ppsr-include-ownership-history"
-            />
-            <span>
-              Ownership history
-              <span className="ml-1 text-xs text-muted-2">
-                — Not available
+              Ownership check{' '}
+              <span className="text-xs text-muted-2">
+                (verify registered owner)
               </span>
             </span>
           </label>
         </fieldset>
       </div>
+
+      {/* Ownership-check options — only when the box is ticked --------- */}
+      {form.ownership_check && (
+        <fieldset
+          className="mt-4 flex flex-col gap-3 rounded-ctl border border-border bg-canvas p-4"
+          data-testid="ppsr-ownership-check-options"
+        >
+          <legend className="px-1 text-sm font-medium text-text">
+            Belongs to
+          </legend>
+
+          <label className="inline-flex items-start gap-2 text-sm text-muted">
+            <input
+              type="radio"
+              name="owner-check-type"
+              checked={form.owner_check_type === 'person_names'}
+              onChange={() =>
+                setForm((prev) => ({
+                  ...prev,
+                  owner_check_type: 'person_names',
+                }))
+              }
+              className="mt-0.5 h-4 w-4 border-border text-accent focus:ring-accent"
+              data-testid="ppsr-owner-type-person-names"
+            />
+            <span>
+              a Person and I know the Last Name and either First Name or Date
+              of Birth of
+            </span>
+          </label>
+
+          <label className="inline-flex items-start gap-2 text-sm text-muted">
+            <input
+              type="radio"
+              name="owner-check-type"
+              checked={form.owner_check_type === 'person_dl'}
+              onChange={() =>
+                setForm((prev) => ({
+                  ...prev,
+                  owner_check_type: 'person_dl',
+                }))
+              }
+              className="mt-0.5 h-4 w-4 border-border text-accent focus:ring-accent"
+              data-testid="ppsr-owner-type-person-dl"
+            />
+            <span>a Person and I know the Driver&apos;s Licence</span>
+          </label>
+
+          <label className="inline-flex items-start gap-2 text-sm text-muted">
+            <input
+              type="radio"
+              name="owner-check-type"
+              checked={form.owner_check_type === 'company'}
+              onChange={() =>
+                setForm((prev) => ({ ...prev, owner_check_type: 'company' }))
+              }
+              className="mt-0.5 h-4 w-4 border-border text-accent focus:ring-accent"
+              data-testid="ppsr-owner-type-company"
+            />
+            <span>a Company</span>
+          </label>
+
+          {/* Dynamic per-type fields ---------------------------------- */}
+          {form.owner_check_type === 'person_names' && (
+            <div className="mt-1 flex flex-col gap-3">
+              <div className="flex flex-col gap-1">
+                <label
+                  htmlFor="ppsr-owner-last-name"
+                  className="text-sm font-medium text-text"
+                >
+                  Last Name
+                </label>
+                <input
+                  id="ppsr-owner-last-name"
+                  type="text"
+                  value={form.owner_last_name}
+                  onChange={(e) =>
+                    setForm((prev) => ({
+                      ...prev,
+                      owner_last_name: e.target.value,
+                    }))
+                  }
+                  placeholder="Last Name required"
+                  data-testid="ppsr-owner-last-name"
+                  className="h-10 min-h-[44px] w-full rounded-ctl border border-border bg-card px-3 py-2 text-sm text-text shadow-card placeholder:text-muted-2 focus:outline-none focus:ring-2 focus:ring-accent"
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label
+                  htmlFor="ppsr-owner-first-name"
+                  className="text-sm font-medium text-text"
+                >
+                  First Name
+                </label>
+                <input
+                  id="ppsr-owner-first-name"
+                  type="text"
+                  value={form.owner_first_name}
+                  onChange={(e) =>
+                    setForm((prev) => ({
+                      ...prev,
+                      owner_first_name: e.target.value,
+                    }))
+                  }
+                  placeholder="Please specify at least first name or date of birth in addition to last name."
+                  data-testid="ppsr-owner-first-name"
+                  className="h-10 min-h-[44px] w-full rounded-ctl border border-border bg-card px-3 py-2 text-sm text-text shadow-card placeholder:text-muted-2 focus:outline-none focus:ring-2 focus:ring-accent"
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label
+                  htmlFor="ppsr-owner-dob"
+                  className="text-sm font-medium text-text"
+                >
+                  Date of Birth
+                </label>
+                <input
+                  id="ppsr-owner-dob"
+                  type="date"
+                  value={form.owner_dob}
+                  onChange={(e) =>
+                    setForm((prev) => ({
+                      ...prev,
+                      owner_dob: e.target.value,
+                    }))
+                  }
+                  data-testid="ppsr-owner-dob"
+                  className="h-10 min-h-[44px] w-full rounded-ctl border border-border bg-card px-3 py-2 text-sm text-text shadow-card placeholder:text-muted-2 focus:outline-none focus:ring-2 focus:ring-accent"
+                />
+                <p className="text-xs text-muted-2">
+                  Specify at least the first name or the date of birth in
+                  addition to the last name.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {form.owner_check_type === 'person_dl' && (
+            <div className="mt-1 flex flex-col gap-1">
+              <label
+                htmlFor="ppsr-owner-dl"
+                className="text-sm font-medium text-text"
+              >
+                Driver&apos;s Licence
+              </label>
+              <input
+                id="ppsr-owner-dl"
+                type="text"
+                value={form.owner_driver_licence}
+                onChange={(e) =>
+                  setForm((prev) => ({
+                    ...prev,
+                    owner_driver_licence: e.target.value,
+                  }))
+                }
+                placeholder="Driver's Licence number required"
+                data-testid="ppsr-owner-dl"
+                className="mono h-10 min-h-[44px] w-full rounded-ctl border border-border bg-card px-3 py-2 text-sm uppercase text-text shadow-card placeholder:text-muted-2 focus:outline-none focus:ring-2 focus:ring-accent"
+              />
+            </div>
+          )}
+
+          {form.owner_check_type === 'company' && (
+            <div className="mt-1 flex flex-col gap-1">
+              <label
+                htmlFor="ppsr-owner-company"
+                className="text-sm font-medium text-text"
+              >
+                Company Name
+              </label>
+              <input
+                id="ppsr-owner-company"
+                type="text"
+                value={form.owner_company_name}
+                onChange={(e) =>
+                  setForm((prev) => ({
+                    ...prev,
+                    owner_company_name: e.target.value,
+                  }))
+                }
+                placeholder="Company name required"
+                data-testid="ppsr-owner-company"
+                className="h-10 min-h-[44px] w-full rounded-ctl border border-border bg-card px-3 py-2 text-sm text-text shadow-card placeholder:text-muted-2 focus:outline-none focus:ring-2 focus:ring-accent"
+              />
+            </div>
+          )}
+        </fieldset>
+      )}
 
       {/* s241_purpose — only visible when an owner section is checked */}
       {ownerSectionVisible && (
@@ -619,8 +838,8 @@ function SearchForm({
           {loading ? 'Searching…' : 'Run search'}
         </button>
         {quotaExhausted && (
-          <span className="text-xs text-danger">
-            PPSR quota exhausted for this month.
+          <span className="text-xs text-warn">
+            Monthly PPSR quota used — further lookups are billed per check.
           </span>
         )}
       </div>

@@ -133,6 +133,15 @@ class EmailMessage:
     from_name: str | None = None  # override provider-level from_name
     reply_to: str | None = None  # override provider-level reply-to
     attachments: list[EmailAttachment] = field(default_factory=list)
+    #: Carbon-copy recipients. Rendered in the visible ``Cc:`` header
+    #: (SMTP) / provider ``cc`` array (REST). Empty by default so existing
+    #: callers are byte-for-byte unaffected.
+    cc: list[str] = field(default_factory=list)
+    #: Blind-carbon-copy recipients. NEVER rendered in any visible header:
+    #: on SMTP they are passed only as envelope ``RCPT TO`` addresses, and
+    #: on the REST transports they go in the provider's dedicated ``bcc``
+    #: field. Empty by default so existing callers are unaffected.
+    bcc: list[str] = field(default_factory=list)
     org_id: uuid.UUID | None = None
 
 
@@ -299,6 +308,128 @@ def _split_url_token(token: str) -> tuple[str | None, str, str]:
     return rest, leading, trailing
 
 
+def _render_signature_block(signature_html: str | None) -> str:
+    """Render the optional signature block exactly as the transactional
+    document body does.
+
+    Centralised here so the full-document render
+    (``render_transactional_html``) and the editable inner-body fragment
+    (``render_body_fragment_html``) share one definition of the signature
+    markup and can never drift. Returns an empty string when there is no
+    signature, otherwise a thin ``<hr>`` rule followed by the (already
+    trusted / pre-escaped) signature HTML.
+    """
+    sig_html = (signature_html or "").strip()
+    if not sig_html:
+        return ""
+    return f'<hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0">{sig_html}'
+
+
+def _render_cta_block(cta_url: str | None, cta_label: str | None) -> str:
+    """Render the optional call-to-action button block for the FULL
+    transactional document (the sent email).
+
+    This is the styled ``<table>`` button + "Or copy this link" fallback.
+    It is document-only presentation: rich-text editors (TipTap StarterKit)
+    have no table node, so the editable fragment uses
+    :func:`_render_cta_fragment` (plain anchors) instead — the accepted
+    "styled button in the email vs plain link in the editor" difference.
+    """
+    if not (cta_url and cta_url.strip()):
+        return ""
+    _cta_label = _escape_html(cta_label or "Pay Now")
+    _cta_href = _escape_html(cta_url.strip())
+    return (
+        '<table role="presentation" cellpadding="0" cellspacing="0" '
+        'style="margin:24px 0">'
+        '<tr><td style="border-radius:6px;background:#2563eb" align="center">'
+        f'<a href="{_cta_href}" target="_blank" '
+        'style="display:inline-block;padding:14px 32px;'
+        'font-size:16px;font-weight:600;color:#ffffff;'
+        'text-decoration:none;border-radius:6px;'
+        f'background:#2563eb">{_cta_label}</a>'
+        '</td></tr></table>'
+        f'<p style="margin:8px 0;font-size:12px;color:#6b7280">'
+        f'Or copy this link: '
+        f'<a href="{_cta_href}" style="color:#2563eb;word-break:break-all">'
+        f'{_cta_href}</a></p>'
+    )
+
+
+def _render_cta_fragment(cta_url: str | None, cta_label: str | None) -> str:
+    """Render the call-to-action for the EDITABLE inner-body fragment.
+
+    Unlike :func:`_render_cta_block` (a styled ``<table>`` button that the
+    rich-text editor cannot represent), this uses plain ``<p>``/``<a>``
+    markup that round-trips cleanly through TipTap StarterKit. It is what
+    the user sees and can edit in the composer, and — because the send
+    path dispatches an edited fragment as-is — what is sent when the body
+    is edited. The default (unedited) send still regenerates the styled
+    button via :func:`_render_cta_block`, so the link is never lost.
+    """
+    if not (cta_url and cta_url.strip()):
+        return ""
+    _cta_label = _escape_html(cta_label or "Pay Now")
+    _cta_href = _escape_html(cta_url.strip())
+    return (
+        f'<p style="margin:16px 0 8px 0">'
+        f'<a href="{_cta_href}" style="color:#2563eb;font-weight:600">'
+        f'{_cta_label}</a></p>'
+        f'<p style="margin:0 0 16px 0;font-size:12px;color:#6b7280">'
+        f'Or copy this link: '
+        f'<a href="{_cta_href}" style="color:#2563eb;word-break:break-all">'
+        f'{_cta_href}</a></p>'
+    )
+
+
+def render_body_fragment_html(
+    text_body: str,
+    *,
+    signature_html: str | None = None,
+    cta_url: str | None = None,
+    cta_label: str | None = None,
+) -> str:
+    """Render ONLY the inner, editable email body fragment.
+
+    This is the content a user actually authors and edits in the
+    Send-Email-Modal rich-text editor: the ``<p>`` body paragraphs
+    (produced by :func:`_text_to_paragraphs_html`), the optional CTA
+    button block (via :func:`_render_cta_block`), then the optional
+    signature block (the same ``<hr>`` + signature markup the full
+    document uses, via :func:`_render_signature_block`).
+
+    It deliberately contains NO document chrome (``<!DOCTYPE>``,
+    ``<html>``, ``<head>``, ``<title>``, ``<body>``, ``<div>``) — that is
+    the subject-leak the bugfix removed. But it DOES include the CTA
+    button and signature, because those are part of what the user sees in
+    the editor and part of what an edited body sends (the send path
+    dispatches an edited fragment as-is, so the CTA must live in the
+    fragment or it would be lost on edit). Because
+    ``render_transactional_html`` sources its paragraphs, CTA, and
+    signature from these SAME helpers, the editable fragment and the sent
+    document body can never drift.
+
+    Args:
+        text_body: Plain-text email body. Newline handling matches
+            :func:`_text_to_paragraphs_html` (blank line ⇒ new ``<p>``,
+            single newline ⇒ ``<br>``).
+        signature_html: Optional already-trusted, pre-escaped signature
+            HTML rendered after a thin ``<hr>``.
+        cta_url: Optional URL for a call-to-action button. When present,
+            the styled button + "Or copy this link" fallback are included.
+        cta_label: Label text for the CTA button (default: "Pay Now").
+
+    Returns:
+        The inner-body HTML fragment (may be an empty string when the
+        body, CTA, and signature are all empty).
+    """
+    return (
+        f"{_text_to_paragraphs_html(text_body or '')}"
+        f"{_render_cta_fragment(cta_url, cta_label)}"
+        f"{_render_signature_block(signature_html)}"
+    )
+
+
 def render_transactional_html(
     text_body: str,
     *,
@@ -355,30 +486,19 @@ def render_transactional_html(
     Returns:
         A complete HTML document string.
     """
+    # Body paragraphs and the signature block come from the SAME helpers
+    # that produce the editable inner-body fragment
+    # (``render_body_fragment_html`` / ``_render_signature_block``), so the
+    # document body and the editable fragment can never drift. The CTA
+    # button is document-only chrome and is inserted between the paragraphs
+    # and the signature below, preserving the historical output ordering.
     body_html = _text_to_paragraphs_html(text_body or "")
-    sig_html = (signature_html or "").strip()
-    sig_block = f'<hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0">{sig_html}' if sig_html else ""
+    sig_block = _render_signature_block(signature_html)
 
-    # CTA button block — styled for maximum email client compatibility
-    cta_block = ""
-    if cta_url and cta_url.strip():
-        _cta_label = _escape_html(cta_label or "Pay Now")
-        _cta_href = _escape_html(cta_url.strip())
-        cta_block = (
-            '<table role="presentation" cellpadding="0" cellspacing="0" '
-            'style="margin:24px 0">'
-            '<tr><td style="border-radius:6px;background:#2563eb" align="center">'
-            f'<a href="{_cta_href}" target="_blank" '
-            'style="display:inline-block;padding:14px 32px;'
-            'font-size:16px;font-weight:600;color:#ffffff;'
-            'text-decoration:none;border-radius:6px;'
-            f'background:#2563eb">{_cta_label}</a>'
-            '</td></tr></table>'
-            f'<p style="margin:8px 0;font-size:12px;color:#6b7280">'
-            f'Or copy this link: '
-            f'<a href="{_cta_href}" style="color:#2563eb;word-break:break-all">'
-            f'{_cta_href}</a></p>'
-        )
+    # CTA button block — styled for maximum email client compatibility.
+    # Sourced from the SAME helper the editable fragment uses so the two
+    # can never drift.
+    cta_block = _render_cta_block(cta_url, cta_label)
 
     title = _escape_html(subject) if subject else "Notification"
     doc = (
@@ -890,6 +1010,13 @@ async def _dispatch_brevo_rest(
         "to": [recipient],
         "subject": message.subject,
     }
+    # Brevo transactional API accepts top-level ``cc``/``bcc`` arrays of
+    # ``{email, name}`` objects. Only include them when non-empty so the
+    # default (no cc/bcc) payload is byte-for-byte unchanged.
+    if message.cc:
+        payload["cc"] = [{"email": addr} for addr in message.cc]
+    if message.bcc:
+        payload["bcc"] = [{"email": addr} for addr in message.bcc]
     if message.html_body:
         payload["htmlContent"] = message.html_body
     if message.text_body:
@@ -1033,6 +1160,13 @@ async def _dispatch_sendgrid_rest(
     if message.to_name:
         recipient["name"] = message.to_name
     personalization["to"] = [recipient]
+    # SendGrid v3 puts cc/bcc inside the personalization object as arrays
+    # of ``{email}`` objects. Only include them when non-empty so the
+    # default payload is byte-for-byte unchanged.
+    if message.cc:
+        personalization["cc"] = [{"email": addr} for addr in message.cc]
+    if message.bcc:
+        personalization["bcc"] = [{"email": addr} for addr in message.bcc]
     if message.subject:
         personalization["subject"] = message.subject
 
@@ -1209,6 +1343,12 @@ async def _dispatch_resend_rest(
         "to": [message.to_email],
         "subject": message.subject,
     }
+    # Resend accepts top-level ``cc``/``bcc`` arrays of address strings.
+    # Only include them when non-empty so the default payload is unchanged.
+    if message.cc:
+        payload["cc"] = list(message.cc)
+    if message.bcc:
+        payload["bcc"] = list(message.bcc)
     if message.html_body:
         payload["html"] = message.html_body
     if message.text_body:
@@ -1344,6 +1484,12 @@ def _build_mime_message(
         outer["To"] = f'"{message.to_name}" <{message.to_email}>'
     else:
         outer["To"] = message.to_email
+    # Cc recipients are visible to all recipients, so they go in the
+    # ``Cc:`` header. Bcc recipients are deliberately NOT added to any
+    # header here — they are passed only as envelope ``RCPT TO`` addresses
+    # by ``_dispatch_smtp`` so they stay private (blind).
+    if message.cc:
+        outer["Cc"] = ", ".join(message.cc)
     outer["Subject"] = message.subject
     if reply_to:
         outer["Reply-To"] = reply_to
@@ -1488,7 +1634,12 @@ async def _dispatch_smtp(
         try:
             if username and password:
                 server.login(username, password)
-            server.sendmail(from_email, [message.to_email], raw_payload)
+            # Envelope recipients = To + Cc + Bcc. Bcc appears only here
+            # (in the SMTP RCPT TO list), never in a visible header, so it
+            # stays blind. When cc/bcc are empty this is exactly the
+            # previous single-recipient list.
+            envelope_recipients = [message.to_email, *message.cc, *message.bcc]
+            server.sendmail(from_email, envelope_recipients, raw_payload)
         finally:
             try:
                 server.quit()
@@ -1767,6 +1918,7 @@ async def send_email(
     org_reply_to: str | None = None,
     dlq_task_name: str | None = None,
     dlq_task_args: dict | None = None,
+    allow_blocklisted: bool = False,
 ) -> SendResult:
     """Send an email through the active provider chain.
 
@@ -1801,6 +1953,13 @@ async def send_email(
     persist ``provider_key`` / ``provider_message_id`` after success,
     and decide whether to fire ``create_in_app_notification`` on
     failure. This function never commits.
+
+    ``allow_blocklisted`` (send-email-modal R4.6 / R13.5): when ``True`` the
+    hard-bounce blocklist short-circuit in phase 2 is skipped so an
+    org_admin can deliberately override a hard-bounced recipient from the
+    Send Email modal. The size pre-check, soft-bounce warning, provider
+    chain, budgets, and everything else are unchanged. Defaults to ``False``
+    so existing callers keep the full blocklist enforcement byte-for-byte.
     """
     started = time.monotonic()
 
@@ -1824,10 +1983,15 @@ async def send_email(
         )
 
     # 2. Bounce-blocklist pre-check.
+    #
+    # When ``allow_blocklisted`` is set (org_admin override from the Send
+    # Email modal, R4.6/R13.5) we skip ONLY the hard-bounce short-circuit
+    # below. The lookup itself still runs so a soft-bounce warning is still
+    # logged; everything else is unchanged.
     blocked, reason = await _check_bounce_blocklist(
         db, org_id=message.org_id, email_address=message.to_email
     )
-    if blocked:
+    if blocked and not allow_blocklisted:
         return SendResult(
             success=False,
             error="recipient is on the bounce list",
@@ -1842,7 +2006,14 @@ async def send_email(
                 )
             ],
         )
-    if reason:
+    if blocked and allow_blocklisted:
+        logger.warning(
+            "send_email: %s is hard-bounce blocked but allow_blocklisted=True "
+            "— overriding and proceeding (%s)",
+            message.to_email,
+            reason,
+        )
+    elif reason:
         # Soft-bounce on file but not blocking — log and proceed.
         logger.warning(
             "send_email: %s has soft-bounce on file (%s) — proceeding",

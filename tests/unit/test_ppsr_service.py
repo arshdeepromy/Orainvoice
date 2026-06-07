@@ -674,7 +674,7 @@ class TestOptionsHashStable:
                 "include_fws": True,
                 "check_hidden_plates": False,
                 "s241_purpose": None,
-                "include_warnings": True,
+                "include_warnings": False,
                 "include_current_owner": False,
                 "include_ownership_history": False,
             },
@@ -723,10 +723,11 @@ class TestForceRefresh:
 
 
 class TestQuotaExceeded:
-    """11th search when included=10 → quota exceeded."""
+    """Used == included no longer hard-blocks: the lookup proceeds (CarJam-
+    parity usage-based overage billing) and the counter still increments."""
 
     @pytest.mark.asyncio
-    async def test_quota_exceeded_when_used_equals_included(
+    async def test_lookup_proceeds_when_used_equals_included(
         self, patched_module_enabled, patched_carjam_client_factory,
     ):
         org_id = uuid.uuid4()
@@ -742,13 +743,14 @@ class TestQuotaExceeded:
         set_client(_FakeCarjamClient())
 
         svc = PpsrService(db, redis)
-        with pytest.raises(PpsrQuotaExceededError) as exc_info:
-            await svc.search(
-                org_id=org_id, user_id=user.id, current_user=user,
-                rego="ABC123", options=PpsrSearchOptions(),
-            )
-        assert exc_info.value.used == 10
-        assert exc_info.value.included == 10
+        # No PpsrQuotaExceededError — the search runs and returns a result
+        # even though the included quota is fully used (overage is billed
+        # later by the recurring-billing task).
+        result = await svc.search(
+            org_id=org_id, user_id=user.id, current_user=user,
+            rego="ABC123", options=PpsrSearchOptions(),
+        )
+        assert result is not None
 
 
 class TestOwnerLookupGating:

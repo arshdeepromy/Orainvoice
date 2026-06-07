@@ -1,5 +1,11 @@
 # Handoff: OraInvoice App Shell Redesign
 
+> **📱 Looking for the MOBILE app?** This document covers the **desktop web app shell**. The
+> mobile (Capacitor) app redesign has its own package in this folder:
+> **`MOBILE_HANDOFF.md`** (scope + full screen→route→endpoint map), **`MOBILE_IMPLEMENTATION_CHECKLIST.md`**
+> (phased tasks), and **`KIRO_AGENT_PROMPT.md`** (ready-to-paste agent instruction). Use those for
+> anything under `mobile/`.
+
 ## Overview
 A bold visual refresh of the OraInvoice (WorkshopPro NZ) application shell — the persistent
 sidebar + top bar chrome that wraps every authenticated screen — plus a representative

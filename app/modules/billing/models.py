@@ -111,6 +111,12 @@ class BillingReceipt(Base):
     carjam_overage_cents: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default="0"
     )
+    ppsr_overage_cents: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    owner_check_overage_cents: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
     storage_addon_cents: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default="0"
     )
@@ -125,6 +131,12 @@ class BillingReceipt(Base):
         Integer, nullable=False, server_default="0"
     )
     carjam_overage_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    ppsr_overage_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    owner_check_overage_count: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default="0"
     )
     storage_addon_gb: Mapped[int] = mapped_column(

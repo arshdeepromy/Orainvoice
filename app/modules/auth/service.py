@@ -1304,10 +1304,46 @@ def _base64url_to_bytes(s: str) -> bytes:
     return base64.urlsafe_b64decode(s)
 
 
+def resolve_webauthn_params(origin_header: str | None) -> tuple[str, str]:
+    """Resolve the WebAuthn RP ID + expected origin for a request.
+
+    WebAuthn binds each credential to an RP ID (the origin's effective domain),
+    so the RP ID used to *create* a credential must match the one used to
+    *verify* it. We derive both the RP ID and the expected origin from the
+    request's ``Origin`` header — but only when that origin is on the trusted
+    allowlist (``settings.webauthn_origins``) — so passkeys work across the app's
+    multiple front-end domains (and localhost in dev) without per-domain config,
+    while a spoofed ``Origin`` header can't point the relying party at a domain
+    we don't control.
+
+    Falls back to the legacy single-value settings (``webauthn_rp_id`` /
+    ``webauthn_origin``) when the request origin is absent or untrusted, which
+    preserves the previous behaviour.
+
+    Returns ``(rp_id, expected_origin)``.
+    """
+    from urllib.parse import urlparse
+
+    allowed = {o.rstrip("/") for o in (settings.webauthn_origins or []) if o}
+    legacy_origin = (settings.webauthn_origin or "").rstrip("/")
+    if legacy_origin:
+        allowed.add(legacy_origin)
+
+    origin = (origin_header or "").rstrip("/")
+    if origin and origin in allowed:
+        host = urlparse(origin).hostname
+        if host:
+            return host, origin
+
+    # Untrusted/missing origin — fall back to the static config.
+    return settings.webauthn_rp_id, legacy_origin
+
+
 async def generate_passkey_register_options(
     db: AsyncSession,
     user: User,
     device_name: str = "My Passkey",
+    rp_id: str | None = None,
 ) -> dict:
     """Generate WebAuthn registration options for a user.
 
@@ -1343,7 +1379,7 @@ async def generate_passkey_register_options(
     ] if existing_creds else None
 
     options = generate_registration_options(
-        rp_id=settings.webauthn_rp_id,
+        rp_id=rp_id or settings.webauthn_rp_id,
         rp_name=settings.webauthn_rp_name,
         user_id=str(user.id).encode(),
         user_name=user.email,
@@ -1371,6 +1407,8 @@ async def verify_passkey_registration(
     db: AsyncSession,
     user: User,
     credential_response: dict,
+    rp_id: str | None = None,
+    expected_origin: str | None = None,
 ) -> dict:
     """Verify a WebAuthn registration response and store the credential.
 
@@ -1417,8 +1455,8 @@ async def verify_passkey_registration(
     verification = verify_registration_response(
         credential=credential_dict,
         expected_challenge=_base64url_to_bytes(challenge_b64url),
-        expected_rp_id=settings.webauthn_rp_id,
-        expected_origin=settings.webauthn_origin,
+        expected_rp_id=rp_id or settings.webauthn_rp_id,
+        expected_origin=expected_origin or settings.webauthn_origin,
         require_user_verification=False,
     )
 
@@ -1481,6 +1519,7 @@ async def verify_passkey_registration(
 async def generate_passkey_login_options(
     db: AsyncSession,
     user_id: uuid.UUID,
+    rp_id: str | None = None,
 ) -> dict:
     """Generate WebAuthn authentication options for a user.
 
@@ -1516,7 +1555,7 @@ async def generate_passkey_login_options(
     ]
 
     options = generate_authentication_options(
-        rp_id=settings.webauthn_rp_id,
+        rp_id=rp_id or settings.webauthn_rp_id,
         allow_credentials=allow_credentials,
         timeout=60000,
     )
@@ -1543,6 +1582,8 @@ async def verify_passkey_login(
     device_type: str | None = None,
     browser: str | None = None,
     user_agent: str | None = None,
+    rp_id: str | None = None,
+    expected_origin: str | None = None,
 ) -> TokenResponse:
     """Verify a WebAuthn assertion response and issue JWT tokens.
 
@@ -1659,8 +1700,8 @@ async def verify_passkey_login(
     verification = verify_authentication_response(
         credential=credential_dict,
         expected_challenge=_base64url_to_bytes(challenge_b64url),
-        expected_rp_id=settings.webauthn_rp_id,
-        expected_origin=settings.webauthn_origin,
+        expected_rp_id=rp_id or settings.webauthn_rp_id,
+        expected_origin=expected_origin or settings.webauthn_origin,
         credential_public_key=_base64url_to_bytes(matched_cred.public_key),
         credential_current_sign_count=matched_cred.sign_count,
         require_user_verification=False,

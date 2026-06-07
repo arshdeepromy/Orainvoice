@@ -75,14 +75,23 @@ describe('TopBar — Task 9 hooks preserved', () => {
   })
 })
 
-describe('TopBar — search ⌘K', () => {
-  it('focuses the search field on Cmd/Ctrl+K', async () => {
+describe('TopBar — search palette trigger', () => {
+  it('dispatches ⌘K to open the command palette when the search field is clicked', async () => {
     const user = userEvent.setup()
     renderTopBar()
-    const search = screen.getByRole('button', { name: 'Search customers, invoices, jobs' })
-    expect(search).not.toHaveFocus()
-    await user.keyboard('{Meta>}k{/Meta}')
-    expect(search).toHaveFocus()
+    // GlobalSearchBar (mounted in OrgLayout) owns the ⌘K shortcut; the search
+    // field opens it by dispatching that same shortcut on the document.
+    const handler = vi.fn()
+    document.addEventListener('keydown', handler)
+    try {
+      await user.click(screen.getByRole('button', { name: 'Search customers, invoices, jobs' }))
+      expect(handler).toHaveBeenCalledTimes(1)
+      const evt = handler.mock.calls[0][0] as KeyboardEvent
+      expect(evt.key).toBe('k')
+      expect(evt.ctrlKey).toBe(true)
+    } finally {
+      document.removeEventListener('keydown', handler)
+    }
   })
 })
 
@@ -160,6 +169,10 @@ describe('TopBar — avatar menu', () => {
     expect(screen.getByRole('menuitem', { name: 'Settings' })).toBeInTheDocument()
 
     await user.click(screen.getByRole('menuitem', { name: 'Sign out' }))
-    expect(screen.getByTestId('location')).toHaveTextContent('/login')
+    // Sign out is async: it awaits logout() (clears the session so the
+    // GuestOnly guard won't bounce back to /dashboard) before navigating.
+    await waitFor(() => {
+      expect(screen.getByTestId('location')).toHaveTextContent('/login')
+    })
   })
 })

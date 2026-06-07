@@ -3,6 +3,8 @@ import { Outlet } from 'react-router-dom'
 import Sidebar from '@/components/shell/Sidebar'
 import TopBar from '@/components/shell/TopBar'
 import { usePaymentMethodEnforcement } from '@/hooks/usePaymentMethodEnforcement'
+import { useUnreadNotificationCount } from '@/hooks/useUnreadNotificationCount'
+import { GlobalSearchBar } from '@/components/search'
 import { BlockingPaymentModal } from '@/components/billing/BlockingPaymentModal'
 import { ExpiringPaymentWarningModal } from '@/components/billing/ExpiringPaymentWarningModal'
 
@@ -43,6 +45,11 @@ export default function OrgLayout() {
 
   const openSidebar = useCallback(() => setSidebarOpen(true), [])
   const closeSidebar = useCallback(() => setSidebarOpen(false), [])
+
+  // Real unread-notification count for the top-bar bell badge (polls the
+  // /notifications/inbox/unread-count endpoint). Replaces the prototype's
+  // static presentation dot.
+  const notificationCount = useUnreadNotificationCount()
 
   // Payment method enforcement — blocking/warning modals for org_admin
   const {
@@ -89,7 +96,7 @@ export default function OrgLayout() {
 
         {/* Main column: fixed top bar + independently scrolling content. */}
         <div className="shell-main flex min-w-0 flex-1 flex-col overflow-hidden">
-          <TopBar onOpenSidebar={openSidebar} />
+          <TopBar onOpenSidebar={openSidebar} notificationCount={notificationCount} />
           <main className="flex-1 overflow-y-auto">
             {/* Ported pages supply their own `.page` (padding + max-width)
                 wrapper, matching the prototype where `.content` is flush and
@@ -98,6 +105,11 @@ export default function OrgLayout() {
           </main>
         </div>
       </div>
+
+      {/* Global command palette (⌘K / search-field click). Self-contained:
+          renders nothing until opened. Owns the ⌘K shortcut; the TopBar search
+          button dispatches that shortcut to open it. */}
+      <GlobalSearchBar />
     </>
   )
 }
