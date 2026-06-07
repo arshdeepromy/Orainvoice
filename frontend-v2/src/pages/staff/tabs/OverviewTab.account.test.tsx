@@ -25,7 +25,7 @@ import { getStaffMonthStats, type StaffMonthStats } from '@/api/staff'
 // --- hoisted mutable fixtures + spies -------------------------------------
 const h = vi.hoisted(() => ({
   staff: null as Record<string, unknown> | null,
-  post: vi.fn(async () => ({ data: {} })),
+  post: vi.fn(async (_url: string, _body?: unknown) => ({ data: {} })),
 }))
 
 vi.mock('@/api/staff', () => ({
