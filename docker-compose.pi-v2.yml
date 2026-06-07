@@ -1,0 +1,75 @@
+# =============================================================================
+# docker-compose.pi-v2.yml  —  Pi PROD: serve frontend-v2 alongside legacy
+# -----------------------------------------------------------------------------
+# Layer this on top of docker-compose.yml + docker-compose.pi.yml so the Pi
+# PROD stack serves the REDESIGN (frontend-v2) on port :8998 IN ADDITION to
+# the existing legacy frontend on :8999 (which keeps running unchanged for
+# instant rollback via Cloudflare Tunnel ingress flip).
+#
+# This file is purely ADDITIVE:
+#   * It does NOT redefine or override any existing service.
+#   * It adds two new services: `frontend-v2-build` (one-shot static build
+#     into a named volume) and `nginx-v2` (lightweight nginx serving that
+#     volume + proxying /api, /ws, /mobile to the SHARED `app` container).
+#   * The legacy `frontend`, `nginx`, `app`, `postgres`, `redis`, and `mobile`
+#     services from the base files are completely untouched.
+#
+# USAGE (on the Pi):
+#   docker compose -p invoicing \
+#     -f docker-compose.yml \
+#     -f docker-compose.pi.yml \
+#     -f docker-compose.pi-v2.yml \
+#     up -d --build frontend-v2-build nginx-v2
+#
+# ROLLBACK:
+#   docker compose -p invoicing \
+#     -f docker-compose.yml \
+#     -f docker-compose.pi.yml \
+#     -f docker-compose.pi-v2.yml \
+#     stop nginx-v2
+#   (then flip the Cloudflare Tunnel ingress rule back to :8999)
+#
+# Resource cost on the Pi: ~50MB RAM total (one-shot build container exits;
+# only the lightweight nginx runs continuously).
+# =============================================================================
+
+services:
+  # --- One-shot static build of frontend-v2 into a named volume ---
+  # Runs `vite build` once, drops dist/ into the shared volume, then exits.
+  # Re-runs whenever the container is recreated (e.g. after `git pull`).
+  frontend-v2-build:
+    image: node:22-alpine
+    working_dir: /app
+    restart: "no"
+    command: >
+      sh -c "if [ ! -d node_modules/vite ]; then (npm ci || npm install); fi &&
+             npm run build &&
+             rm -rf /dist/* && cp -a dist/. /dist/ &&
+             echo 'frontend-v2 build complete'"
+    volumes:
+      - ./frontend-v2:/app:delegated
+      - frontend_v2_pi_node_modules:/app/node_modules
+      - frontend_v2_pi_dist:/dist
+
+  # --- nginx serving the static frontend-v2 build + proxying API/WS to app ---
+  # Uses nginx.pi-v2.conf — the PROD-flavoured variant of nginx.dev-v2.conf
+  # that serves the SPA from /usr/share/nginx/frontend-v2 (populated by the
+  # one-shot frontend-v2-build container into the frontend_v2_pi_dist volume)
+  # with SPA fallback to index.html. There is no Vite dev server upstream and
+  # no /@vite/ HMR location. All backend proxy locations are identical.
+  nginx-v2:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "8998:80"
+    volumes:
+      - ./nginx/nginx.pi-v2.conf:/etc/nginx/conf.d/default.conf:ro
+      - frontend_v2_pi_dist:/usr/share/nginx/frontend-v2:ro
+      - mobile_dist:/usr/share/nginx/mobile:ro
+    depends_on:
+      - app
+      - frontend-v2-build
+
+volumes:
+  frontend_v2_pi_node_modules:
+  frontend_v2_pi_dist:
