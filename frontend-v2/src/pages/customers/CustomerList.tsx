@@ -26,6 +26,8 @@ import { CustomerEditModal } from '@/components/customers/CustomerEditModal'
 import { CustomerViewModal } from '@/components/customers/CustomerViewModal'
 import { useTenant } from '@/contexts/TenantContext'
 import { useBranch } from '@/contexts/BranchContext'
+import { computeMissingConsent, type MissingConsentPair } from '@/api/customers'
+import ConsentConfirmationModal from './ConsentConfirmationModal'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -200,6 +202,10 @@ export default function CustomerList() {
   const [reminderConfig, setReminderConfig] = useState<CustomerReminderConfig>(DEFAULT_REMINDER_CONFIG)
   const [reminderLoading, setReminderLoading] = useState(false)
   const [reminderSaving, setReminderSaving] = useState(false)
+
+  /* Consent confirmation modal state (F3/F4) */
+  const [consentModalOpen, setConsentModalOpen] = useState(false)
+  const [consentMissing, setConsentMissing] = useState<MissingConsentPair[]>([])
   const [reminderError, setReminderError] = useState('')
   const [vehicleDateEdits, setVehicleDateEdits] = useState<Record<string, { service_due_date?: string; wof_expiry?: string; cof_expiry?: string }>>({})
 
@@ -263,6 +269,18 @@ export default function CustomerList() {
 
   const handleSaveReminders = async () => {
     if (!reminderCustomerId) return
+
+    // F3: Pre-submit check for missing consent coverage
+    const { vehicles: _v, ...configOnly } = reminderConfig
+    const missing = computeMissingConsent(null, configOnly as any)
+    if (missing.length > 0) {
+      // Open consent confirmation modal instead of saving directly
+      setConsentMissing(missing)
+      setConsentModalOpen(true)
+      return
+    }
+
+    // No missing consent — save directly
     setReminderSaving(true)
     setReminderError('')
     try {
@@ -274,7 +292,6 @@ export default function CustomerList() {
         await apiClient.put(`/customers/${reminderCustomerId}/vehicle-dates`, { vehicles: dateUpdates })
       }
 
-      const { vehicles: _v, ...configOnly } = reminderConfig
       await apiClient.put(`/customers/${reminderCustomerId}/reminders`, configOnly)
       setReminderOpen(false)
       setVehicleDateEdits({})
@@ -284,6 +301,15 @@ export default function CustomerList() {
     } finally {
       setReminderSaving(false)
     }
+  }
+
+  /** Called by ConsentConfirmationModal after consent is recorded + PUT succeeds */
+  const handleConsentConfirmed = async () => {
+    setConsentModalOpen(false)
+    setConsentMissing([])
+    setReminderOpen(false)
+    setVehicleDateEdits({})
+    await fetchCustomers(searchQuery, page)
   }
 
   return (
@@ -600,8 +626,8 @@ export default function CustomerList() {
               )}
             </div>
 
-            {/* WOF Expiry — automotive only */}
-            {isAutomotive && (
+            {/* WOF Expiry — show if customer has WOF vehicles (inspection_type 'wof' or null = legacy WOF default) */}
+            {isAutomotive && (reminderConfig?.vehicles ?? []).some(v => !v?.inspection_type || v.inspection_type === 'wof') && (
             <div className="space-y-3 rounded-card border border-border p-4">
               <div className="flex items-center justify-between">
                 <h3 className="text-[13px] font-medium text-text">WOF Expiry</h3>
@@ -673,8 +699,8 @@ export default function CustomerList() {
             </div>
             )}
 
-            {/* COF Expiry — automotive only */}
-            {isAutomotive && (
+            {/* COF Expiry — only if customer has a COF-type vehicle */}
+            {isAutomotive && (reminderConfig?.vehicles ?? []).some(v => v?.inspection_type === 'cof') && (
             <div className="space-y-3 rounded-card border border-border p-4">
               <div className="flex items-center justify-between">
                 <h3 className="text-[13px] font-medium text-text">COF Expiry</h3>
@@ -746,44 +772,6 @@ export default function CustomerList() {
             </div>
             )}
 
-            {/* Registration Expiry — automotive only */}
-            {isAutomotive && (
-            <div className="space-y-3 rounded-card border border-border p-4">
-              <div className="flex items-center justify-between">
-                <h3 className="text-[13px] font-medium text-text">Registration Expiry</h3>
-                <label className="relative inline-flex cursor-pointer items-center">
-                  <input
-                    type="checkbox"
-                    checked={reminderConfig?.registration_expiry?.enabled ?? false}
-                    onChange={(e) => updateReminder('registration_expiry', { enabled: e.target.checked })}
-                    className="peer sr-only"
-                  />
-                  <div className="peer h-5 w-9 rounded-full bg-border after:absolute after:left-[2px] after:top-[2px] after:h-4 after:w-4 after:rounded-full after:border after:border-border-strong after:bg-white after:transition-all after:content-[''] peer-checked:bg-accent peer-checked:after:translate-x-full peer-checked:after:border-white peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-accent-soft" />
-                  <span className="ml-2 text-[13px] text-muted">{reminderConfig?.registration_expiry?.enabled ? 'Enabled' : 'Disabled'}</span>
-                </label>
-              </div>
-              {reminderConfig?.registration_expiry?.enabled && (
-                <div className="grid grid-cols-2 gap-3">
-                  <Input
-                    label="Days before expiry"
-                    type="number"
-                    value={String(reminderConfig?.registration_expiry?.days_before ?? 30)}
-                    onChange={(e) => updateReminder('registration_expiry', { days_before: parseInt(e.target.value) || 30 })}
-                  />
-                  <Select
-                    label="Notify via"
-                    options={[
-                      { value: 'email', label: 'Email' },
-                      { value: 'sms', label: 'SMS' },
-                      { value: 'both', label: 'Email & SMS' },
-                    ]}
-                    value={reminderConfig?.registration_expiry?.channel ?? 'email'}
-                    onChange={(e) => updateReminder('registration_expiry', { channel: e.target.value as 'email' | 'sms' | 'both' })}
-                  />
-                </div>
-              )}
-            </div>
-            )}
           </div>
         )}
         {reminderError && <p className="mt-2 text-[13px] text-danger" role="alert">{reminderError}</p>}
@@ -792,6 +780,19 @@ export default function CustomerList() {
           <Button size="sm" onClick={handleSaveReminders} loading={reminderSaving}>Save</Button>
         </div>
       </Modal>
+
+      {/* Consent Confirmation Modal (F3/F4 — consent gate) */}
+      <ConsentConfirmationModal
+        open={consentModalOpen}
+        customerId={reminderCustomerId ?? ''}
+        missing={consentMissing}
+        config={(() => {
+          const { vehicles: _v, ...configOnly } = reminderConfig
+          return configOnly as any
+        })()}
+        onConfirmed={handleConsentConfirmed}
+        onCancel={() => { setConsentModalOpen(false); setConsentMissing([]) }}
+      />
     </div>
   )
 }

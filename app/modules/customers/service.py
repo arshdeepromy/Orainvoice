@@ -1978,6 +1978,8 @@ async def get_customer_reminder_config(
             "year": v.year,
             "service_due_date": v.service_due_date.isoformat() if v.service_due_date else None,
             "wof_expiry": v.wof_expiry.isoformat() if v.wof_expiry else None,
+            "cof_expiry": v.cof_expiry.isoformat() if getattr(v, 'cof_expiry', None) else None,
+            "inspection_type": getattr(v, 'inspection_type', None),
         })
 
     return {
