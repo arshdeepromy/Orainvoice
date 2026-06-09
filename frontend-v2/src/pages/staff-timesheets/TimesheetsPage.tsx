@@ -4,7 +4,7 @@ import apiClient from '@/api/client'
 import ClockedInTab from './ClockedInTab'
 import TimesheetsTab from './TimesheetsTab'
 import PayRunsTab from './PayRunsTab'
-import type { ClockedInResponse, PeriodSummary } from './types'
+import type { PeriodSummary } from './types'
 
 const TABS = ['Clocked In', 'Timesheets', 'Pay Runs'] as const
 
