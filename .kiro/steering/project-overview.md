@@ -43,11 +43,34 @@ OraInvoice is a multi-tenant SaaS invoicing and business management platform bui
 ## Deployment Process (Pi Prod)
 
 1. Make changes locally, commit and push to GitHub (arshdeepromy/Orainvoice, main branch)
-2. Sync code to Pi: `tar -cf - <files> | ssh nerdy@192.168.1.90 "cd /home/nerdy/invoicing && tar -xf -"`
+2. Pull code on Pi via git: `ssh nerdy@192.168.1.90 "cd /home/nerdy/invoicing && git pull origin main"`
 3. Backend changes: `ssh nerdy@192.168.1.90 "cd /home/nerdy/invoicing && docker compose -f docker-compose.yml -f docker-compose.pi.yml up -d --build --force-recreate app"`
-4. Frontend changes: stop frontend+nginx, rm containers, delete `invoicing_frontend_dist` volume, rebuild with `--build`
-5. The docker entrypoint runs `alembic upgrade head` automatically on app start
-6. Pi has no git — code is synced via tar+SSH. Pi-specific files (.env.pi, docker-compose.pi.yml) are preserved during sync.
+4. Frontend-v2 changes (served via nginx-v2 on port 8998 — the ACTIVE frontend behind Cloudflare):
+   ```
+   ssh nerdy@192.168.1.90 "cd /home/nerdy/invoicing && docker compose -f docker-compose.yml -f docker-compose.pi.yml -f docker-compose.pi-v2.yml up -d --build --force-recreate frontend-v2-build nginx-v2"
+   ```
+5. After app rebuild, restart nginx to clear stale upstream connections:
+   ```
+   ssh nerdy@192.168.1.90 "cd /home/nerdy/invoicing && docker compose -f docker-compose.yml -f docker-compose.pi.yml restart nginx"
+   ```
+6. The docker entrypoint runs `alembic upgrade head` automatically on app start
+7. The legacy `frontend/` (old SPA) is ARCHIVED and stopped — do NOT start `invoicing-frontend-1`
+8. Pi uses git for code sync (GitHub remote). Pi-specific files (.env.pi, docker-compose.pi.yml) are committed and preserved.
+
+### Full Pi Prod Redeploy Command (backend + frontend-v2):
+```bash
+ssh nerdy@192.168.1.90 "cd /home/nerdy/invoicing && \
+  git pull origin main && \
+  docker compose -f docker-compose.yml -f docker-compose.pi.yml up -d --build --force-recreate app && \
+  docker compose -f docker-compose.yml -f docker-compose.pi.yml -f docker-compose.pi-v2.yml up -d --build --force-recreate frontend-v2-build nginx-v2 && \
+  docker compose -f docker-compose.yml -f docker-compose.pi.yml restart nginx"
+```
+
+### Important Notes:
+- `one.oraflows.co.nz` routes through Cloudflare Tunnel → `localhost:8998` (nginx-v2, frontend-v2 build)
+- The old `invoicing-frontend-1` container is STOPPED — do not restart it
+- After app rebuild, always restart nginx to prevent 502/504 from stale connections
+- Pi Dev Standby uses `docker-compose.ha-standby.yml` (project: invoicing-standby, port 8081)
 
 ## Key Patterns & Rules
 
