@@ -224,6 +224,7 @@ SETTINGS_JSONB_KEYS = {
     "allow_partial_payments",
     "terms_and_conditions",
     "sidebar_display_mode",
+    "customers_consent_column_visible",
     "invoice_template_id",
     "invoice_template_colours",
     "portal_token_ttl_days",

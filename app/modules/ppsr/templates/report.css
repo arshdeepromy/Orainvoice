@@ -267,14 +267,11 @@ table.lines th {
 }
 
 /* ------------------------------------------------------------------
- * Charges line + disclaimer footer.
+ * Disclaimer footer.
+ * (The CarJam-reported per-check charge is intentionally not rendered
+ * — see the comment in report.html. The matching ``.charges-line``
+ * rule was removed alongside the template block.)
  * --------------------------------------------------------------- */
-
-.charges-line {
-  margin-top: 4mm;
-  font-size: 9pt;
-  color: #555;
-}
 
 .disclaimer {
   margin-top: 6mm;

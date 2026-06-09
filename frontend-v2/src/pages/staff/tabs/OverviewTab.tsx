@@ -38,6 +38,8 @@ import PayRateHistoryPanel from '../components/PayRateHistoryPanel'
 import RecurringAllowancesPanel from '../components/RecurringAllowancesPanel'
 import ThisMonthPanel from '../components/ThisMonthPanel'
 import CreateAccountModal from '../components/CreateAccountModal'
+import StaffPhotoUploader from '../components/StaffPhotoUploader'
+import AuthorizedAvatar from '@/components/AuthorizedAvatar'
 import { getStaffMonthStats, type StaffMonthStats } from '@/api/staff'
 
 // ---------------------------------------------------------------------------
@@ -765,12 +767,13 @@ export default function OverviewTab({ staffId, onDirtyChange }: OverviewTabProps
       {/* Page head — staff hero + actions (StaffDetail.html .page-head). */}
       <div className="mb-5 flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-4">
-          <div
-            className="grid h-16 w-16 flex-shrink-0 place-items-center rounded-[16px] bg-purple text-2xl font-bold text-white"
-            aria-hidden="true"
-          >
-            {initials}
-          </div>
+          <AuthorizedAvatar
+            src={staff.on_file_photo_url}
+            initials={initials}
+            className="h-16 w-16 flex-shrink-0 overflow-hidden rounded-[16px] bg-purple"
+            fallbackClassName="text-2xl font-bold text-white"
+            alt={`Profile photo of ${staff.name}`}
+          />
           <div>
             <div className="flex items-center gap-[10px]">
               <h1 className="text-2xl font-bold tracking-[-0.02em] text-text">{staff.name}</h1>
@@ -930,22 +933,13 @@ export default function OverviewTab({ staffId, onDirtyChange }: OverviewTabProps
             )}
           </div>
           <div className="md:col-span-2">
-            <label className={labelCls}>Photo URL</label>
-            {editing ? (
-              <input
-                type="url"
-                value={form.on_file_photo_url}
-                onChange={(e) =>
-                  updateForm('on_file_photo_url', e.target.value)
-                }
-                placeholder="https://…"
-                className={inputCls}
-              />
-            ) : (
-              <div className={readonlyCls}>
-                {staff.on_file_photo_url || '—'}
-              </div>
-            )}
+            <label className={labelCls}>Profile photo</label>
+            <StaffPhotoUploader
+              value={editing ? form.on_file_photo_url : staff.on_file_photo_url}
+              initials={initials}
+              editing={editing}
+              onChange={(value) => updateForm('on_file_photo_url', value ?? '')}
+            />
           </div>
         </div>
       </section>

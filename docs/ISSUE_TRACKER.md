@@ -6102,3 +6102,53 @@ Combined with ISSUE-169's `email_invoice` change (which also derives the link or
 **Files Implicated**:
 - `app/modules/quotes/service.py` (`create_quote`, ~line 448)
 - `app/modules/quotes/schemas.py` (`QuoteLineItemCreate.tax_rate` default)
+
+---
+
+### ISSUE-172: PPSR / Ownership Check exported PDFs leaked CarJam wholesale per-check charge
+
+- **Date**: 2026-06-08
+- **Severity**: significant
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A — pre-existing since the PPSR module shipped (1.20.0)
+
+**Symptoms**: When an org user clicked "Export PDF" on a PPSR or Ownership Check result, the rendered report carried a footer line near the end reading "CarJam reported a charge of NZD 1.25 for this check." (or whatever wholesale cost CarJam returned for that lookup). Org users should never see this — it's the platform's wholesale cost from CarJam, not what the org pays. The platform sets the customer-facing per-check price via Global Admin settings (`ppsr_per_check_cost_nzd`, `owner_check_per_check_cost_nzd`) and bills the org accordingly via `app/tasks/subscriptions.py`.
+
+**Root Cause**: `app/modules/ppsr/templates/report.html` lines 266–271 contained an unconditional Jinja block:
+
+```jinja
+{% if search.charges_cents %}
+<p class="charges-line">
+  CarJam reported a charge of NZD {{ "%.2f"|format(search.charges_cents / 100) }} for this check.
+</p>
+{% endif %}
+```
+
+The `app/modules/ppsr/pdf.py` template context dict surfaced `charges_cents` from the persisted `ppsr_searches.charges_cents` column directly to the template. The accompanying `report.css` carried a matching `.charges-line` rule.
+
+**Fix Applied**:
+
+1. Removed the Jinja `{% if search.charges_cents %} … {% endif %}` block from `app/modules/ppsr/templates/report.html`. Replaced with a comment block explaining why org users must not see this and pointing to the Global Admin settings that govern customer-facing pricing.
+2. Removed the matching `.charges-line` CSS rule from `app/modules/ppsr/templates/report.css`.
+3. Removed `"charges_cents": …` from the template context dict in `app/modules/ppsr/pdf.py::render_pdf`. The template literally cannot read the field now (defence in depth — even if the Jinja block were reintroduced, the variable would resolve to undefined).
+4. Added a regression test `tests/integration/test_ppsr_pdf.py::test_charges_line_never_rendered_even_when_charges_present` that constructs a PPSR row with `charges_cents=125` and asserts neither the legacy "CarJam reported a charge" copy nor any formatted `NZD 1.25` / `$1.25` value appears in the rendered HTML. Locks the regression so any future change re-introducing the charge to the PDF will fail this test.
+5. Cleaned up stale frontend docstrings in `frontend-v2/src/pages/ppsr/components/PpsrResultPanel.tsx` and `PpsrHistoryTable.tsx` that referenced a "Charges footer" / "Charge column" that neither component actually rendered.
+
+**Files Changed**:
+
+- `app/modules/ppsr/templates/report.html` (Jinja block removed)
+- `app/modules/ppsr/templates/report.css` (`.charges-line` rule removed)
+- `app/modules/ppsr/pdf.py` (`charges_cents` removed from template context + docstring updated)
+- `frontend-v2/src/pages/ppsr/components/PpsrResultPanel.tsx` (docstring corrected — no UI change, the panel never rendered the charge)
+- `frontend-v2/src/pages/ppsr/components/PpsrHistoryTable.tsx` (docstring corrected — same)
+- `tests/integration/test_ppsr_pdf.py` (test inverted to lock the regression)
+- `pyproject.toml`, `frontend-v2/package.json`, `mobile/package.json` (1.22.0 → 1.22.1)
+- `CHANGELOG.md`
+
+**Important — what we kept**: The `ppsr_searches.charges_cents` column itself is unchanged. `app/tasks/subscriptions.py` reads `org.ppsr_lookups_this_month` and `org.owner_check_lookups_this_month` against the configured `ppsr_per_check_cost_nzd` / `owner_check_per_check_cost_nzd` settings to compute the org's overage; the per-row `charges_cents` is preserved for forensic value and possible future reconciliation. The fix is purely about what surfaces the value to the org-user UI.
+
+**Similar Bugs Found & Fixed**: Verified no other org-facing surface displays the value. The result panel (`PpsrResultPanel.tsx`) and history table (`PpsrHistoryTable.tsx`) never rendered it despite stale docstrings claiming they did — both docstrings cleaned up alongside.
+
+**Related Issues**: ISSUE-105 (PPSR module ship), the `1.22.0` polish series.
+

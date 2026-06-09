@@ -32,6 +32,8 @@ export interface KioskVehicleEntry {
   body_type: string | null
   year: number | null
   wof_expiry: string | null
+  cof_expiry: string | null
+  inspection_type: string | null
   rego_expiry: string | null
   last_odometer: number | null
   odometer_km: number | null
@@ -67,6 +69,7 @@ export interface CheckInPayload {
   email: string | null
   vehicles: Array<{ global_vehicle_id: string; odometer_km: number | null }>
   existing_customer_id: string | null
+  reminder_consent?: KioskReminderConsentBlock
 }
 
 /** Matches KioskCheckInResponseV2 — response from POST /kiosk/check-in */
@@ -74,4 +77,42 @@ export interface CheckInResponse {
   customer_first_name: string
   is_new_customer: boolean
   vehicles_linked: number
+}
+
+// ---------------------------------------------------------------------------
+// Reminder consent (kiosk consent step) — mirrors the backend
+// KioskReminderConsentBlock / RemindersConsentEntry in
+// app/modules/kiosk/schemas.py + app/modules/customers/consent.py.
+// ---------------------------------------------------------------------------
+
+export type ReminderCategory =
+  | 'service_due'
+  | 'wof_expiry'
+  | 'cof_expiry'
+  | 'registration_expiry'
+
+export type ReminderChannel = 'sms' | 'email' | 'both'
+
+/** One ticked (category, channel) row on the kiosk consent step. */
+export interface KioskReminderConsentEntry {
+  vehicle_id: string | null
+  category: ReminderCategory
+  channel: ReminderChannel
+}
+
+/** The optional consent block POSTed with the kiosk check-in. */
+export interface KioskReminderConsentBlock {
+  consent_text_version: string
+  entries: KioskReminderConsentEntry[]
+}
+
+/** Minimal vehicle shape the consent step needs to resolve its rows. */
+export interface ReminderConsentVehicle {
+  global_vehicle_id: string
+  rego: string
+  make: string | null
+  model: string | null
+  inspection_type: string | null
+  wof_expiry: string | null
+  cof_expiry: string | null
 }

@@ -79,8 +79,11 @@ from app.modules.time_clock.models import (
     TimesheetApproval,
 )
 from app.modules.time_clock.schemas import (
+    AdminClockOutRequest,
     BreakRecordCreate,
     BreakRecordResponse,
+    ClockedInStaffEntry,
+    ClockedInStaffListResponse,
     FlagForReviewRequest,
     OvertimeRequestCreate,
     OvertimeRequestDecisionRequest,
@@ -946,6 +949,121 @@ async def manual_entry_delete(
         )
 
     return Response(status_code=204)
+
+
+# ===========================================================================
+# /staff/clocked-in — admin "who is currently on the clock" dashboard
+# ===========================================================================
+
+
+@router.get(
+    "/time-clock/clocked-in",
+    response_model=ClockedInStaffListResponse,
+    summary="List currently-clocked-in staff (admin dashboard)",
+)
+async def clocked_in_list(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+) -> ClockedInStaffListResponse:
+    """Return every staff with an open ``time_clock_entries`` row.
+
+    Mounted at ``/api/v2/time-clock/clocked-in`` (NOT ``/api/v2/staff/...``)
+    to avoid the route-ordering collision with ``staff_router.GET /{staff_id}``
+    — that handler is registered earlier in ``app/main.py`` and would
+    interpret the literal ``clocked-in`` as a ``staff_id`` UUID, returning
+    422 ``Unprocessable Content`` for any non-UUID literal segment.
+
+    Surfaces only the fields the realtime "who's on the clock" admin
+    dashboard needs (staff identity + clock_in_at + open-row id) so
+    the frontend can render a live elapsed timer client-side without
+    per-second polling. Photos and notes are intentionally NOT
+    surfaced — those live on the timesheet view.
+
+    RBAC: ``org_admin`` / ``branch_admin`` / ``location_manager`` —
+    same gating as the flag-for-review endpoint (G10).
+    """
+    await _require_staff_management_module(request, db)
+    _require_review_role(request)
+    org_id = _get_org_id(request)
+
+    items = await clock_service.list_currently_clocked_in(
+        db, org_id=org_id,
+    )
+    return ClockedInStaffListResponse(
+        items=[ClockedInStaffEntry(**row) for row in items],
+        total=len(items),
+    )
+
+
+@router.post(
+    "/time-clock/admin-clock-out/{entry_id}",
+    response_model=TimeClockEntryResponse,
+    summary="Admin-forced clock-out for a still-open entry",
+)
+async def admin_clock_out(
+    entry_id: UUID,
+    payload: AdminClockOutRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+) -> TimeClockEntryResponse:
+    """Admin closes an open ``time_clock_entries`` row with a required
+    ``reason_note``. Use case: an employee forgot to tap out at end-
+    of-shift, the admin closes the row so timesheet totals are
+    correct.
+
+    Mounted at ``/api/v2/time-clock/admin-clock-out/{entry_id}`` (NOT
+    ``/api/v2/staff/{staff_id}/...``) to avoid the same route-ordering
+    collision as the list endpoint above. The ``staff_id`` is derived
+    server-side from the ``entry_id`` so the URL is shorter AND the
+    "wrong staff_id in the URL" attack vector is impossible.
+
+    The ``reason_note`` is REQUIRED for record-keeping (3–500 chars
+    enforced by the schema). The audit row carries both the before
+    (open) and after (closed) snapshots PLUS the reason inside
+    ``after_value.reason_note`` so post-hoc review can answer "who
+    closed this open shift and why".
+
+    Refused with 404 ``time_clock_entry_not_found`` when the entry id
+    is unknown OR belongs to a different org. Refused with 409
+    ``already_clocked_out`` when the row is already closed (the
+    common "two admins racing to close the same shift" case). Refused
+    with 409 ``timesheet_locked`` when the new clock_out_at falls
+    inside an approved week.
+
+    RBAC: ``org_admin`` / ``branch_admin`` / ``location_manager`` —
+    same gating as the flag-for-review endpoint (G10).
+    """
+    await _require_staff_management_module(request, db)
+    _require_review_role(request)
+    org_id = _get_org_id(request)
+    user_id = _get_user_id(request)
+    role = _get_user_role(request)
+    ip_address = _get_client_ip(request)
+
+    # Verify entry exists + belongs to this org BEFORE handing to the
+    # service so a stale URL surfaces as 404 not_found rather than
+    # leaking org_id-bound information through service-layer errors.
+    entry_check = await db.get(TimeClockEntry, entry_id)
+    if entry_check is None or entry_check.org_id != org_id:
+        raise HTTPException(
+            status_code=404,
+            detail={"detail": "time_clock_entry_not_found"},
+        )
+
+    try:
+        entry = await clock_service.admin_force_clock_out(
+            db,
+            org_id=org_id,
+            entry_id=entry_id,
+            reason_note=payload.reason_note,
+            clock_out_at=payload.clock_out_at,
+            user_id=user_id,
+            ip_address=ip_address,
+        )
+    except clock_service.TimeClockServiceError as exc:
+        _raise_clock_service_error(exc)
+
+    return _serialise_clock_entry(entry, can_view_photos=_can_view_photos(role))
 
 
 # ===========================================================================

@@ -10,6 +10,8 @@ import uuid as _uuid
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.modules.customers.consent import RemindersConsentEntry
+
 
 class KioskCheckInRequest(BaseModel):
     """POST /api/v1/kiosk/check-in request body.
@@ -139,6 +141,19 @@ class KioskVehicleEntry(BaseModel):
         return v
 
 
+class KioskReminderConsentBlock(BaseModel):
+    """Optional reminder-consent block carried on a v2 kiosk check-in.
+
+    ``entries`` are the per-(category, channel) consent rows the customer
+    ticked on the kiosk consent step; ``consent_text_version`` is the literal
+    version string the frontend received from ``GET /kiosk/consent-text`` and
+    is persisted on the consent record for audit correlation (Req 6.4).
+    """
+
+    entries: list[RemindersConsentEntry] = Field(default_factory=list)
+    consent_text_version: str
+
+
 class KioskCheckInRequestV2(BaseModel):
     """POST /kiosk/check-in (v2) request body.
 
@@ -152,6 +167,15 @@ class KioskCheckInRequestV2(BaseModel):
     email: str | None = None
     vehicles: list[KioskVehicleEntry] = Field(default_factory=list)
     existing_customer_id: str | None = None
+    reminder_consent: KioskReminderConsentBlock | None = None
+
+    def consent_provided(self) -> bool:
+        """True when the customer ticked the master toggle and supplied at
+        least one consent entry (Req 1.12 — master-unchecked is a no-op)."""
+        return (
+            self.reminder_consent is not None
+            and len(self.reminder_consent.entries) > 0
+        )
 
     @field_validator("phone")
     @classmethod

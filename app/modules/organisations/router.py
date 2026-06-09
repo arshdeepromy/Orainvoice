@@ -984,6 +984,23 @@ async def invite_user(
         logging.getLogger(__name__).warning("Invite failed: %s", exc)
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
+    # Assign branch_ids if provided (required for kiosk, optional for others)
+    if payload.branch_ids:
+        try:
+            branch_uuids = [uuid.UUID(bid) for bid in payload.branch_ids]
+            await assign_user_branches(
+                db,
+                org_id=org_uuid,
+                acting_user_id=user_uuid,
+                target_user_id=uuid.UUID(user_data["id"]),
+                branch_ids=branch_uuids,
+                ip_address=ip_address,
+            )
+        except ValueError as exc:
+            import logging
+            logging.getLogger(__name__).warning("Branch assignment failed: %s", exc)
+            return JSONResponse(status_code=400, content={"detail": str(exc)})
+
     return UserInviteResponse(
         message="User invited successfully",
         user=OrgUserResponse(**user_data),

@@ -1,24 +1,30 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { useModules } from '@/contexts/ModuleContext'
 import { useAuth } from '@/contexts/AuthContext'
+import { useTenant } from '@/contexts/TenantContext'
 import apiClient from '@/api/client'
 import { KioskBrand } from './KioskBrand'
 import { KioskWelcome } from './KioskWelcome'
 import { KioskRegoEntry } from './KioskRegoEntry'
 import { KioskVehicleSummary } from './KioskVehicleSummary'
 import { KioskCheckInForm } from './KioskCheckInForm'
+import { ReminderConsentStep } from './ReminderConsentStep'
 import { KioskSuccess } from './KioskSuccess'
 import { KioskQrPopup } from './KioskQrPopup'
+import { KioskClockScreen } from './KioskClockScreen'
+import { fetchConsentText } from './api'
 import type {
   KioskVehicleEntry,
   VehicleLookupResult,
   KioskFormData,
   KioskSuccessData,
+  KioskReminderConsentBlock,
+  ReminderConsentVehicle,
 } from './types'
 
 /* ── Types ── */
 
-export type KioskScreen = 'welcome' | 'rego' | 'vehicle-summary' | 'form' | 'success' | 'error'
+export type KioskScreen = 'welcome' | 'rego' | 'vehicle-summary' | 'consent' | 'form' | 'success' | 'error' | 'clock'
 
 /** Shape returned by GET /payments/qr-session/pending when a session exists. */
 interface QrSession {
@@ -53,8 +59,29 @@ export function KioskPage() {
   const [formData, setFormData] = useState<KioskFormData>(EMPTY_FORM_DATA)
   const [successData, setSuccessData] = useState<KioskSuccessData | null>(null)
   const [qrSession, setQrSession] = useState<QrSession | null>(null)
+  const [consentText, setConsentText] = useState('')
+  const [consentTextVersion, setConsentTextVersion] = useState('')
+  const [consentBlock, setConsentBlock] = useState<KioskReminderConsentBlock | null>(null)
+
+  const { tradeFamily } = useTenant()
+  const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
 
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  /** Fetch the reminder-consent banner text + version once at mount (E2). */
+  useEffect(() => {
+    const controller = new AbortController()
+    fetchConsentText(controller.signal)
+      .then((ct) => {
+        setConsentText(ct.text)
+        setConsentTextVersion(ct.version)
+      })
+      .catch(() => {
+        // Graceful degradation: the consent step still renders with empty
+        // text rather than blocking check-in.
+      })
+    return () => controller.abort()
+  }, [])
 
   /** Poll for pending QR sessions while on the welcome screen. */
   useEffect(() => {
@@ -100,6 +127,7 @@ export function KioskPage() {
     setCurrentLookupResult(null)
     setFormData(EMPTY_FORM_DATA)
     setSuccessData(null)
+    setConsentBlock(null)
   }, [])
 
   /** Dismiss the QR popup.
@@ -170,7 +198,7 @@ export function KioskPage() {
   /** KioskRegoEntry: "Continue to check-in" → proceed to the form with the
    *  vehicles already added (shown only when at least one vehicle exists). */
   const handleRegoContinue = useCallback(() => {
-    setScreen('form')
+    setScreen('consent')
   }, [])
 
   /** KioskVehicleSummary: confirm → add vehicle to list, go to form. */
@@ -186,6 +214,8 @@ export function KioskPage() {
         body_type: currentLookupResult.body_type,
         year: currentLookupResult.year,
         wof_expiry: currentLookupResult.wof_expiry,
+        cof_expiry: currentLookupResult.cof_expiry,
+        inspection_type: currentLookupResult.inspection_type,
         rego_expiry: currentLookupResult.rego_expiry,
         last_odometer: currentLookupResult.odometer,
         odometer_km,
@@ -193,7 +223,7 @@ export function KioskPage() {
 
       setVehicles((prev) => [...prev, entry])
       setCurrentLookupResult(null)
-      setScreen('form')
+      setScreen('consent')
     },
     [currentLookupResult],
   )
@@ -226,14 +256,37 @@ export function KioskPage() {
     setScreen('error')
   }, [])
 
-  /** KioskCheckInForm: back → go to rego (if vehicles enabled) or welcome. */
+  /** KioskCheckInForm: back → consent (if vehicles present) or welcome. */
   const handleFormBack = useCallback(() => {
-    if (vehiclesEnabled) {
+    if (vehiclesEnabled && vehicles.length > 0) {
+      setScreen('consent')
+    } else if (vehiclesEnabled) {
       setScreen('rego')
     } else {
       resetToWelcome()
     }
-  }, [vehiclesEnabled, resetToWelcome])
+  }, [vehiclesEnabled, vehicles.length, resetToWelcome])
+
+  /** ReminderConsentStep: continue → proceed to the customer-details form. */
+  const handleConsentContinue = useCallback(() => {
+    setScreen('form')
+  }, [])
+
+  /** ReminderConsentStep: back → return to rego. */
+  const handleConsentBack = useCallback(() => {
+    setScreen('rego')
+  }, [])
+
+  /** Map the collected vehicle entries to the consent-step vehicle shape. */
+  const consentVehicles: ReminderConsentVehicle[] = vehicles.map((v) => ({
+    global_vehicle_id: v.global_vehicle_id,
+    rego: v.rego,
+    make: v.make,
+    model: v.model,
+    inspection_type: v.inspection_type,
+    wof_expiry: v.wof_expiry,
+    cof_expiry: v.cof_expiry,
+  }))
 
   /* ── Long-press logout (hidden admin escape) ── */
   const { logout } = useAuth()
@@ -303,11 +356,24 @@ export function KioskPage() {
         />
       )}
 
+      {screen === 'consent' && (
+        <ReminderConsentStep
+          vehicles={consentVehicles}
+          consentText={consentText}
+          consentTextVersion={consentTextVersion}
+          isAutomotive={isAutomotive}
+          onChange={setConsentBlock}
+          onContinue={handleConsentContinue}
+          onBack={handleConsentBack}
+        />
+      )}
+
       {screen === 'form' && (
         <KioskCheckInForm
           formData={formData}
           onFormDataChange={handleFormDataChange}
           vehicles={vehicles}
+          reminderConsent={consentBlock}
           onSuccess={handleSuccess}
           onError={handleError}
           onBack={handleFormBack}
@@ -339,6 +405,51 @@ export function KioskPage() {
             Start over
           </button>
         </div>
+      )}
+
+      {screen === 'clock' && (
+        <KioskClockScreen onExit={resetToWelcome} />
+      )}
+
+      {/*
+       * Floating Staff Clock-In button — bottom-right, welcome screen only.
+       *
+       * Opens the existing `KioskClockScreen` (employee-id entry → identity
+       * confirm → camera → confirmation). The clock screen handles its own
+       * upload via POST /api/v2/uploads/clock-photos (which compresses the
+       * JPEG to ≤ 2048px on the long edge at quality 82, encrypts it with the
+       * envelope key, and writes to /app/uploads/clock_photos/<org_id>/...)
+       * and POST /api/v1/kiosk/clock/action which records the time_clock_entry
+       * with the photo file_key plus an audit_log row carrying the request
+       * client_ip.
+       *
+       * Only rendered on the welcome screen so the kiosk customer-facing
+       * check-in flow is uncluttered. Hidden during QR-popup so the staff
+       * button doesn't sit on top of a payment QR.
+       */}
+      {screen === 'welcome' && !qrSession && (
+        <button
+          type="button"
+          aria-label="Staff clock in or out"
+          title="Staff clock in / out"
+          onClick={() => setScreen('clock')}
+          className="fixed bottom-6 right-6 z-30 inline-flex h-14 w-14 items-center justify-center rounded-full bg-card text-text shadow-pop ring-1 ring-border hover:bg-canvas focus:outline-none focus:ring-2 focus:ring-accent active:scale-95 transition"
+          style={{ minHeight: 56, minWidth: 56 }}
+        >
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={1.8}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="h-7 w-7"
+            aria-hidden="true"
+          >
+            <circle cx="12" cy="12" r="9" />
+            <path d="M12 7v5l3 2" />
+          </svg>
+        </button>
       )}
 
       {/* QR Payment Popup — overlays welcome screen when a pending session is detected */}

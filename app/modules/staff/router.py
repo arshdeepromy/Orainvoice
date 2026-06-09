@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit_log
 from app.core.database import get_db_session
+from app.core.encryption import envelope_decrypt_str
 from app.modules.organisations.service import get_org_settings
 from app.modules.staff.models import (
     StaffLocationAssignment,
@@ -60,6 +61,7 @@ from app.modules.staff.schemas import (
     StaffPayRateListResponse,
     UtilisationReportResponse,
 )
+from app.modules.staff.security import mask_bank_account, mask_ird
 from app.modules.staff.service import (
     _DEFAULT_MINIMUM_WAGE_THRESHOLD,
     MinimumWageBelowThresholdError,
@@ -108,8 +110,49 @@ async def _require_staff_management_module(
 
 
 async def _enrich_reporting_to(db: AsyncSession, staff: StaffMember) -> dict:
-    """Build response dict with reporting_to_name resolved."""
+    """Build response dict with reporting_to_name + decrypted PII fields.
+
+    The ORM model stores ``ird_number_encrypted`` and
+    ``bank_account_number_encrypted`` as ``LargeBinary`` ciphertext —
+    not plain attributes named ``ird_number`` / ``bank_account_number``.
+    ``StaffMemberResponse.model_validate(staff)`` therefore reads
+    ``None`` for both fields by default, which is why org users saw
+    blank rows even though plaintext had been entered and encrypted
+    correctly on save.
+
+    Here we decrypt the ciphertext (best-effort — a missing encryption
+    key or corrupt envelope yields ``None`` rather than raising) and
+    inject the plaintext into the response dict. The schema's
+    ``_mask_ird_field`` / ``_mask_bank_field`` ``mode='before'``
+    validators then mask the plaintext on outbound serialisation so
+    callers still receive ``"***1234"`` style display values, never
+    the raw plaintext.
+    """
     data = StaffMemberResponse.model_validate(staff).model_dump()
+
+    # IRD + bank — decrypt the ciphertext columns so the masked
+    # display value is non-empty when a value exists.
+    ird_ct = getattr(staff, "ird_number_encrypted", None)
+    if ird_ct:
+        try:
+            data["ird_number"] = envelope_decrypt_str(ird_ct)
+        except Exception:  # noqa: BLE001 - best-effort PII decryption
+            data["ird_number"] = None
+    bank_ct = getattr(staff, "bank_account_number_encrypted", None)
+    if bank_ct:
+        try:
+            data["bank_account_number"] = envelope_decrypt_str(bank_ct)
+        except Exception:  # noqa: BLE001 - best-effort PII decryption
+            data["bank_account_number"] = None
+
+    # Re-mask through the response schema so the dict carries the
+    # masked display value (e.g. "***123") rather than plaintext, and
+    # to keep the wire shape identical to what callers got before.
+    if data.get("ird_number") is not None:
+        data["ird_number"] = mask_ird(data["ird_number"])
+    if data.get("bank_account_number") is not None:
+        data["bank_account_number"] = mask_bank_account(data["bank_account_number"])
+
     if staff.reporting_to:
         result = await db.execute(
             select(StaffMember.first_name, StaffMember.last_name)
@@ -424,6 +467,24 @@ async def list_staff(
         data = StaffMemberResponse.model_validate(s).model_dump()
         if s.reporting_to and s.reporting_to in manager_names:
             data["reporting_to_name"] = manager_names[s.reporting_to]
+        # Decrypt + mask PII fields so the masked display value
+        # ("***1234") shows in the list, not blank — same logic as
+        # _enrich_reporting_to. Best-effort: a missing key or corrupt
+        # envelope leaves the field as None.
+        ird_ct = getattr(s, "ird_number_encrypted", None)
+        if ird_ct:
+            try:
+                data["ird_number"] = mask_ird(envelope_decrypt_str(ird_ct))
+            except Exception:  # noqa: BLE001
+                data["ird_number"] = None
+        bank_ct = getattr(s, "bank_account_number_encrypted", None)
+        if bank_ct:
+            try:
+                data["bank_account_number"] = mask_bank_account(
+                    envelope_decrypt_str(bank_ct)
+                )
+            except Exception:  # noqa: BLE001
+                data["bank_account_number"] = None
         resp_staff.append(StaffMemberResponse(**data))
 
     # Compliance counters (R6, G1, G2, G3 — Phase 1 task C9). Resolved

@@ -338,6 +338,9 @@ class CustomerSearchResult(BaseModel):
     receivables: float = Field(0.0, description="Total outstanding balance due (BCY)")
     unused_credits: float = Field(0.0, description="Total unused credit notes (BCY)")
     reminders_enabled: bool = Field(False, description="Whether any reminder is enabled for this customer")
+    has_reminder_consent: bool = Field(
+        False, description="True when the customer has a reminder_consent record"
+    )
     last_portal_access_at: Optional[str] = Field(None, description="Last portal access timestamp (ISO 8601)")
     linked_vehicles: Optional[list[LinkedVehicleSummary]] = Field(
         None, description="Linked vehicles (when include_vehicles=true)"
@@ -1005,3 +1008,28 @@ class CustomerDeletionBlockedError(Exception):
         super().__init__(message)
         self.message = message
         self.payload = payload
+
+
+# ---------------------------------------------------------------------------
+# Customer reminder consent — manual revocation request (B2)
+# Requirements: 3.2, 3.4, 3.5
+# ---------------------------------------------------------------------------
+
+
+class RemindersRevokeRequest(BaseModel):
+    """POST /api/v1/customers/{id}/reminders/revoke request body.
+
+    Records a manual (verbal / in-person / email) consent revocation against
+    a customer. The router composes the persisted ``source`` string as
+    ``manually_recorded_by_staff:<obtained_method>`` and builds a
+    ``RemindersRevocationRecord`` from these fields.
+
+    Requirements: 3.2, 3.4, 3.5
+    """
+
+    obtained_method: Literal["phone", "in_person", "email_reply", "other"]
+    channel: Literal["sms", "email", "both"]
+    categories_affected: list[
+        Literal["service_due", "wof_expiry", "cof_expiry", "registration_expiry"]
+    ]
+    reason_note: str = Field(..., min_length=1)

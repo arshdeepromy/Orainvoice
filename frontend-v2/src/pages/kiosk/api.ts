@@ -81,3 +81,28 @@ export async function lookupCustomer(
     total: res.data?.total ?? 0,
   }
 }
+
+/** Response shape from GET /kiosk/consent-text */
+export interface KioskConsentText {
+  text: string
+  version: string
+}
+
+/**
+ * Fetch the reminder-consent banner text + version for the kiosk.
+ *
+ * GET /api/v1/kiosk/consent-text — the `{workshop_name}` placeholder is
+ * already substituted server-side. Returns empty strings on a malformed
+ * response so the consent step degrades gracefully.
+ */
+export async function fetchConsentText(
+  signal?: AbortSignal,
+): Promise<KioskConsentText> {
+  const res = await apiClient.get<KioskConsentText>('/kiosk/consent-text', {
+    signal,
+  })
+  return {
+    text: res.data?.text ?? '',
+    version: res.data?.version ?? '',
+  }
+}

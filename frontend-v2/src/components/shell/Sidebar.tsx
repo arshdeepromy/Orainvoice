@@ -175,6 +175,7 @@ const NAV_GROUPS: NavGroup[] = [
       { id: 'staff-schedule', to: '/staff-schedule', label: 'Staff Schedule', icon: ICON.schedule, module: 'branch_management', adminOnly: true },
       { id: 'projects', to: '/projects', label: 'Projects', icon: ICON.project, module: 'projects', flagKey: 'projects' },
       { id: 'time-tracking', to: '/time-tracking', label: 'Time Tracking', icon: ICON.time, module: 'time_tracking', flagKey: 'time_tracking' },
+      { id: 'timesheets', to: '/timesheets', label: 'Timesheets', icon: ICON.time, module: 'timesheets' },
       // Construction (module-gated, mirrors original navItems).
       { id: 'progress-claims', to: '/progress-claims', label: 'Progress Claims', icon: ICON.construction, module: 'progress_claims', flagKey: 'progress_claims' },
       { id: 'variations', to: '/variations', label: 'Variations', icon: ICON.construction, module: 'variations', flagKey: 'variations' },

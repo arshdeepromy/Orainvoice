@@ -5,12 +5,15 @@
  *
  *   - Calls `ppsrApi.listSearches({ offset, limit })` with safe-API
  *     fallbacks (`?? []` on items, `?? 0` on total).
- *   - Columns: Date, Rego, Match (colour chip), Statements, By (user),
- *     Charge.
+ *   - Columns: Date, Rego, Match (colour chip), Ownership, Statements, By.
  *   - Pagination: 25 rows / page; previous + next buttons.
  *   - Row click opens `PpsrDetailDrawer` with the chosen search id.
  *   - Optional `refreshKey` prop — when bumped, the table re-fetches
  *     the first page (used by `PPSRSearchPage` after a fresh search).
+ *
+ * The CarJam-reported per-check charge is intentionally not exposed in
+ * any column: org users must not see the wholesale CarJam cost — the
+ * platform sets the customer-facing price via Global Admin settings.
  *
  * Follows `.kiro/steering/safe-api-consumption.md`:
  *   - Every API consumption uses `?.` + `?? []` / `?? 0`.

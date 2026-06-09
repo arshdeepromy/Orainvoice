@@ -37,6 +37,7 @@ DEPENDENCY_GRAPH: dict[str, list[str]] = {
     "staff": ["scheduling"],
     "ecommerce": ["inventory"],
     "b2b-fleet-management": ["vehicles"],
+    "timesheets": ["staff", "scheduling"],
 }
 
 # Modules with OR-style dependencies (at least one must be enabled)

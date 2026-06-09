@@ -260,14 +260,16 @@
   {% endif %}
 
   {#- ============================================================ -#}
-  {#- Charges footer + disclaimer                                  -#}
+  {#- Disclaimer footer                                            -#}
+  {#-                                                               -#}
+  {#- The CarJam-reported charge is intentionally NOT rendered here.-#}
+  {#- Org users should not see CarJam's wholesale per-check cost on -#}
+  {#- exported reports — the platform sets the customer-facing       -#}
+  {#- price via Global Admin settings (ppsr_per_check_cost_nzd /    -#}
+  {#- owner_check_per_check_cost_nzd) and bills the org accordingly.-#}
+  {#- The raw ``search.charges_cents`` field is still persisted for -#}
+  {#- billing aggregation (see app/tasks/subscriptions.py).         -#}
   {#- ============================================================ -#}
-
-  {% if search.charges_cents %}
-  <p class="charges-line">
-    CarJam reported a charge of NZD {{ "%.2f"|format(search.charges_cents / 100) }} for this check.
-  </p>
-  {% endif %}
 
   <div class="disclaimer">
     This PPSR report was generated via the CarJam API on {{ search.created_at_display }}.

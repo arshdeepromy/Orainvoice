@@ -112,6 +112,91 @@ async def upload_clock_photo(request: Request, file: UploadFile = File(...), db:
     await db.commit()
     return r
 
+
+def _compress_passport_photo(content: bytes) -> tuple:
+    """Compress an uploaded image to passport-thumbnail size.
+
+    Tighter resize (≤512px on the long edge) and slightly lower JPEG
+    quality (78) than ``_compress_image`` because these photos are
+    rendered at avatar-size everywhere they appear (≤ 64×64 px on the
+    profile hero, ≤ 40×40 px in the clocked-in drawer, ≤ 32×32 px in
+    table rows). Anything larger is wasted bandwidth + storage. End
+    result: a typical 4MB phone selfie → ~25–40 KB stored.
+
+    Mirrors :func:`_compress_image` for transparency handling
+    (RGBA / P / LA → RGB on white) so PNGs with alpha don't render
+    with a black background.
+    """
+    from PIL import Image
+    img = Image.open(io.BytesIO(content))
+    if img.mode in ("RGBA", "P", "LA"):
+        bg = Image.new("RGB", img.size, (255, 255, 255))
+        if img.mode == "P":
+            img = img.convert("RGBA")
+        bg.paste(img, mask=img.split()[-1] if "A" in img.mode else None)
+        img = bg
+    elif img.mode != "RGB":
+        img = img.convert("RGB")
+    w, h = img.size
+    if max(w, h) > 512:
+        r = 512 / max(w, h)
+        img = img.resize((int(w * r), int(h * r)), Image.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=78, optimize=True, progressive=True)
+    return buf.getvalue(), ".jpg"
+
+
+@router.post("/staff-photos", summary="Upload staff profile (passport-size) photo")
+async def upload_staff_photo(request: Request, file: UploadFile = File(...), db: AsyncSession = Depends(get_db_session)):
+    """Upload a staff passport-size profile photo.
+
+    Re-uses the encryption + storage pipeline from :func:`_store` but
+    with a tighter compression profile (``_compress_passport_photo``,
+    ≤ 512 px on the long edge, JPEG quality 78). Files land at
+    ``/app/uploads/staff_photos/<org_id>/<uuid>.jpg``.
+
+    Returns ``{ file_key, file_name, file_size }``. The ``file_key``
+    is the value the staff-update endpoint accepts as
+    ``on_file_photo_url`` so the same field name keeps working with
+    its existing kiosk-lookup consumers.
+    """
+    org_id = _get_org_id(request)
+    content = await file.read()
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(413, "File too large")
+    if not content:
+        raise HTTPException(400, "Empty file")
+
+    # Always run the passport compressor — staff photos are rendered
+    # exclusively at avatar size so we pay the resize cost on the
+    # write path, not on every read. Falls back to the generic
+    # zlib path on PIL failure (corrupt upload, unsupported format)
+    # so the upload is never lost — same shape as ``_store`` does
+    # for non-image files.
+    ext = Path(file.filename or "photo.jpg").suffix.lower() or ".jpg"
+    if ext not in IMAGE_EXTS:
+        # Non-image upload — refuse rather than store binary garbage
+        # against the staff record (the frontend gates the file picker
+        # to image/* but the backend is the security boundary).
+        raise HTTPException(415, "Unsupported file type — image required")
+    try:
+        processed, ext = _compress_passport_photo(content)
+        flag = COMP_IMAGE
+    except Exception:
+        processed = zlib.compress(content, 6)
+        flag = COMP_ZLIB
+    encrypted = envelope_encrypt(processed)
+    fk = f"staff_photos/{org_id}/{uuid.uuid4().hex}{ext}"
+    dest = UPLOAD_BASE / fk
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(flag + encrypted)
+    sz = len(flag) + len(encrypted)
+    sm = StorageManager(db)
+    await sm.enforce_quota(org_id, sz)
+    await sm.increment_usage(org_id, sz)
+    await db.commit()
+    return {"file_key": fk, "file_name": file.filename or "photo.jpg", "file_size": sz}
+
 @router.get("/{category}/{org_path}/{file_id}", summary="Download file")
 async def download_file(category: str, org_path: str, file_id: str, request: Request):
     req_org = _get_org_id(request)

@@ -2047,7 +2047,8 @@ async def issue_invoice(
     invoice_number = await _get_next_invoice_number(db, org_id, invoice_prefix)
     invoice.invoice_number = invoice_number
     invoice.status = "issued"
-    invoice.issue_date = date.today()
+    if invoice.issue_date is None:
+        invoice.issue_date = date.today()
 
     # Set due date if not already set
     before_due_date = invoice.due_date

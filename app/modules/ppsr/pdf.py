@@ -324,8 +324,14 @@ async def render_pdf(
     search:
         The :class:`PpsrSearch` ORM row. ``rego``, ``match``,
         ``statement_count``, ``created_at``, ``not_found``,
-        ``charges_cents``, ``carjam_request_id`` are read directly off
-        the row.
+        ``carjam_request_id`` are read directly off the row.
+
+        ``charges_cents`` is intentionally NOT surfaced in the rendered
+        PDF: org users must not see the wholesale CarJam per-check cost
+        — the platform sets the customer-facing price via Global Admin
+        settings and bills accordingly. The column is still persisted on
+        the row for billing aggregation (see ``app/tasks/subscriptions.py``)
+        and is therefore not added to the template context below.
     decrypted:
         The decrypted CarJam payload (a dict — typically the
         ``json.loads(envelope_decrypt_str(...))`` of
@@ -439,7 +445,11 @@ async def render_pdf(
             "rego": getattr(search, "rego", ""),
             "match": getattr(search, "match", None),
             "statement_count": int(getattr(search, "statement_count", 0) or 0),
-            "charges_cents": getattr(search, "charges_cents", None),
+            # ``charges_cents`` is deliberately omitted from the template
+            # context — see the docstring above. The matching ``{% if
+            # search.charges_cents %}`` block was removed from
+            # ``report.html`` so even if a CarJam wholesale cost is
+            # persisted on the row, no org user ever sees it on the PDF.
             "carjam_request_id": getattr(search, "carjam_request_id", None),
             "not_found": bool(getattr(search, "not_found", False)),
             "created_at_display": _format_timestamp(

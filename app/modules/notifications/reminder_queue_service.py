@@ -19,6 +19,7 @@ import logging
 import uuid
 from datetime import datetime, timezone, timedelta, date
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select, update, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,6 +27,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.modules.notifications.models import ReminderQueue
 
 logger = logging.getLogger(__name__)
+
+
+def _today_in_org_tz(tz_name: str) -> date:
+    """Return *today* in the organisation's timezone.
+
+    Reminders are suppressed/enqueued relative to the org-local calendar day
+    (Req 4.1). Falls back to ``Pacific/Auckland`` when the configured timezone
+    name is invalid or unknown.
+    """
+    try:
+        return datetime.now(ZoneInfo(tz_name)).date()
+    except Exception:
+        logger.debug(
+            "invalid org timezone %r, falling back to Pacific/Auckland", tz_name
+        )
+        return datetime.now(ZoneInfo("Pacific/Auckland")).date()
 
 # ---------------------------------------------------------------------------
 # Tuning constants
@@ -142,6 +159,8 @@ async def enqueue_customer_reminders(db: AsyncSession) -> dict[str, Any]:
             "sms_allowed": sms_allowed,
             "sms_configured": sms_configured,
             "email_configured": email_configured,
+            # Top-level organisations.timezone column (NOT in settings JSONB).
+            "timezone": org.timezone or "Pacific/Auckland",
         }
         org_cache[org_id] = data
         return data
@@ -190,6 +209,10 @@ async def enqueue_customer_reminders(db: AsyncSession) -> dict[str, Any]:
         if org_data is None:
             stats["skipped"] += 1
             continue
+
+        # Resolve "today" in the org's local timezone ONCE per customer and
+        # reuse it inside the per-vehicle loop below (Req 4.1 / D2).
+        today_in_org_tz = _today_in_org_tz(org_data["timezone"])
 
         # Get linked vehicles — both link types (global = un-promoted,
         # org = post-promotion). Pre-spec the single inner join against
@@ -258,7 +281,23 @@ async def enqueue_customer_reminders(db: AsyncSession) -> dict[str, Any]:
 
             for cv, vehicle in vehicle_rows:
                 expiry_date = getattr(vehicle, expiry_field, None)
-                if expiry_date is None or expiry_date != target_date:
+                if expiry_date is None:
+                    continue
+                # Validity-window gate (Req 4.1): suppress reminders whose
+                # relevant date is on or before today in the org's timezone —
+                # a past/expired date never enqueues. Read-time only: no
+                # config write, no revocation append, no audit row (Req 4.5/4.6).
+                if expiry_date <= today_in_org_tz:
+                    logger.debug(
+                        "skipped: %s for %s — date %s is on or before today "
+                        "(%s) in org tz",
+                        reminder_type,
+                        vehicle.rego or "<unknown>",
+                        expiry_date,
+                        today_in_org_tz,
+                    )
+                    continue
+                if expiry_date != target_date:
                     continue
 
                 rego = vehicle.rego or "Unknown"

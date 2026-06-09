@@ -10,11 +10,21 @@ import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import or_, select, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.core.audit import write_audit_log
+from app.modules.customers.consent import (
+    RemindersConsentRecord,
+    RemindersRevocationRecord,
+    compute_missing_consent,
+    record_consent_given,
+    record_consent_revoked,
+)
+from app.modules.customers.exceptions import RemindersConsentRequiredError
 from app.modules.customers.models import Customer
 
 logger = logging.getLogger(__name__)
@@ -90,6 +100,7 @@ def _customer_to_search_dict(customer: Customer) -> dict:
         "mobile_phone": customer.mobile_phone,
         "work_phone": customer.work_phone,
         "reminders_enabled": reminders_on,
+        "has_reminder_consent": bool(custom.get("reminder_consent")),
         "last_portal_access_at": (
             customer.last_portal_access_at.isoformat()
             if customer.last_portal_access_at
@@ -1890,7 +1901,7 @@ REMINDER_CONFIG_KEY = "reminder_config"
 
 DEFAULT_REMINDER_DAYS = 30
 
-VALID_REMINDER_TYPES = {"service_due", "wof_expiry"}
+VALID_REMINDER_TYPES = {"service_due", "wof_expiry", "cof_expiry", "registration_expiry"}
 VALID_CHANNELS = {"email", "sms", "both"}
 
 
@@ -1972,6 +1983,8 @@ async def get_customer_reminder_config(
     return {
         "service_due": config.get("service_due", _default_reminder_entry()),
         "wof_expiry": config.get("wof_expiry", _default_reminder_entry()),
+        "cof_expiry": config.get("cof_expiry", _default_reminder_entry()),
+        "registration_expiry": config.get("registration_expiry", _default_reminder_entry()),
         "vehicles": vehicles,
     }
 
@@ -1982,6 +1995,10 @@ async def update_customer_reminder_config(
     org_id: uuid.UUID,
     customer_id: uuid.UUID,
     reminders: dict,
+    consent_record: RemindersConsentRecord | None = None,
+    current_user: Any = None,
+    ip_address: str | None = None,
+    user_agent: str | None = None,
 ) -> dict:
     """Update per-customer reminder configuration.
 
@@ -1990,6 +2007,23 @@ async def update_customer_reminder_config(
         "service_due": {"enabled": true, "days_before": 30, "channel": "both"},
         "wof_expiry": {"enabled": true, "days_before": 14, "channel": "sms"},
     }
+
+    When ``consent_record`` is omitted and the new ``reminders`` config newly
+    enables a (category, channel) pair not covered by the existing
+    ``customer.custom_fields["reminder_consent"]``, a
+    :class:`RemindersConsentRequiredError` is raised so the caller (router)
+    can surface the gate as an HTTP 409. When ``consent_record`` is supplied
+    it must cover every still-missing pair; the consent record and the new
+    config are co-persisted in the same transaction together with the
+    ``customer.reminder_consent.given`` audit row.
+
+    The four optional kwargs (``consent_record``, ``current_user``,
+    ``ip_address``, ``user_agent``) all default to ``None`` so existing
+    callers (including the legacy ``PUT /reminders`` body) continue to
+    work without changes — the gate is a no-op when no new pair is being
+    enabled.
+
+    Refs: Requirements 2.2, 2.3, 2.7, 2.8, 2.10, 2.11, 2.12, 2.13.
     """
     result = await db.execute(
         select(Customer).where(
@@ -2001,6 +2035,10 @@ async def update_customer_reminder_config(
     if customer is None:
         raise ValueError("Customer not found")
 
+    # Snapshot existing consent BEFORE any mutation — we use it both to
+    # compute the gate and as the baseline for the audit before/after pair.
+    existing_consent = (customer.custom_fields or {}).get("reminder_consent")
+
     # Validate and build config
     validated: dict = {}
     for rtype in VALID_REMINDER_TYPES:
@@ -2011,15 +2049,137 @@ async def update_customer_reminder_config(
             "channel": entry.get("channel", "email") if entry.get("channel") in VALID_CHANNELS else "email",
         }
 
-    # Merge into custom_fields
+    # Consent gate (Req 2.2/2.12/2.13). compute_missing_consent only
+    # returns pairs that are newly enabled AND not covered by existing
+    # consent, so the gate stays a no-op for idempotent re-submits and
+    # for `enabled: false` flips.
+    missing = compute_missing_consent(existing_consent, validated)
+
+    if missing and consent_record is None:
+        raise RemindersConsentRequiredError(missing=missing)
+
+    if consent_record is not None:
+        # Validate that the supplied record's entries cover every pair in
+        # ``missing``. An entry covers a missing ``{category, channel}``
+        # pair when it has the same category AND its channel is either
+        # the same channel or ``"both"``.
+        still_missing: list[dict] = []
+        for pair in missing:
+            cat = pair["category"]
+            chan = pair["channel"]
+            covered = any(
+                entry.category == cat
+                and (entry.channel == chan or entry.channel == "both")
+                for entry in consent_record.entries
+            )
+            if not covered:
+                still_missing.append(pair)
+        if still_missing:
+            raise RemindersConsentRequiredError(missing=still_missing)
+
+        # record_consent_given handles the JSONB write of `reminder_consent`,
+        # the flush+refresh, and the audit row in the same session.begin()
+        # transaction the router already established. Run it BEFORE the
+        # config write so the customer row already reflects the new
+        # reminder_consent when we re-read custom_fields below.
+        await record_consent_given(
+            db,
+            org_id=org_id,
+            customer_id=customer.id,
+            user_id=(current_user.id if current_user is not None else None),
+            record=consent_record,
+            ip_address=ip_address,
+            audit_device_info=user_agent,
+        )
+
+    # Merge into custom_fields. ``record_consent_given`` (above) already
+    # mutated ``customer.custom_fields`` to add the consent record, so we
+    # re-read the post-consent dict rather than the pre-call snapshot to
+    # avoid clobbering the consent write.
     custom_fields = dict(customer.custom_fields or {})
     custom_fields[REMINDER_CONFIG_KEY] = validated
     customer.custom_fields = custom_fields
+    flag_modified(customer, "custom_fields")
 
     await db.flush()
     await db.refresh(customer)
 
     return validated
+
+
+async def revoke_customer_reminders(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    customer_id: uuid.UUID,
+    current_user: Any,
+    record: RemindersRevocationRecord,
+    ip_address: str | None = None,
+) -> dict:
+    """Revoke reminder consent for one or more categories on a customer.
+
+    Loads the customer, verifies that at least one of the categories listed
+    in ``record.categories_affected`` is currently ``enabled: True`` in
+    ``custom_fields["reminder_config"]``. If none are currently enabled the
+    function early-returns with the unchanged ``reminder_config`` (CP-5
+    idempotent re-confirmation) — no revocation row is appended and no
+    audit row is written. Otherwise it delegates to ``record_consent_revoked``
+    which performs the JSONB write of the revocation entry, the
+    ``reminder_config`` flips, the ``flush + refresh``, and the
+    ``customer.reminder_consent.revoked`` audit row in one
+    ``session.begin()`` transaction.
+
+    Working-day SLA (Req 3.8 / NFR-7): the revocation is applied
+    synchronously inside the same HTTP request (no queue), so the
+    same-Working-Day deadline is satisfied trivially.
+
+    Failure / rollback (Req 3.6): if ``record_consent_revoked`` raises,
+    the surrounding ``session.begin()`` rolls back the entire request —
+    neither the ``reminder_config`` flip nor the revocation append is
+    persisted. The router (B2) maps the exception to a 500 response
+    with body ``{"error": "revocation_persistence_failed"}``.
+
+    Returns the post-revocation ``reminder_config`` dict for the response
+    body.
+
+    Refs: Requirements 3.4, 3.5, 3.6, 3.8, 3.9, NFR-7.
+    """
+    result = await db.execute(
+        select(Customer).where(
+            Customer.id == customer_id,
+            Customer.org_id == org_id,
+        )
+    )
+    customer = result.scalar_one_or_none()
+    if customer is None:
+        raise ValueError("Customer not found")
+
+    custom_fields = customer.custom_fields or {}
+    current_config = custom_fields.get(REMINDER_CONFIG_KEY) or {}
+
+    # CP-5 idempotent re-confirmation: when every category in
+    # ``categories_affected`` is already disabled there is nothing to flip
+    # and no audit-worthy event to record. Early-return WITHOUT calling
+    # ``record_consent_revoked`` so no extra revocation row is appended.
+    any_currently_enabled = any(
+        bool((current_config.get(cat) or {}).get("enabled"))
+        for cat in record.categories_affected
+    )
+    if not any_currently_enabled:
+        return dict(current_config)
+
+    await record_consent_revoked(
+        db,
+        org_id=org_id,
+        customer_id=customer.id,
+        user_id=current_user.id,
+        record=record,
+    )
+
+    # ``record_consent_revoked`` mutated ``customer.custom_fields`` in
+    # place and ran ``flush + refresh``; re-read the post-revocation
+    # ``reminder_config`` for the response.
+    return dict((customer.custom_fields or {}).get(REMINDER_CONFIG_KEY) or {})
 
 
 async def update_vehicle_expiry_dates(

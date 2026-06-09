@@ -27,6 +27,17 @@ logger = logging.getLogger(__name__)
 
 STANDARD_ACTIONS = ["create", "read", "update", "delete"]
 
+# Custom permissions that don't follow the standard CRUD pattern.
+# These are appended to the module's permission group when the module is
+# enabled for the org (or returned as a standalone group if the module has
+# no module_registry row yet).
+CUSTOM_PERMISSIONS: dict[str, list[PermissionItem]] = {
+    "timesheets": [
+        PermissionItem(key="timesheet.approve", label="Approve Timesheets"),
+        PermissionItem(key="payrun.lock", label="Lock Pay Runs"),
+    ],
+}
+
 _CACHE_KEY_PREFIX = "permissions:available"
 _CACHE_TTL_SECONDS = 300  # 5 minutes
 
@@ -115,6 +126,9 @@ async def get_available_permissions(
             )
             for action in STANDARD_ACTIONS
         ]
+        # Append any custom (non-CRUD) permissions for this module
+        if slug in CUSTOM_PERMISSIONS:
+            permissions.extend(CUSTOM_PERMISSIONS[slug])
         groups.append(PermissionGroup(
             module_slug=slug,
             module_name=display_name,

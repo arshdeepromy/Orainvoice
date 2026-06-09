@@ -21,6 +21,7 @@ export interface OrgBranding {
   phone: string | null
   email: string | null
   sidebar_display_mode: 'icon_and_name' | 'icon_only' | 'name_only'
+  customers_consent_column_visible?: boolean
 }
 
 export interface GstSettings {
@@ -121,6 +122,7 @@ export function TenantProvider({ children }: { children: ReactNode }) {
         trade_family: string | null
         trade_category: string | null
         sidebar_display_mode?: string
+        customers_consent_column_visible?: boolean
         address_country?: string | null
       }>('/org/settings', { signal })
 
@@ -135,6 +137,7 @@ export function TenantProvider({ children }: { children: ReactNode }) {
           phone: data.phone,
           email: data.email,
           sidebar_display_mode: (data.sidebar_display_mode as 'icon_and_name' | 'icon_only' | 'name_only') || 'icon_and_name',
+          customers_consent_column_visible: data.customers_consent_column_visible ?? false,
         },
         gst: {
           gst_number: data.gst_number,

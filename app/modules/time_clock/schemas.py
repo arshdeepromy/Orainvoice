@@ -161,6 +161,63 @@ class TimeClockEntryListResponse(BaseModel):
 
 
 # ===========================================================================
+# Currently-clocked-in dashboard schemas (admin visibility)
+# ===========================================================================
+
+
+class ClockedInStaffEntry(BaseModel):
+    """One row in the "who is currently on the clock" admin dashboard.
+
+    Surfaces only the fields the dashboard needs (staff identity +
+    clock-in start time + the open ``time_clock_entries`` row id) so
+    callers can render a live "elapsed" timer (computed client-side
+    from ``clock_in_at`` so no per-second polling is required) and
+    issue a manual clock-out via
+    ``POST /api/v2/staff/:id/clock/admin-clock-out/:entry_id``.
+
+    Excludes photos, notes, and break records — those live on the
+    main timesheet view, not the realtime dashboard.
+    """
+
+    time_clock_entry_id: UUID
+    staff_id: UUID
+    staff_name: str
+    employee_id: str | None = None
+    position: str | None = None
+    on_file_photo_url: str | None = None
+    clock_in_at: datetime
+    source: str
+    break_minutes: int = 0
+
+
+class ClockedInStaffListResponse(BaseModel):
+    """Wrapper per project rule: arrays go in ``{ items, total }``."""
+
+    items: list[ClockedInStaffEntry]
+    total: int
+
+
+class AdminClockOutRequest(BaseModel):
+    """Body for ``POST /api/v2/staff/:id/clock/admin-clock-out/:entry_id``.
+
+    Admin-initiated forced clock-out. The reason note is REQUIRED for
+    record-keeping — the audit row carries the staff id and reason
+    inside ``after_value`` so post-hoc review can answer "who closed
+    this and why".
+    """
+
+    reason_note: str = Field(min_length=3, max_length=500)
+    clock_out_at: datetime | None = Field(
+        default=None,
+        description=(
+            "Optional explicit clock-out timestamp. Defaults to now() when "
+            "omitted — the common case. Override only for back-dated edits "
+            "(e.g. closing a Friday shift on Monday morning)."
+        ),
+    )
+
+
+# ===========================================================================
 # Break record schemas (R2, R7)
 # ===========================================================================
 

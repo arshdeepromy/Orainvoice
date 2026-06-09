@@ -9,8 +9,13 @@
  *   4. Financing statements table (when ppsr_details non-empty)
  *   5. Warnings rows (when warnings non-empty)
  *   6. Ownership table (when ownership_history or current_owner present)
- *   7. Charges footer (currency-formatted via Intl.NumberFormat)
- *   8. Actions row — Export PDF / Save / New
+ *   7. Actions row — Export PDF / Save / New
+ *
+ * The CarJam-reported per-check charge (`charges_cents` on the API
+ * response) is intentionally NOT rendered: org users must not see the
+ * wholesale CarJam cost — the platform sets the customer-facing price
+ * via Global Admin settings and bills accordingly. The field stays on
+ * the wire for billing aggregation but no org-facing surface displays it.
  *
  * Presentational only — no API calls, all I/O is delegated to callback
  * props supplied by the parent (PPSRSearchPage). Follows

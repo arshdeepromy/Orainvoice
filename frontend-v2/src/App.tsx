@@ -316,6 +316,12 @@ const ShiftCoverPage = lazy(() => import('@/pages/swaps/ShiftCoverPage'))
 const ApprovalQueue = lazy(() => import('@/pages/leave/ApprovalQueue'))
 const TimeSheet = lazy(() => import('@/pages/time-tracking/TimeSheet'))
 
+// Staff Timesheets (Phase A3) — module-gated (`timesheets`):
+//   /timesheets          → TimesheetsPage (tabbed: Clocked In / Timesheets)
+//   /timesheets/settings → TimesheetSettings (org + branch override config)
+const TimesheetsPage = lazy(() => import('@/pages/staff-timesheets/TimesheetsPage'))
+const TimesheetSettings = lazy(() => import('@/pages/staff-timesheets/TimesheetSettings'))
+
 // Settings (Task 41) — the Settings container composes every settings tab
 // (org/branches/users/security/billing/accounting/currency/language/printer/
 // invoice-template/webhooks/modules/notifications + the people sub-pages) and
@@ -1426,6 +1432,18 @@ function AppRoutes() {
           <Route
             path="time-tracking"
             element={<ModuleRoute moduleSlug="time_tracking"><TimeSheet /></ModuleRoute>}
+          />
+
+          {/* Staff Timesheets (Phase A3) — module-gated (`timesheets`):
+              /timesheets (tabbed Clocked In + Timesheets list),
+              /timesheets/settings (org + branch override config). */}
+          <Route
+            path="timesheets"
+            element={<ModuleRoute moduleSlug="timesheets"><TimesheetsPage /></ModuleRoute>}
+          />
+          <Route
+            path="timesheets/settings"
+            element={<ModuleRoute moduleSlug="timesheets"><TimesheetSettings /></ModuleRoute>}
           />
 
           {/* Reports (Task 46) — the org Reports hub at /reports is UNGATED

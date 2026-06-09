@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, model_validator
 
 from app.modules.admin.schemas import SmsPackageTierPricing
 
@@ -196,6 +196,9 @@ class OrgSettingsResponse(BaseModel):
     sidebar_display_mode: Optional[str] = Field(
         None, description="Sidebar branding display: icon_and_name, icon_only, or name_only"
     )
+    customers_consent_column_visible: Optional[bool] = Field(
+        None, description="Show the Reminder Consent column on the customer list"
+    )
 
     # Invoice template selection
     invoice_template_id: Optional[str] = Field(
@@ -340,6 +343,9 @@ class OrgSettingsUpdateRequest(BaseModel):
         None,
         pattern=r"^(icon_and_name|icon_only|name_only)$",
         description="Sidebar branding display: icon_and_name, icon_only, or name_only",
+    )
+    customers_consent_column_visible: Optional[bool] = Field(
+        None, description="Show the Reminder Consent column on the customer list"
     )
 
     # Invoice template selection
@@ -579,6 +585,20 @@ class UserInviteRequest(BaseModel):
         max_length=128,
         description="Password for direct account creation (kiosk only). When provided, skips the invite email.",
     )
+    branch_ids: list[str] | None = Field(
+        None,
+        description="Branch UUIDs to assign. Required for kiosk role (exactly 1).",
+    )
+
+    @model_validator(mode="after")
+    def validate_kiosk_branch_ids(self) -> "UserInviteRequest":
+        """Enforce exactly one branch_id when role is 'kiosk'."""
+        if self.role == "kiosk":
+            if not self.branch_ids or len(self.branch_ids) != 1:
+                raise ValueError(
+                    "Kiosk role requires exactly one branch_id in branch_ids"
+                )
+        return self
 
 
 

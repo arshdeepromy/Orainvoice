@@ -45,6 +45,7 @@ interface CustomerSearchResult {
   receivables?: number
   unused_credits?: number
   reminders_enabled?: boolean
+  has_reminder_consent?: boolean
   last_portal_access_at?: string | null
   branch_id?: string | null
 }
@@ -79,6 +80,7 @@ interface CustomerReminderConfig {
   service_due: ReminderEntry
   wof_expiry: ReminderEntry
   cof_expiry: ReminderEntry
+  registration_expiry: ReminderEntry
   vehicles: VehicleExpiryData[]
 }
 
@@ -86,6 +88,7 @@ const DEFAULT_REMINDER_CONFIG: CustomerReminderConfig = {
   service_due: { enabled: false, days_before: 30, channel: 'email' },
   wof_expiry: { enabled: false, days_before: 30, channel: 'email' },
   cof_expiry: { enabled: false, days_before: 30, channel: 'email' },
+  registration_expiry: { enabled: false, days_before: 30, channel: 'email' },
   vehicles: [],
 }
 
@@ -99,7 +102,8 @@ function formatNZD(amount: number | null | undefined): string {
 /* ------------------------------------------------------------------ */
 
 export default function CustomerList() {
-  const { tradeFamily } = useTenant()
+  const { tradeFamily, settings } = useTenant()
+  const consentColumnVisible = settings?.branding?.customers_consent_column_visible ?? false
   const { branches: branchList } = useBranch()
   const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
 
@@ -199,7 +203,7 @@ export default function CustomerList() {
   const [reminderError, setReminderError] = useState('')
   const [vehicleDateEdits, setVehicleDateEdits] = useState<Record<string, { service_due_date?: string; wof_expiry?: string; cof_expiry?: string }>>({})
 
-  const updateReminder = (type: 'service_due' | 'wof_expiry' | 'cof_expiry', updates: Partial<ReminderEntry>) => {
+  const updateReminder = (type: 'service_due' | 'wof_expiry' | 'cof_expiry' | 'registration_expiry', updates: Partial<ReminderEntry>) => {
     setReminderConfig(prev => ({
       ...prev,
       [type]: { ...prev[type], ...updates },
@@ -234,6 +238,7 @@ export default function CustomerList() {
           service_due: { enabled: false, days_before: 30, channel: 'email' },
           wof_expiry: { enabled: false, days_before: 30, channel: 'email' },
           cof_expiry: { enabled: false, days_before: 30, channel: 'email' },
+          registration_expiry: { enabled: false, days_before: 30, channel: 'email' },
         })
         await fetchCustomers(searchQuery, page)
       } catch { /* silent */ }
@@ -372,13 +377,16 @@ export default function CustomerList() {
                     {isAutomotive && (
                     <th scope="col" className="mono border-b border-border px-5 py-[11px] text-center text-[10.5px] font-medium uppercase tracking-[0.08em] text-muted-2">Reminders WOF/COF/Service</th>
                     )}
+                    {consentColumnVisible && (
+                    <th scope="col" className="mono border-b border-border px-5 py-[11px] text-center text-[10.5px] font-medium uppercase tracking-[0.08em] text-muted-2">Reminder Consent</th>
+                    )}
                     <th scope="col" className="mono border-b border-border px-5 py-[11px] text-center text-[10.5px] font-medium uppercase tracking-[0.08em] text-muted-2">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {!data.customers || data.customers.length === 0 ? (
                     <tr>
-                      <td colSpan={isAutomotive ? 10 : 9} className="px-5 py-12 text-center text-[13px] text-muted">
+                      <td colSpan={(isAutomotive ? 10 : 9) + (consentColumnVisible ? 1 : 0)} className="px-5 py-12 text-center text-[13px] text-muted">
                         {searchQuery ? 'No customers match your search.' : 'No customers yet. Create your first customer to get started.'}
                       </td>
                     </tr>
@@ -431,6 +439,15 @@ export default function CustomerList() {
                               className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${c.reminders_enabled ? 'translate-x-6' : 'translate-x-1'}`}
                             />
                           </button>
+                        </td>
+                        )}
+                        {consentColumnVisible && (
+                        <td className="whitespace-nowrap px-5 py-3 text-center text-[13px]">
+                          {c.has_reminder_consent ? (
+                            <span className="font-medium text-ok">Yes</span>
+                          ) : (
+                            <span className="text-muted-2">No</span>
+                          )}
                         </td>
                         )}
                         <td className="whitespace-nowrap px-5 py-3 text-center">
@@ -725,6 +742,45 @@ export default function CustomerList() {
                     <p className="text-[11px] italic text-muted-2">No COF vehicles linked to this customer.</p>
                   )}
                 </>
+              )}
+            </div>
+            )}
+
+            {/* Registration Expiry — automotive only */}
+            {isAutomotive && (
+            <div className="space-y-3 rounded-card border border-border p-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-[13px] font-medium text-text">Registration Expiry</h3>
+                <label className="relative inline-flex cursor-pointer items-center">
+                  <input
+                    type="checkbox"
+                    checked={reminderConfig?.registration_expiry?.enabled ?? false}
+                    onChange={(e) => updateReminder('registration_expiry', { enabled: e.target.checked })}
+                    className="peer sr-only"
+                  />
+                  <div className="peer h-5 w-9 rounded-full bg-border after:absolute after:left-[2px] after:top-[2px] after:h-4 after:w-4 after:rounded-full after:border after:border-border-strong after:bg-white after:transition-all after:content-[''] peer-checked:bg-accent peer-checked:after:translate-x-full peer-checked:after:border-white peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-accent-soft" />
+                  <span className="ml-2 text-[13px] text-muted">{reminderConfig?.registration_expiry?.enabled ? 'Enabled' : 'Disabled'}</span>
+                </label>
+              </div>
+              {reminderConfig?.registration_expiry?.enabled && (
+                <div className="grid grid-cols-2 gap-3">
+                  <Input
+                    label="Days before expiry"
+                    type="number"
+                    value={String(reminderConfig?.registration_expiry?.days_before ?? 30)}
+                    onChange={(e) => updateReminder('registration_expiry', { days_before: parseInt(e.target.value) || 30 })}
+                  />
+                  <Select
+                    label="Notify via"
+                    options={[
+                      { value: 'email', label: 'Email' },
+                      { value: 'sms', label: 'SMS' },
+                      { value: 'both', label: 'Email & SMS' },
+                    ]}
+                    value={reminderConfig?.registration_expiry?.channel ?? 'email'}
+                    onChange={(e) => updateReminder('registration_expiry', { channel: e.target.value as 'email' | 'sms' | 'both' })}
+                  />
+                </div>
               )}
             </div>
             )}

@@ -14,14 +14,14 @@ interface KioskRegoEntryProps {
 }
 
 const REGO_MAX = 6
-/* Full alphanumeric on-screen keypad. The prototype draws a 9-key mock
-   (A/B/C/1/2/3/0/⌫/Clear) that can't enter most plates, so we keep its button
-   styling (`.keypad`) but expose every key for real kiosk use. */
-const KEYPAD_KEYS = [
-  'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I',
-  'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R',
-  'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', '0',
-  '1', '2', '3', '4', '5', '6', '7', '8', '9',
+/* QWERTY keypad layout — matches the staff clock-in screen so kiosk users see
+   a familiar typewriter ordering instead of an A-Z grid (faster touch hunting
+   on a tablet). Digits live above the letters per phone-keyboard convention. */
+const KEYPAD_ROWS: string[][] = [
+  ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'],
+  ['Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P'],
+  ['A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L'],
+  ['Z', 'X', 'C', 'V', 'B', 'N', 'M'],
 ]
 
 /* ── KioskRegoEntry ──
@@ -148,29 +148,42 @@ export function KioskRegoEntry({
           </p>
         )}
 
-        <div className="keypad" style={{ gridTemplateColumns: 'repeat(6, 1fr)' }}>
-          {KEYPAD_KEYS.map((k) => (
-            <button key={k} type="button" onClick={() => pressKey(k)} disabled={loading}>
-              {k}
-            </button>
+        <div className="space-y-2" style={{ marginTop: '18px' }}>
+          {KEYPAD_ROWS.map((row, idx) => (
+            <div key={idx} className="flex flex-nowrap justify-center gap-1.5 sm:gap-2">
+              {row.map((k) => (
+                <button
+                  key={k}
+                  type="button"
+                  onClick={() => pressKey(k)}
+                  disabled={loading}
+                  className="mono inline-flex min-h-[48px] flex-1 basis-0 min-w-0 items-center justify-center rounded-ctl border border-border bg-card px-1.5 py-2 text-base font-semibold text-text shadow-card hover:bg-canvas focus:outline-none focus:ring-2 focus:ring-accent disabled:cursor-not-allowed disabled:opacity-50 sm:px-3 sm:text-lg"
+                >
+                  {k}
+                </button>
+              ))}
+            </div>
           ))}
-          <button
-            type="button"
-            onClick={() => pressKey('back')}
-            disabled={loading}
-            aria-label="Backspace"
-            style={{ gridColumn: 'span 3' }}
-          >
-            ⌫
-          </button>
-          <button
-            type="button"
-            onClick={() => pressKey('clear')}
-            disabled={loading}
-            style={{ gridColumn: 'span 3', fontSize: '18px' }}
-          >
-            Clear
-          </button>
+
+          <div className="flex flex-nowrap justify-center gap-1.5 sm:gap-2 pt-1">
+            <button
+              type="button"
+              onClick={() => pressKey('back')}
+              disabled={loading}
+              aria-label="Backspace"
+              className="inline-flex min-h-[48px] flex-1 basis-0 min-w-0 items-center justify-center rounded-ctl border border-border bg-card px-3 py-2 text-base font-medium text-text shadow-card hover:bg-canvas focus:outline-none focus:ring-2 focus:ring-accent disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              ⌫
+            </button>
+            <button
+              type="button"
+              onClick={() => pressKey('clear')}
+              disabled={loading}
+              className="inline-flex min-h-[48px] flex-1 basis-0 min-w-0 items-center justify-center rounded-ctl border border-border bg-card px-3 py-2 text-base font-medium text-text shadow-card hover:bg-canvas focus:outline-none focus:ring-2 focus:ring-accent disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Clear
+            </button>
+          </div>
         </div>
 
         <button

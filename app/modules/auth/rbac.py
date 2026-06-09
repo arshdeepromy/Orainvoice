@@ -49,7 +49,7 @@ ALL_ROLES = {GLOBAL_ADMIN, FRANCHISE_ADMIN, ORG_ADMIN, BRANCH_ADMIN, LOCATION_MA
 ROLE_PERMISSIONS: dict[str, list[str]] = {
     "global_admin": ["*"],
     "franchise_admin": ["franchise.read", "reports.read"],
-    "org_admin": ["org.*", "users.*", "modules.*", "settings.*", "reports.*", "billing.*"],
+    "org_admin": ["org.*", "users.*", "modules.*", "settings.*", "reports.*", "billing.*", "timesheet.*", "payrun.*"],
     "branch_admin": [
         "invoices.*", "customers.*", "vehicles.*", "quotes.*", "jobs.*",
         "bookings.*", "inventory.*", "catalogue.*", "expenses.*",
@@ -209,6 +209,13 @@ STAFF_MEMBER_ALLOWED_PREFIXES: tuple[str, ...] = (
     "/api/v2/schedule",
     "/api/v1/job-cards/",
     "/api/v1/job-cards",
+    # --- Timesheets (permission-gated server-side via timesheet.approve) ---
+    "/api/v2/timesheets/",
+    "/api/v2/timesheets",
+    "/api/v2/clocked-in/",
+    "/api/v2/clocked-in",
+    "/api/v2/timesheet-settings/",
+    "/api/v2/timesheet-settings",
     # --- Self-service (clock-in/out, payslips) ---
     # SelfServiceClockScreen resolves the current user's own staff row from the
     # active-staff list and posts clock actions; MyPayslipsPage reads
@@ -251,6 +258,9 @@ KIOSK_ALLOWED_PREFIXES: tuple[str, ...] = (
     "/api/v1/auth/refresh",  # token refresh to keep kiosk session alive
     "/api/v2/modules",       # module list for vehicle-step gating on kiosk
     "/api/v1/payments/qr-session",  # QR payment session polling (GET only)
+    "/api/v2/uploads/clock-photos",  # staff clock-in photo upload (POST only — see method gate below)
+    "/api/v2/uploads/staff_photos/",  # staff profile photo download (GET only — see method gate below)
+    "/api/v2/uploads/clock_photos/",  # clock-in/out photo download (GET only — see method gate below)
 )
 
 
@@ -427,6 +437,23 @@ def check_role_path_access(role: str, path: str, method: str = "GET") -> str | N
         # Kiosk can only GET qr-session endpoints (poll pending/status), not POST (expire)
         if _matches_any_prefix(path, ("/api/v1/payments/qr-session",)) and method.upper() != "GET":
             return "Kiosk role has read-only access to QR payment sessions"
+        # Kiosk can only POST to clock-photos (upload), not GET/PUT/DELETE.
+        # Photos are read back via the kiosk clock-action response which
+        # returns presigned-style URLs; the upload route is write-only.
+        if _matches_any_prefix(path, ("/api/v2/uploads/clock-photos",)) and method.upper() != "POST":
+            return "Kiosk role can only upload clock-in photos"
+        # Kiosk can only GET on the staff/clock photo *download* routes
+        # (read the side-by-side comparison + identity-confirm photos).
+        # Trailing-slash form distinguishes these from the hyphenated
+        # `/api/v2/uploads/clock-photos` upload route which is POST-only.
+        if (
+            _matches_any_prefix(path, (
+                "/api/v2/uploads/staff_photos/",
+                "/api/v2/uploads/clock_photos/",
+            ))
+            and method.upper() != "GET"
+        ):
+            return "Kiosk role can only read staff/clock photos"
 
     # Unknown roles are denied everything except public paths
     elif role not in ALL_ROLES:

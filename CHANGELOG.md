@@ -4,6 +4,29 @@ All notable changes to OraInvoice are documented in this file.
 
 ---
 
+## [1.23.0]
+
+### Added — Customer reminder consent
+
+- **Kiosk consent capture.** The kiosk check-in wizard gains a consent step where the customer opts in to WOF / COF / registration / service-due reminders per vehicle and per channel (SMS / Email / Both). The master toggle defaults unchecked and never reads persisted state; a ticked row requires a channel before the wizard can continue. Consent is co-persisted with the check-in in one transaction (`app/modules/kiosk/service.py`), recording the consent text version, source, IP, and user-agent.
+- **Manual consent gate on the Customer Profile.** Enabling a reminder (category, channel) the customer has not consented to opens a Consent Confirmation modal: staff record how consent was obtained and a note, and the consent record is saved alongside the config via `PUT /customers/{id}/reminders`. A new "Reminder Consent" tab shows the recorded consent, its version, and a revocation history; per-entry "Revoke" controls open a Revocation modal that records the revocation (`POST /customers/{id}/reminders/revoke`) with a full audit trail.
+- **Automatic suppression of past-date reminders.** `enqueue_customer_reminders` now skips any reminder whose relevant date is on or before today in the organisation's timezone (`Organisation.timezone`, with a `Pacific/Auckland` fallback), so expired dates never enqueue. The gate is read-time only — no config writes, no audit rows.
+- **Supporting surfaces.** `GET /kiosk/consent-text` and `GET /customers/consent-text` serve the versioned consent text (workshop name substituted server-side); `VALID_REMINDER_TYPES` now covers all four reminder categories; an optional, org-setting-gated "Reminder Consent" column on the customer list (`customers_consent_column_visible`).
+
+Consent and revocation audit rows redact PII (`ip_address` / `user_agent` for grants; recorded-by identity for revocations), enforced by an AST lint. No Alembic migration is required — the consent record lives in `customer.custom_fields` JSONB.
+
+---
+
+## [1.22.1]
+
+### Fixed — CarJam wholesale charges no longer leak onto exported PDFs
+
+- **PPSR / Ownership Check PDFs no longer show "CarJam reported a charge of NZD …".** Org users must not see CarJam's wholesale per-check cost on exported reports — the platform sets the customer-facing price via Global Admin settings (`ppsr_per_check_cost_nzd`, `owner_check_per_check_cost_nzd`) and bills accordingly via `app/tasks/subscriptions.py`. The charges line in `app/modules/ppsr/templates/report.html` and the matching `.charges-line` CSS rule were removed; the PDF context dict in `app/modules/ppsr/pdf.py` no longer surfaces `charges_cents` to the template. The DB column itself is unchanged — billing aggregation still reads it.
+- **Defence in depth on the regression.** `tests/integration/test_ppsr_pdf.py::test_charges_line_never_rendered_even_when_charges_present` asserts the formatted charge cannot leak via any surface (no "CarJam reported a charge" copy, no "NZD 1.25", no "$1.25"). Any future change that re-introduces the charge to the PDF will fail this test.
+- **Stale frontend docstrings cleaned up.** `PpsrResultPanel.tsx` and `PpsrHistoryTable.tsx` previously claimed a "Charges footer" / "Charge column" in their module docstrings. Neither component actually rendered the value, but the comments implied they did — now they explicitly state the charge is intentionally hidden from org-facing surfaces.
+
+---
+
 ## [1.22.0]
 
 ### Fixed — CarJam Ownership Check polish

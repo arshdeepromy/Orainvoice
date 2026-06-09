@@ -23,11 +23,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AxiosError } from 'axios'
 import apiClient from '@/api/client'
+import AuthorizedAvatar from '@/components/AuthorizedAvatar'
 
 /* ─────────────────────────────────────────────────────────── Types ── */
 
 export type ClockStep =
-  | 'welcome'
+  | 'choice'
   | 'entry'
   | 'confirm-identity'
   | 'camera'
@@ -127,51 +128,169 @@ const MAX_EMPLOYEE_ID_LENGTH = 24
 
 /* ───────────────────────────────────────────────────── Sub-screens ── */
 
-interface WelcomeProps {
-  onStart: () => void
+interface ChoiceProps {
+  onChoose: (action: ClockAction) => void
   onExit?: () => void
 }
 
-function WelcomeStep({ onStart, onExit }: WelcomeProps) {
-  return (
-    <div className="w-full max-w-md space-y-8 rounded-card bg-card p-8 text-center shadow-pop">
-      <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-accent-soft">
-        <svg
-          className="h-8 w-8 text-accent"
-          fill="none"
-          viewBox="0 0 24 24"
-          strokeWidth={2}
-          stroke="currentColor"
-          aria-hidden="true"
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
-          />
-        </svg>
-      </div>
+/**
+ * ChoiceStep — two animated tiles letting the staff member declare intent
+ * (Clock In vs Clock Out) BEFORE entering their employee code.
+ *
+ * Visual treatment:
+ *   - The first card is the existing accent-blue "Clock In" tile (matches
+ *     the Start button colour the previous screen used).
+ *   - The second card is a darker red ("Clock Out") so the two intents are
+ *     unambiguous from across the room.
+ *
+ * Animation:
+ *   - On mount the two cards fade-and-slide in (`enter` class).
+ *   - When tapped, the chosen card scales up + fades while the other card
+ *     swipes off-screen in the opposite direction. The parent waits on the
+ *     same duration before flipping the step state, so the user perceives a
+ *     single smooth handoff into the keypad.
+ *   - Reduced-motion users still see the choice + a near-instant transition
+ *     (the CSS transitions degrade gracefully under `prefers-reduced-motion`).
+ */
+function ChoiceStep({ onChoose, onExit }: ChoiceProps) {
+  const [chosen, setChosen] = useState<ClockAction | null>(null)
+  const [mounted, setMounted] = useState(false)
 
+  // Drive the entry animation: cards start translated + transparent and
+  // fade-in on the next animation frame so the transition runs.
+  useEffect(() => {
+    const id = window.requestAnimationFrame(() => setMounted(true))
+    return () => window.cancelAnimationFrame(id)
+  }, [])
+
+  const pick = useCallback(
+    (action: ClockAction) => {
+      if (chosen) return
+      setChosen(action)
+      // Match `duration-500` below — slightly faster than the user's eye
+      // can fully track so the next step appears responsive.
+      window.setTimeout(() => onChoose(action), 480)
+    },
+    [chosen, onChoose],
+  )
+
+  const baseCard =
+    'group relative flex w-full flex-col items-center justify-center gap-4 ' +
+    'rounded-card p-8 text-center text-white shadow-pop ' +
+    'min-h-[260px] sm:min-h-[300px] ' +
+    'transition-all duration-500 ease-out ' +
+    'focus:outline-none focus-visible:ring-4 focus-visible:ring-offset-4 focus-visible:ring-offset-canvas ' +
+    'active:scale-[0.97]'
+
+  // Entry transform: slide in from off-screen + fade-in.
+  // Exit transform: chosen card scales up + fades; sibling swipes off.
+  const inCardClasses = (() => {
+    const colour = 'bg-accent hover:bg-accent-press focus-visible:ring-accent'
+    if (chosen === 'in') {
+      return [baseCard, colour, 'scale-105 opacity-0 pointer-events-none'].join(' ')
+    }
+    if (chosen === 'out') {
+      return [baseCard, colour, '-translate-x-[120%] opacity-0 pointer-events-none'].join(' ')
+    }
+    if (!mounted) {
+      return [baseCard, colour, '-translate-x-8 opacity-0'].join(' ')
+    }
+    return [baseCard, colour, 'translate-x-0 opacity-100'].join(' ')
+  })()
+
+  const outCardClasses = (() => {
+    // Dark red tone — explicit hex pair so it's obviously different from
+    // the surface red used for errors. Matches the user's "bit dark red".
+    const colour = 'bg-[#b91c1c] hover:bg-[#991b1b] focus-visible:ring-[#b91c1c]'
+    if (chosen === 'out') {
+      return [baseCard, colour, 'scale-105 opacity-0 pointer-events-none'].join(' ')
+    }
+    if (chosen === 'in') {
+      return [baseCard, colour, 'translate-x-[120%] opacity-0 pointer-events-none'].join(' ')
+    }
+    if (!mounted) {
+      return [baseCard, colour, 'translate-x-8 opacity-0'].join(' ')
+    }
+    return [baseCard, colour, 'translate-x-0 opacity-100'].join(' ')
+  })()
+
+  return (
+    <div className="w-full max-w-3xl space-y-6 px-4 text-center">
       <div className="space-y-2">
-        <h1 className="text-2xl font-bold text-text">Staff Clock In</h1>
-        <p className="text-lg text-muted">
-          Tap below to clock in or out using your employee code.
+        <h1 className="text-2xl font-bold text-text sm:text-3xl">Staff time clock</h1>
+        <p className="text-base text-muted sm:text-lg">
+          Choose what you want to do.
         </p>
       </div>
 
-      <button
-        type="button"
-        onClick={onStart}
-        className="inline-flex w-full min-h-[56px] items-center justify-center rounded-ctl bg-accent px-8 py-3 text-lg font-medium text-white shadow-card hover:bg-accent-press focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2"
-      >
-        Start
-      </button>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 sm:gap-6">
+        <button
+          type="button"
+          onClick={() => pick('in')}
+          disabled={chosen !== null}
+          className={inCardClasses}
+          aria-label="Clock in"
+        >
+          <span className="flex h-16 w-16 items-center justify-center rounded-full bg-white/20 ring-2 ring-white/30 transition-transform duration-500 group-hover:scale-110">
+            <svg
+              className="h-8 w-8"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              {/* Door entering arrow — clock in */}
+              <path d="M15 12H3" />
+              <path d="M9 18l-6-6 6-6" />
+              <path d="M15 4h4a2 2 0 012 2v12a2 2 0 01-2 2h-4" />
+            </svg>
+          </span>
+          <span className="text-2xl font-bold sm:text-3xl">Clock In</span>
+          <span className="text-sm font-medium opacity-90 sm:text-base">
+            Start your shift
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => pick('out')}
+          disabled={chosen !== null}
+          className={outCardClasses}
+          aria-label="Clock out"
+        >
+          <span className="flex h-16 w-16 items-center justify-center rounded-full bg-white/20 ring-2 ring-white/30 transition-transform duration-500 group-hover:scale-110">
+            <svg
+              className="h-8 w-8"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              {/* Door exiting arrow — clock out */}
+              <path d="M9 12h12" />
+              <path d="M15 6l6 6-6 6" />
+              <path d="M9 4H5a2 2 0 00-2 2v12a2 2 0 002 2h4" />
+            </svg>
+          </span>
+          <span className="text-2xl font-bold sm:text-3xl">Clock Out</span>
+          <span className="text-sm font-medium opacity-90 sm:text-base">
+            End your shift
+          </span>
+        </button>
+      </div>
 
       {onExit && (
         <button
           type="button"
           onClick={onExit}
-          className="inline-flex min-h-[44px] items-center justify-center px-4 py-2 text-base font-medium text-muted hover:text-text focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2"
+          disabled={chosen !== null}
+          className="inline-flex min-h-[44px] items-center justify-center px-4 py-2 text-base font-medium text-muted hover:text-text focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2 disabled:opacity-50"
         >
           Back to home
         </button>
@@ -242,15 +361,14 @@ function EntryStep({ onSubmit, onBack, loading, error }: EntryProps) {
       {/* Keyboard */}
       <div className="space-y-2">
         {KEYBOARD_ROWS.map((row, idx) => (
-          <div key={idx} className="flex flex-wrap justify-center gap-2">
+          <div key={idx} className="flex flex-nowrap justify-center gap-1.5 sm:gap-2">
             {row.map((char) => (
               <button
                 key={char}
                 type="button"
                 onClick={() => append(char)}
                 disabled={loading}
-                className="mono inline-flex min-h-[48px] min-w-[44px] flex-1 items-center justify-center rounded-ctl border border-border bg-card px-3 py-2 text-lg font-semibold text-text shadow-card hover:bg-canvas focus:outline-none focus:ring-2 focus:ring-accent disabled:cursor-not-allowed disabled:opacity-50"
-                style={{ flexBasis: '40px' }}
+                className="mono inline-flex min-h-[48px] flex-1 basis-0 min-w-0 items-center justify-center rounded-ctl border border-border bg-card px-1.5 py-2 text-base font-semibold text-text shadow-card hover:bg-canvas focus:outline-none focus:ring-2 focus:ring-accent disabled:cursor-not-allowed disabled:opacity-50 sm:px-3 sm:text-lg"
               >
                 {char}
               </button>
@@ -258,12 +376,12 @@ function EntryStep({ onSubmit, onBack, loading, error }: EntryProps) {
           </div>
         ))}
 
-        <div className="flex flex-wrap justify-center gap-2 pt-1">
+        <div className="flex flex-nowrap justify-center gap-1.5 sm:gap-2 pt-1">
           <button
             type="button"
             onClick={() => append('-')}
             disabled={loading}
-            className="mono inline-flex min-h-[48px] min-w-[44px] items-center justify-center rounded-ctl border border-border bg-card px-4 py-2 text-lg font-semibold text-text shadow-card hover:bg-canvas focus:outline-none focus:ring-2 focus:ring-accent disabled:cursor-not-allowed disabled:opacity-50"
+            className="mono inline-flex min-h-[48px] flex-1 basis-0 min-w-0 items-center justify-center rounded-ctl border border-border bg-card px-3 py-2 text-lg font-semibold text-text shadow-card hover:bg-canvas focus:outline-none focus:ring-2 focus:ring-accent disabled:cursor-not-allowed disabled:opacity-50"
           >
             -
           </button>
@@ -271,7 +389,7 @@ function EntryStep({ onSubmit, onBack, loading, error }: EntryProps) {
             type="button"
             onClick={backspace}
             disabled={loading || employeeId.length === 0}
-            className="inline-flex min-h-[48px] min-w-[88px] items-center justify-center rounded-ctl border border-border bg-card px-4 py-2 text-base font-medium text-text shadow-card hover:bg-canvas focus:outline-none focus:ring-2 focus:ring-accent disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex min-h-[48px] flex-[2] basis-0 min-w-0 items-center justify-center rounded-ctl border border-border bg-card px-3 py-2 text-base font-medium text-text shadow-card hover:bg-canvas focus:outline-none focus:ring-2 focus:ring-accent disabled:cursor-not-allowed disabled:opacity-50"
             aria-label="Backspace"
           >
             ⌫
@@ -280,7 +398,7 @@ function EntryStep({ onSubmit, onBack, loading, error }: EntryProps) {
             type="button"
             onClick={clear}
             disabled={loading || employeeId.length === 0}
-            className="inline-flex min-h-[48px] min-w-[88px] items-center justify-center rounded-ctl border border-border bg-card px-4 py-2 text-base font-medium text-text shadow-card hover:bg-canvas focus:outline-none focus:ring-2 focus:ring-accent disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex min-h-[48px] flex-[2] basis-0 min-w-0 items-center justify-center rounded-ctl border border-border bg-card px-3 py-2 text-base font-medium text-text shadow-card hover:bg-canvas focus:outline-none focus:ring-2 focus:ring-accent disabled:cursor-not-allowed disabled:opacity-50"
           >
             Clear
           </button>
@@ -312,55 +430,47 @@ function EntryStep({ onSubmit, onBack, loading, error }: EntryProps) {
 
 interface IdentityProps {
   lookup: LookupResult
+  /** The action the user explicitly picked on the choice screen. */
+  intendedAction: ClockAction
   onTakePhoto: () => void
   onBack: () => void
 }
 
-function IdentityConfirmStep({ lookup, onTakePhoto, onBack }: IdentityProps) {
-  const action: ClockAction = lookup?.currently_clocked_in ? 'out' : 'in'
+function IdentityConfirmStep({ lookup, intendedAction, onTakePhoto, onBack }: IdentityProps) {
+  const action: ClockAction = intendedAction
   const onFile = lookup?.on_file_photo_url ?? null
   const firstName = lookup?.first_name ?? 'there'
+
+  // Detect mismatches between what the staff member picked and the server's
+  // current clock state — this catches the "I forgot to clock out yesterday"
+  // scenario before it hits the backend's invalid_action 409.
+  const stateMismatch =
+    (intendedAction === 'in' && lookup?.currently_clocked_in) ||
+    (intendedAction === 'out' && !lookup?.currently_clocked_in)
 
   return (
     <div className="w-full max-w-md space-y-6 rounded-card bg-card p-8 text-center shadow-pop">
       {/* On-file photo */}
-      <div className="mx-auto h-40 w-40 overflow-hidden rounded-full border-4 border-accent-soft bg-canvas">
-        {onFile ? (
-          <img
-            src={onFile}
-            alt={`On-file photo of ${firstName}`}
-            className="h-full w-full object-cover"
-          />
-        ) : (
-          <div className="flex h-full w-full items-center justify-center text-muted-2">
-            <svg
-              className="h-16 w-16"
-              fill="none"
-              viewBox="0 0 24 24"
-              strokeWidth={1.5}
-              stroke="currentColor"
-              aria-hidden="true"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z"
-              />
-            </svg>
-          </div>
-        )}
-      </div>
+      <AuthorizedAvatar
+        src={onFile}
+        initials={firstName.slice(0, 2).toUpperCase()}
+        className="mx-auto h-40 w-40 overflow-hidden rounded-full border-4 border-accent-soft bg-canvas"
+        fallbackClassName="text-3xl font-bold text-muted-2"
+        alt={`On-file photo of ${firstName}`}
+      />
 
       <div className="space-y-2">
         <h2 className="text-2xl font-bold text-text">Hi {firstName}</h2>
         <p className="text-lg text-text">
           {action === 'in'
-            ? "Take a photo to clock in."
+            ? 'Take a photo to clock in.'
             : 'Take a photo to clock out.'}
         </p>
-        {action === 'out' && (
-          <p className="text-sm font-medium text-warn">
-            You are currently clocked in.
+        {stateMismatch && (
+          <p className="rounded-ctl bg-warn-soft px-3 py-2 text-sm font-medium text-warn">
+            {action === 'in'
+              ? 'You appear to be already clocked in. Please see your manager.'
+              : "You don't appear to be clocked in yet."}
           </p>
         )}
       </div>
@@ -376,7 +486,14 @@ function IdentityConfirmStep({ lookup, onTakePhoto, onBack }: IdentityProps) {
         <button
           type="button"
           onClick={onTakePhoto}
-          className="inline-flex min-h-[56px] items-center justify-center rounded-ctl bg-accent px-6 py-3 text-lg font-medium text-white shadow-card hover:bg-accent-press focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2"
+          disabled={stateMismatch}
+          className={[
+            'inline-flex min-h-[56px] items-center justify-center rounded-ctl px-6 py-3 text-lg font-medium text-white shadow-card focus:outline-none focus:ring-2 focus:ring-offset-2',
+            action === 'out'
+              ? 'bg-[#b91c1c] hover:bg-[#991b1b] focus:ring-[#b91c1c]'
+              : 'bg-accent hover:bg-accent-press focus:ring-accent',
+            'disabled:cursor-not-allowed disabled:opacity-50',
+          ].join(' ')}
         >
           Take photo
         </button>
@@ -633,38 +750,48 @@ function ConfirmationStep({
           <p className="text-xs font-semibold uppercase tracking-wide text-muted">
             On file
           </p>
-          <div className="mx-auto aspect-square w-full max-w-[180px] overflow-hidden rounded-ctl border border-border bg-canvas">
-            {onFile ? (
-              <img
-                src={onFile}
-                alt={`On-file photo of ${firstName}`}
-                className="h-full w-full object-cover"
-              />
-            ) : (
-              <div className="flex h-full w-full items-center justify-center text-xs text-muted-2">
-                No photo on file
-              </div>
-            )}
-          </div>
+          <AuthorizedAvatar
+            src={onFile}
+            initials="—"
+            className="mx-auto aspect-square w-full max-w-[180px] overflow-hidden rounded-ctl border border-border bg-canvas"
+            fallbackClassName="text-xs text-muted-2"
+            alt={`On-file photo of ${firstName}`}
+          />
         </div>
 
         <div className="space-y-2">
           <p className="text-xs font-semibold uppercase tracking-wide text-muted">
             Just taken
           </p>
-          <div className="mx-auto aspect-square w-full max-w-[180px] overflow-hidden rounded-ctl border border-border bg-canvas">
-            {justTaken ? (
-              <img
-                src={justTaken}
-                alt="Photo just taken"
-                className="h-full w-full object-cover"
-              />
+          {justTaken ? (
+            // The just-taken photo is usually a `data:image/jpeg;base64,...`
+            // URI from the canvas capture (renders directly, no auth needed).
+            // Falls back to the server URL when the data URI was lost on a
+            // late re-render — that path goes through the auth-aware avatar.
+            justTaken.startsWith('data:') ? (
+              <div className="mx-auto aspect-square w-full max-w-[180px] overflow-hidden rounded-ctl border border-border bg-canvas">
+                <img
+                  src={justTaken}
+                  alt="Photo just taken"
+                  className="h-full w-full object-cover"
+                />
+              </div>
             ) : (
+              <AuthorizedAvatar
+                src={justTaken}
+                initials="—"
+                className="mx-auto aspect-square w-full max-w-[180px] overflow-hidden rounded-ctl border border-border bg-canvas"
+                fallbackClassName="text-xs text-muted-2"
+                alt="Photo just taken"
+              />
+            )
+          ) : (
+            <div className="mx-auto aspect-square w-full max-w-[180px] overflow-hidden rounded-ctl border border-border bg-canvas">
               <div className="flex h-full w-full items-center justify-center text-xs text-muted-2">
                 —
               </div>
-            )}
-          </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -687,7 +814,8 @@ function ConfirmationStep({
 /* ───────────────────────────────────────────── KioskClockScreen ── */
 
 export function KioskClockScreen({ onExit }: KioskClockScreenProps = {}) {
-  const [step, setStep] = useState<ClockStep>('welcome')
+  const [step, setStep] = useState<ClockStep>('choice')
+  const [intendedAction, setIntendedAction] = useState<ClockAction>('in')
   const [employeeId, setEmployeeId] = useState('')
   const [lookup, setLookup] = useState<LookupResult | null>(null)
   const [actionResult, setActionResult] = useState<ClockActionResult | null>(null)
@@ -701,14 +829,15 @@ export function KioskClockScreen({ onExit }: KioskClockScreenProps = {}) {
   const lookupAbortRef = useRef<AbortController | null>(null)
   const actionAbortRef = useRef<AbortController | null>(null)
 
-  /** Reset the entire flow back to the welcome screen. */
+  /** Reset the entire flow back to the choice screen. */
   const resetFlow = useCallback(() => {
     lookupAbortRef.current?.abort()
     actionAbortRef.current?.abort()
     lookupAbortRef.current = null
     actionAbortRef.current = null
 
-    setStep('welcome')
+    setStep('choice')
+    setIntendedAction('in')
     setEmployeeId('')
     setLookup(null)
     setActionResult(null)
@@ -720,6 +849,27 @@ export function KioskClockScreen({ onExit }: KioskClockScreenProps = {}) {
     setSecondsLeft(CONFIRMATION_AUTO_RETURN_SECONDS)
   }, [])
 
+  /** Exit the clock surface entirely after a successful clock-in / clock-out.
+   *
+   * The confirmation step's "Done" button and the auto-return countdown both
+   * use this — the user expects the kiosk to fall back to the main customer-
+   * facing welcome screen, not the clock-screen's own "Staff Clock In" card.
+   * Falls back to ``resetFlow`` when no parent ``onExit`` is wired (rare —
+   * keeps the component usable in standalone storybook-style mounts).
+   */
+  const exitClockSurface = useCallback(() => {
+    lookupAbortRef.current?.abort()
+    actionAbortRef.current?.abort()
+    lookupAbortRef.current = null
+    actionAbortRef.current = null
+
+    if (onExit) {
+      onExit()
+    } else {
+      resetFlow()
+    }
+  }, [onExit, resetFlow])
+
   /** Cleanup any in-flight requests on unmount. */
   useEffect(() => {
     return () => {
@@ -728,18 +878,24 @@ export function KioskClockScreen({ onExit }: KioskClockScreenProps = {}) {
     }
   }, [])
 
-  /** Confirmation auto-return countdown. */
+  /** Confirmation auto-return countdown.
+   *
+   * After ``CONFIRMATION_AUTO_RETURN_SECONDS`` we leave the clock surface
+   * entirely and fall back to the customer-facing kiosk welcome. We do NOT
+   * reset to this component's own "Staff Clock In" card — that's an internal
+   * state that the user only reaches by tapping the floating clock button.
+   */
   useEffect(() => {
     if (step !== 'confirmation') return
 
     if (secondsLeft <= 0) {
-      resetFlow()
+      exitClockSurface()
       return
     }
 
     const t = setTimeout(() => setSecondsLeft((s) => s - 1), 1000)
     return () => clearTimeout(t)
-  }, [step, secondsLeft, resetFlow])
+  }, [step, secondsLeft, exitClockSurface])
 
   /* ── Step 2: lookup ───────────────────────────────────────── */
 
@@ -818,8 +974,11 @@ export function KioskClockScreen({ onExit }: KioskClockScreenProps = {}) {
           return
         }
 
-        // 2. Submit the clock action.
-        const action: ClockAction = lookup.currently_clocked_in ? 'out' : 'in'
+        // 2. Submit the clock action — use the action the staff member
+        //    explicitly picked on the choice screen, not the inferred one
+        //    from `currently_clocked_in`. This honours the user's intent
+        //    even when the server-side state is briefly out of sync.
+        const action: ClockAction = intendedAction
         const actionRes = await apiClient.post<ClockActionResult>(
           '/kiosk/clock/action',
           {
@@ -856,15 +1015,16 @@ export function KioskClockScreen({ onExit }: KioskClockScreenProps = {}) {
         }
       }
     },
-    [lookup],
+    [intendedAction, lookup],
   )
 
   /* ── Render ──────────────────────────────────────────────── */
 
-  if (step === 'welcome') {
+  if (step === 'choice') {
     return (
-      <WelcomeStep
-        onStart={() => {
+      <ChoiceStep
+        onChoose={(action) => {
+          setIntendedAction(action)
           setLookupError(null)
           setStep('entry')
         }}
@@ -888,6 +1048,7 @@ export function KioskClockScreen({ onExit }: KioskClockScreenProps = {}) {
     return (
       <IdentityConfirmStep
         lookup={lookup}
+        intendedAction={intendedAction}
         onTakePhoto={() => {
           setActionError(null)
           setCapturedDataUrl(null)
@@ -899,11 +1060,10 @@ export function KioskClockScreen({ onExit }: KioskClockScreenProps = {}) {
   }
 
   if (step === 'camera' && lookup) {
-    const action: ClockAction = lookup.currently_clocked_in ? 'out' : 'in'
     return (
       <CameraStep
         firstName={lookup.first_name ?? ''}
-        action={action}
+        action={intendedAction}
         onCapture={handleCapture}
         onCancel={() => {
           setActionError(null)
@@ -923,18 +1083,21 @@ export function KioskClockScreen({ onExit }: KioskClockScreenProps = {}) {
         firstName={lookup?.first_name ?? ''}
         capturedDataUrl={capturedDataUrl}
         secondsLeft={secondsLeft}
-        onDone={resetFlow}
+        onDone={exitClockSurface}
       />
     )
   }
 
-  // Fallback — invalid state, send back to welcome.
+  // Fallback — invalid state, send back to choice.
   // employeeId is referenced here so unused-locals stays quiet for the
   // diagnostic-debug case where ops want to inspect last-attempted code.
   void employeeId
   return (
-    <WelcomeStep
-      onStart={() => setStep('entry')}
+    <ChoiceStep
+      onChoose={(action) => {
+        setIntendedAction(action)
+        setStep('entry')
+      }}
       onExit={onExit}
     />
   )

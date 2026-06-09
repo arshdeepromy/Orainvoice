@@ -448,6 +448,7 @@ async def kiosk_check_in_v2(
     user_id: uuid.UUID,
     data: KioskCheckInRequestV2,
     ip_address: str | None = None,
+    user_agent: str | None = None,
 ) -> KioskCheckInResponseV2:
     """Orchestrate an enhanced kiosk check-in with multi-vehicle support.
 
@@ -692,6 +693,80 @@ async def kiosk_check_in_v2(
             "Kiosk check-in v2: linked %d vehicles to customer %s",
             vehicles_linked,
             customer_id,
+        )
+
+    # ── Reminder consent co-persistence (Req 1.12–1.17) ──
+    # When the customer ticked the master toggle and at least one consent
+    # row, persist the consent record AND the derived reminder_config in the
+    # SAME session.begin() transaction as the check-in. Master-unchecked
+    # (consent_provided() False) is a no-op — neither field is written
+    # (Req 1.12). NO db.commit() here: the v2 path relies on
+    # get_db_session's session.begin() to commit on context exit.
+    if data.consent_provided():
+        import types
+        from datetime import datetime, timezone
+
+        from app.modules.customers.consent import (
+            RemindersConsentRecord,
+            union_channel_for_category,
+        )
+        from app.modules.customers.service import (
+            DEFAULT_REMINDER_DAYS,
+            update_customer_reminder_config,
+        )
+
+        entries = data.reminder_consent.entries
+
+        # days_before per category: reuse the customer's existing value when
+        # set and positive, else the org default. The kiosk never exposes a
+        # days_before selector (Req 1.14).
+        existing_row = (
+            await db.execute(
+                select(Customer).where(
+                    Customer.id == customer_id,
+                    Customer.org_id == org_id,
+                )
+            )
+        ).scalar_one_or_none()
+        existing_cfg = (
+            (existing_row.custom_fields or {}).get("reminder_config") or {}
+            if existing_row is not None
+            else {}
+        )
+
+        derived: dict = {}
+        for category in {e.category for e in entries}:
+            prev_days = (existing_cfg.get(category) or {}).get("days_before")
+            days_before = (
+                prev_days
+                if isinstance(prev_days, int) and prev_days > 0
+                else DEFAULT_REMINDER_DAYS
+            )
+            derived[category] = {
+                "enabled": True,
+                "channel": union_channel_for_category(entries, category),
+                "days_before": days_before,
+            }
+
+        record = RemindersConsentRecord(
+            given_at=datetime.now(timezone.utc),
+            source="kiosk_self_checkin",
+            kiosk_session_id=uuid.uuid4(),
+            entries=entries,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            consent_text_version=data.reminder_consent.consent_text_version,
+        )
+
+        await update_customer_reminder_config(
+            db,
+            org_id=org_id,
+            customer_id=customer_id,
+            reminders=derived,
+            consent_record=record,
+            current_user=types.SimpleNamespace(id=user_id),
+            ip_address=ip_address,
+            user_agent=user_agent,
         )
 
     return KioskCheckInResponseV2(

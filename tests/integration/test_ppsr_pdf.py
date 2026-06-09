@@ -434,10 +434,17 @@ class TestPpsrPdfRender:
         assert "Airbag recall" in html
 
     @pytest.mark.asyncio
-    async def test_charges_line_rendered_when_charges_present(self):
-        """``charges_cents`` is rendered as a NZD line at the foot of
-        the report when populated. Suppressed when the column is NULL
-        (e.g. cached row, not_found row).
+    async def test_charges_line_never_rendered_even_when_charges_present(self):
+        """The CarJam-reported per-check charge MUST NOT appear on the
+        rendered PDF — org users must not see the wholesale CarJam cost.
+        The platform sets the customer-facing price via Global Admin
+        settings and bills the org accordingly via ``app/tasks/subscriptions.py``.
+        ``charges_cents`` stays on the DB row for that billing aggregation,
+        but the PDF template's old charges line was deliberately removed
+        and the PDF context dict no longer surfaces the field.
+
+        Locks the regression: any future change that re-introduces the
+        charge to the PDF will fail this test.
         """
 
         row = _make_search_row(rego="CHG001", match="N", charges_cents=125)
@@ -446,8 +453,14 @@ class TestPpsrPdfRender:
 
         _, html = await _async_patched_render(row, decrypted, db=None)
 
-        assert "CarJam reported a charge of NZD" in html
-        assert "1.25" in html
+        # Old "CarJam reported a charge" copy must be gone.
+        assert "CarJam reported a charge" not in html
+        # Defence in depth: the formatted dollar value must not leak
+        # via any other surface either.
+        assert "NZD 1.25" not in html
+        assert "$1.25" not in html
+        # The disclaimer block stays — it doesn't mention pricing.
+        assert "PPSR report" in html or "CarJam API" in html
 
     @pytest.mark.asyncio
     async def test_real_render_returns_pdf_bytes(self):

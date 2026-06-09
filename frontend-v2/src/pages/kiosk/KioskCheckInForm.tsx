@@ -5,6 +5,7 @@ import type {
   KioskFormData,
   KioskSuccessData,
   KioskVehicleEntry,
+  KioskReminderConsentBlock,
   AutoFillMatch,
   CheckInPayload,
   CheckInResponse,
@@ -19,6 +20,9 @@ interface KioskCheckInFormProps {
   onError: () => void
   onBack: () => void
   vehicles?: KioskVehicleEntry[]
+  /** Reminder-consent block captured on the consent step; included in the
+   *  POST body only when non-null (master toggle on + ≥1 ticked entry). */
+  reminderConsent?: KioskReminderConsentBlock | null
 }
 
 interface FieldErrors {
@@ -85,6 +89,7 @@ export function KioskCheckInForm({
   onError,
   onBack,
   vehicles = [],
+  reminderConsent = null,
 }: KioskCheckInFormProps) {
   const [errors, setErrors] = useState<FieldErrors>({})
   const [submitting, setSubmitting] = useState(false)
@@ -231,6 +236,9 @@ export function KioskCheckInForm({
           odometer_km: v.odometer_km ?? null,
         })),
         existing_customer_id: existingCustomerId,
+        // Only include the consent block when the customer actually opted in
+        // (master toggle on + ≥1 ticked entry). Omitted otherwise (Req 1.12).
+        ...(reminderConsent ? { reminder_consent: reminderConsent } : {}),
       }
 
       const res = await apiClient.post<CheckInResponse>('/kiosk/check-in', payload)

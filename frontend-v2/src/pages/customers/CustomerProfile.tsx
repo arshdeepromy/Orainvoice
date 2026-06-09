@@ -25,6 +25,16 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import apiClient from '@/api/client'
+import {
+  computeMissingConsent,
+  type RemindersConsentRecord,
+  type RemindersRevocationRecord,
+  type ReminderCategory,
+  type MissingConsentPair,
+} from '@/api/customers'
+import { ConsentConfirmationModal } from './ConsentConfirmationModal'
+import { ReminderConsentSection } from './ReminderConsentSection'
+import { RevocationModal } from './RevocationModal'
 import { Button, Badge, Spinner, Modal, Tabs, Input, Select } from '@/components/ui'
 import { useTenant } from '@/contexts/TenantContext'
 import { useModules } from '@/contexts/ModuleContext'
@@ -84,6 +94,11 @@ interface CustomerProfile {
   invoices: InvoiceHistoryItem[]
   total_spend: string
   outstanding_balance: string
+  custom_fields?: {
+    reminder_consent?: RemindersConsentRecord | null
+    reminder_consent_revocations?: RemindersRevocationRecord[]
+    [key: string]: unknown
+  } | null
 }
 
 /* Merge types */
@@ -159,6 +174,7 @@ interface CustomerReminderConfig {
   service_due: ReminderEntry
   wof_expiry: ReminderEntry
   cof_expiry: ReminderEntry
+  registration_expiry: ReminderEntry
   vehicles: VehicleExpiryData[]
 }
 
@@ -336,6 +352,7 @@ export default function CustomerProfilePage() {
     service_due: { enabled: false, days_before: 30, channel: 'email' },
     wof_expiry: { enabled: false, days_before: 30, channel: 'email' },
     cof_expiry: { enabled: false, days_before: 30, channel: 'email' },
+    registration_expiry: { enabled: false, days_before: 30, channel: 'email' },
     vehicles: [],
   }
   const [reminderOpen, setReminderOpen] = useState(false)
@@ -345,6 +362,12 @@ export default function CustomerProfilePage() {
   const [reminderError, setReminderError] = useState('')
   const [remindersConfigured, setRemindersConfigured] = useState(false)
   const [vehicleDateEdits, setVehicleDateEdits] = useState<Record<string, { service_due_date?: string; wof_expiry?: string; cof_expiry?: string }>>({})
+  /* F3/F4 — consent confirmation gate */
+  const [consentModalOpen, setConsentModalOpen] = useState(false)
+  const [consentMissing, setConsentMissing] = useState<MissingConsentPair[]>([])
+  const [consentConfigSnapshot, setConsentConfigSnapshot] = useState<Record<string, { enabled: boolean; days_before: number; channel: 'sms' | 'email' | 'both' }>>({})
+  /* F6 — revocation modal */
+  const [revokeTarget, setRevokeTarget] = useState<{ category: ReminderCategory; channel: 'sms' | 'email' | 'both' } | null>(null)
 
   /* ---- Fetch profile ---- */
   const { data: claimsData, loading: claimsLoading } = useCustomerClaims(id)
@@ -371,7 +394,7 @@ export default function CustomerProfilePage() {
     try {
       const res = await apiClient.get<CustomerReminderConfig>(`/customers/${id}/reminders`)
       setReminderConfig(res.data)
-      const hasAny = res.data?.service_due?.enabled || res.data?.wof_expiry?.enabled || res.data?.cof_expiry?.enabled
+      const hasAny = res.data?.service_due?.enabled || res.data?.wof_expiry?.enabled || res.data?.cof_expiry?.enabled || res.data?.registration_expiry?.enabled
       setRemindersConfigured(!!hasAny)
     } catch {
       /* ignore — defaults will be used */
@@ -410,10 +433,23 @@ export default function CustomerProfilePage() {
         await apiClient.put(`/customers/${id}/vehicle-dates`, { vehicles: dateUpdates })
       }
 
-      // Save reminder config
+      // Save reminder config — but first run the consent gate (F3): if any
+      // newly-enabled (category, channel) pair is not covered by existing
+      // consent, open the Consent Confirmation modal instead of PUTting.
       const { vehicles: _v, ...configOnly } = reminderConfig
+      const missing = computeMissingConsent(
+        customer?.custom_fields?.reminder_consent ?? null,
+        configOnly,
+      )
+      if (missing.length > 0) {
+        setConsentMissing(missing)
+        setConsentConfigSnapshot(configOnly)
+        setConsentModalOpen(true)
+        setReminderSaving(false)
+        return
+      }
       await apiClient.put(`/customers/${id}/reminders`, configOnly)
-      const hasAny = reminderConfig.service_due.enabled || reminderConfig.wof_expiry.enabled || reminderConfig.cof_expiry.enabled
+      const hasAny = reminderConfig.service_due.enabled || reminderConfig.wof_expiry.enabled || reminderConfig.cof_expiry.enabled || reminderConfig.registration_expiry.enabled
       setRemindersConfigured(hasAny)
       setReminderOpen(false)
       setVehicleDateEdits({})
@@ -426,7 +462,7 @@ export default function CustomerProfilePage() {
     }
   }
 
-  const updateReminder = (type: 'service_due' | 'wof_expiry' | 'cof_expiry', updates: Partial<ReminderEntry>) => {
+  const updateReminder = (type: 'service_due' | 'wof_expiry' | 'cof_expiry' | 'registration_expiry', updates: Partial<ReminderEntry>) => {
     setReminderConfig(prev => ({
       ...prev,
       [type]: { ...prev[type], ...updates },
@@ -454,6 +490,24 @@ export default function CustomerProfilePage() {
   }
 
   const hasCofVehicles = (reminderConfig?.vehicles ?? []).some(v => v.inspection_type === 'cof')
+
+  /* ---- Consent indicator per (category, channel) row (F2) ----
+     Reads the customer's existing reminder_consent and shows whether the
+     currently-configured channel for an enabled category is already covered
+     (✓) or will require a consent confirmation on save (⚠). */
+  const existingConsent = customer?.custom_fields?.reminder_consent ?? null
+  const renderConsentIndicator = (category: ReminderCategory) => {
+    const entry = reminderConfig?.[category]
+    if (!entry?.enabled) return null
+    const missing = computeMissingConsent(existingConsent, {
+      [category]: { enabled: true, days_before: entry.days_before, channel: entry.channel },
+    })
+    return missing.length === 0 ? (
+      <span data-testid={`consent-ok-${category}`} title="Consent on record" className="ml-2 text-[11px] font-medium text-ok">✓ consent</span>
+    ) : (
+      <span data-testid={`consent-needed-${category}`} title="Will require a consent confirmation on save" className="ml-2 text-[11px] font-medium text-warn">⚠ needs consent</span>
+    )
+  }
 
   /* ---- Send notification ---- */
   const handleNotify = async () => {
@@ -951,6 +1005,26 @@ export default function CustomerProfilePage() {
                   </div>
                 ),
               },
+              {
+                id: 'reminder-consent',
+                label: 'Reminder Consent',
+                content: (
+                  <ReminderConsentSection
+                    consent={customer.custom_fields?.reminder_consent ?? null}
+                    revocations={customer.custom_fields?.reminder_consent_revocations ?? []}
+                    enabledByCategory={{
+                      service_due: reminderConfig?.service_due?.enabled ?? false,
+                      wof_expiry: reminderConfig?.wof_expiry?.enabled ?? false,
+                      cof_expiry: reminderConfig?.cof_expiry?.enabled ?? false,
+                      registration_expiry: reminderConfig?.registration_expiry?.enabled ?? false,
+                    }}
+                    vehicleRegoById={Object.fromEntries(
+                      (customer.vehicles ?? []).map((v) => [v.id, v.rego ?? '']),
+                    )}
+                    onRevoke={(e) => setRevokeTarget(e)}
+                  />
+                ),
+              },
             ]}
             defaultTab={vehiclesEnabled ? 'vehicles' : 'invoices'}
           />
@@ -1228,7 +1302,7 @@ export default function CustomerProfilePage() {
             {vehiclesEnabled && (
             <div className="space-y-3 rounded-card border border-border p-4">
               <div className="flex items-center justify-between">
-                <h3 className="text-[13px] font-medium text-text">Service Due</h3>
+                <h3 className="text-[13px] font-medium text-text">Service Due{renderConsentIndicator('service_due')}</h3>
                 <label className="relative inline-flex cursor-pointer items-center">
                   <input
                     type="checkbox"
@@ -1304,7 +1378,7 @@ export default function CustomerProfilePage() {
             {isAutomotive && vehiclesEnabled && (
             <div className="space-y-3 rounded-card border border-border p-4">
               <div className="flex items-center justify-between">
-                <h3 className="text-[13px] font-medium text-text">WOF Expiry</h3>
+                <h3 className="text-[13px] font-medium text-text">WOF Expiry{renderConsentIndicator('wof_expiry')}</h3>
                 <label className="relative inline-flex cursor-pointer items-center">
                   <input
                     type="checkbox"
@@ -1380,7 +1454,7 @@ export default function CustomerProfilePage() {
             {hasCofVehicles && isAutomotive && vehiclesEnabled && (
             <div className="space-y-3 rounded-card border border-border p-4">
               <div className="flex items-center justify-between">
-                <h3 className="text-[13px] font-medium text-text">COF Expiry</h3>
+                <h3 className="text-[13px] font-medium text-text">COF Expiry{renderConsentIndicator('cof_expiry')}</h3>
                 <label className="relative inline-flex cursor-pointer items-center">
                   <input
                     type="checkbox"
@@ -1451,6 +1525,47 @@ export default function CustomerProfilePage() {
               )}
             </div>
             )}
+
+            {/* Registration Expiry — automotive only */}
+            {isAutomotive && vehiclesEnabled && (
+            <div className="space-y-3 rounded-card border border-border p-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-[13px] font-medium text-text">Registration Expiry{renderConsentIndicator('registration_expiry')}</h3>
+                <label className="relative inline-flex cursor-pointer items-center">
+                  <input
+                    type="checkbox"
+                    checked={reminderConfig?.registration_expiry?.enabled ?? false}
+                    onChange={(e) => updateReminder('registration_expiry', { enabled: e.target.checked })}
+                    className="peer sr-only"
+                  />
+                  <div className="peer h-5 w-9 rounded-full bg-border after:absolute after:left-[2px] after:top-[2px] after:h-4 after:w-4 after:rounded-full after:border after:border-border-strong after:bg-white after:transition-all after:content-[''] peer-checked:bg-accent peer-checked:after:translate-x-full peer-checked:after:border-white peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-accent-soft" />
+                  <span className="ml-2 text-[13px] text-muted">{reminderConfig?.registration_expiry?.enabled ? 'Enabled' : 'Disabled'}</span>
+                </label>
+              </div>
+              {reminderConfig?.registration_expiry?.enabled && (
+                <div className="grid grid-cols-2 gap-3">
+                  <Input
+                    label="Days before expiry"
+                    type="number"
+                    value={String(reminderConfig?.registration_expiry?.days_before ?? 30)}
+                    onChange={(e) => updateReminder('registration_expiry', { days_before: parseInt(e.target.value) || 30 })}
+                  />
+                  <Select
+                    label="Notify via"
+                    options={[
+                      { value: 'email', label: 'Email' },
+                      ...(smsEnabled ? [
+                        { value: 'sms', label: 'SMS' },
+                        { value: 'both', label: 'Email & SMS' },
+                      ] : []),
+                    ]}
+                    value={reminderConfig?.registration_expiry?.channel ?? 'email'}
+                    onChange={(e) => updateReminder('registration_expiry', { channel: e.target.value as 'email' | 'sms' | 'both' })}
+                  />
+                </div>
+              )}
+            </div>
+            )}
           </div>
         )}
         {reminderError && <p className="mt-2 text-[13px] text-danger" role="alert">{reminderError}</p>}
@@ -1459,6 +1574,38 @@ export default function CustomerProfilePage() {
           <Button size="sm" onClick={handleSaveReminders} loading={reminderSaving}>Save</Button>
         </div>
       </Modal>
+
+      {/* ---- Consent Confirmation Modal (F3/F4) ---- */}
+      <ConsentConfirmationModal
+        open={consentModalOpen}
+        customerId={customer.id}
+        missing={consentMissing}
+        config={consentConfigSnapshot}
+        onCancel={() => setConsentModalOpen(false)}
+        onConfirmed={() => {
+          setConsentModalOpen(false)
+          setReminderOpen(false)
+          setVehicleDateEdits({})
+          fetchReminderConfig()
+          fetchProfile()
+        }}
+      />
+
+      {/* ---- Revocation Modal (F6) ---- */}
+      {revokeTarget && (
+        <RevocationModal
+          open={!!revokeTarget}
+          customerId={customer.id}
+          category={revokeTarget.category}
+          channel={revokeTarget.channel}
+          onCancel={() => setRevokeTarget(null)}
+          onRevoked={() => {
+            setRevokeTarget(null)
+            fetchReminderConfig()
+            fetchProfile()
+          }}
+        />
+      )}
 
       {/* ---- Edit Customer Modal ---- */}
       <CustomerEditModal

@@ -5,15 +5,29 @@ Requirements: 11.1, 11.2, 11.3, 11.4, 11.5, 11.6, 12.1, 12.2, 12.3
 
 from __future__ import annotations
 
+import types
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request
 from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db_session
 from app.core.request_utils import extract_request_base_url
+from app.modules.auth.models import User
 from app.modules.auth.rbac import require_role
+from app.modules.customers.consent import (
+    RemindersConsentRecord,
+    RemindersRevocationRecord,
+    current_consent_text,
+)
+from app.modules.organisations.service import get_org_settings
+from app.modules.customers.exceptions import (
+    RemindersConsentRequiredError,
+    RemindersRevocationError,
+)
 from app.modules.customers.schemas import (
     CustomerAnonymiseResponse,
     CustomerCreateRequest,
@@ -42,6 +56,7 @@ from app.modules.customers.schemas import (
     FleetAccountResponse,
     FleetAccountUpdateRequest,
     FleetAccountUpdateResponse,
+    RemindersRevokeRequest,
 )
 from app.modules.email_compose.schemas import PortalLinkOverrideRequest
 from app.modules.customers.service import (
@@ -62,6 +77,7 @@ from app.modules.customers.service import (
     search_customers,
     send_portal_link,
     tag_vehicle_to_customer,
+    revoke_customer_reminders,
     update_customer,
     update_customer_reminder_config,
     update_fleet_account,
@@ -537,6 +553,39 @@ async def delete_fleet_account_endpoint(
         message="Fleet account deleted",
         fleet_account_id=result["fleet_account_id"],
     )
+
+
+@router.get(
+    "/consent-text",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def customer_consent_text_endpoint(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return the reminder-consent banner text + version for the staff-facing
+    manual Consent Confirmation modal (F4).
+
+    Mirrors the kiosk ``GET /kiosk/consent-text`` constant but is gated for
+    customer-write roles, since the kiosk endpoint is ``require_role("kiosk")``
+    and an org_admin/salesperson cannot call it. The ``{workshop_name}``
+    placeholder is substituted server-side. Registered BEFORE
+    ``GET /{customer_id}`` so the static path is not captured by the
+    dynamic customer-id route.
+
+    Refs: Requirement 6.3, 6.4.
+    """
+    org_uuid, _user_uuid, _ip = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+    text, version = current_consent_text()
+    settings = await get_org_settings(db, org_id=org_uuid)
+    workshop_name = (settings or {}).get("org_name") or "your workshop"
+    text = text.replace("{workshop_name}", workshop_name)
+    return {"text": text, "version": version}
 
 
 @router.get(
@@ -1330,8 +1379,18 @@ async def update_customer_reminders_endpoint(
     request: Request,
     db: AsyncSession = Depends(get_db_session),
 ):
-    """Update per-customer reminder configuration."""
-    org_uuid, _, _ = _extract_org_context(request)
+    """Update per-customer reminder configuration.
+
+    Accepts an optional ``consent_record`` field in the request body.
+    When the new ``reminders`` config newly enables a (category, channel)
+    pair not covered by the existing ``customer.custom_fields["reminder_consent"]``
+    and no ``consent_record`` is supplied, the service raises
+    :class:`RemindersConsentRequiredError` which is mapped here to HTTP 409
+    with body ``{"error": "consent_required", "missing": [...]}``.
+
+    Refs: Requirements 2.12, 2.13, 1.16, 2.8.
+    """
+    org_uuid, user_uuid, ip_address = _extract_org_context(request)
     if not org_uuid:
         return JSONResponse(
             status_code=403,
@@ -1348,12 +1407,130 @@ async def update_customer_reminders_endpoint(
 
     body = await request.json()
 
+    # Pop the optional consent_record block off the raw body before it is
+    # passed through as ``reminders=`` (the existing per-category dict).
+    consent_block = body.pop("consent_record", None)
+    consent_record = (
+        RemindersConsentRecord.model_validate(consent_block)
+        if consent_block is not None
+        else None
+    )
+
+    # Build a SimpleNamespace proxy with ``.id`` so the consent helper can
+    # populate the audit_log row's ``user_id`` column without us threading
+    # the full ORM user object through. ``current_user`` is ``None`` when
+    # the request is unauthenticated (the AuthMiddleware would normally
+    # block this, but we guard defensively).
+    current_user = (
+        types.SimpleNamespace(id=user_uuid) if user_uuid else None
+    )
+
+    # Truncate the User-Agent header at 500 chars per design §3.1; an
+    # absent or empty header collapses to ``None``.
+    user_agent = (request.headers.get("user-agent") or "")[:500] or None
+
     try:
         updated = await update_customer_reminder_config(
             db,
             org_id=org_uuid,
             customer_id=cust_uuid,
             reminders=body,
+            consent_record=consent_record,
+            current_user=current_user,
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
+    except RemindersConsentRequiredError as exc:
+        return JSONResponse(
+            status_code=409,
+            content={"error": "consent_required", "missing": exc.missing},
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return updated
+
+
+@router.post(
+    "/{customer_id}/reminders/revoke",
+    dependencies=[require_role("org_admin", "salesperson")],
+)
+async def revoke_customer_reminders_endpoint(
+    customer_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Record a manual revocation of reminder consent for a customer.
+
+    The staff member confirms a revocation obtained out-of-band (phone /
+    in person / email). The handler composes the persisted ``source`` as
+    ``manually_recorded_by_staff:<obtained_method>``, builds a
+    :class:`RemindersRevocationRecord`, and delegates to
+    :func:`revoke_customer_reminders`, which flips
+    ``reminder_config[<cat>].enabled = False`` and appends the revocation
+    entry in one ``session.begin()`` transaction.
+
+    Transaction discipline: pre-write validation errors are caught and
+    mapped to 4xx; persistence failures are NOT swallowed — they propagate
+    so the surrounding ``session.begin()`` rolls back the whole request
+    (Req 3.6). Mirrors the write-path RBAC of ``PUT /{customer_id}``.
+
+    Refs: Requirements 3.2, 3.4, 3.5.
+    """
+    org_uuid, user_uuid, ip_address = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    try:
+        cust_uuid = uuid.UUID(customer_id)
+    except (ValueError, TypeError):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid customer ID format"},
+        )
+
+    body = await request.json()
+    try:
+        payload = RemindersRevokeRequest.model_validate(body)
+    except ValidationError as exc:
+        return JSONResponse(status_code=422, content={"detail": exc.errors()})
+
+    # The revocation record requires the acting user's email
+    # (``recorded_by_user_email``) which ``request.state`` does not carry —
+    # only the id. Resolve the User row for its email.
+    current_user = await db.get(User, user_uuid) if user_uuid else None
+    if current_user is None:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Authenticated user required"},
+        )
+
+    record = RemindersRevocationRecord(
+        revoked_at=datetime.now(timezone.utc),
+        source=f"manually_recorded_by_staff:{payload.obtained_method}",
+        recorded_by_user_id=current_user.id,
+        recorded_by_user_email=current_user.email,
+        channel=payload.channel,
+        categories_affected=payload.categories_affected,
+        reason_note=payload.reason_note,
+    )
+
+    try:
+        updated = await revoke_customer_reminders(
+            db,
+            org_id=org_uuid,
+            customer_id=cust_uuid,
+            current_user=current_user,
+            record=record,
+            ip_address=ip_address,
+        )
+    except RemindersRevocationError as exc:
+        return JSONResponse(
+            status_code=422,
+            content={"error": "revocation_invalid", "detail": str(exc)},
         )
     except ValueError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})

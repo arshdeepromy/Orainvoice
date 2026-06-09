@@ -348,6 +348,142 @@ async def _find_open_entry(
     return (await db.execute(stmt)).scalar_one_or_none()
 
 
+async def list_currently_clocked_in(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+) -> list[dict[str, Any]]:
+    """List every staff member with an open time_clock_entries row.
+
+    Returns one dict per open entry with the fields the admin
+    "who's on the clock" dashboard needs:
+
+    - ``time_clock_entry_id`` (so the manual clock-out endpoint can
+      target the exact open row)
+    - ``staff_id`` / ``staff_name`` / ``employee_id`` / ``position``
+      / ``on_file_photo_url`` (display)
+    - ``clock_in_at`` / ``source`` / ``break_minutes``
+      (so the frontend can render a live elapsed timer client-side
+      without per-second polling)
+
+    A staff member who clocked-in twice without clocking out in
+    between (data anomaly that the unique-open guard at
+    ``ck_time_clock_entries_kiosk_photo`` does NOT prevent — only
+    the service layer does) appears once per open row; the dashboard
+    surfaces both so an admin can clean up the duplicate via the
+    manual clock-out endpoint.
+    """
+    stmt = (
+        select(TimeClockEntry, StaffMember)
+        .join(StaffMember, StaffMember.id == TimeClockEntry.staff_id)
+        .where(
+            and_(
+                TimeClockEntry.org_id == org_id,
+                TimeClockEntry.clock_out_at.is_(None),
+            ),
+        )
+        .order_by(TimeClockEntry.clock_in_at.asc())
+    )
+    rows = (await db.execute(stmt)).all()
+    items: list[dict[str, Any]] = []
+    for entry, staff in rows:
+        full_name = (
+            f"{staff.first_name or ''} {staff.last_name or ''}".strip()
+            or staff.name
+            or "—"
+        )
+        items.append({
+            "time_clock_entry_id": entry.id,
+            "staff_id": staff.id,
+            "staff_name": full_name,
+            "employee_id": staff.employee_id,
+            "position": staff.position,
+            "on_file_photo_url": staff.on_file_photo_url,
+            "clock_in_at": entry.clock_in_at,
+            "source": entry.source,
+            "break_minutes": int(entry.break_minutes or 0),
+        })
+    return items
+
+
+async def admin_force_clock_out(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    entry_id: uuid.UUID,
+    reason_note: str,
+    clock_out_at: datetime | None = None,
+    user_id: uuid.UUID | None = None,
+    ip_address: str | None = None,
+) -> TimeClockEntry:
+    """Admin-driven forced clock-out for a still-open entry.
+
+    Use case: an employee forgot to tap out at end-of-shift and went
+    home; the admin needs to close the row so timesheet totals are
+    correct. Distinct from :func:`update_manual_entry` — that's for
+    arbitrary edits and the route is gated by the lock-week check
+    against the ENTRY's clock_in_at; this helper is purpose-built
+    for "close this open shift now" and is gated by the lock-week
+    check against the new clock_out_at (so an admin closing a Friday
+    shift on Monday won't be blocked by Friday's locked week).
+
+    Side effects:
+      - Sets ``clock_out_at`` to the supplied timestamp (or now() in
+        UTC when omitted).
+      - Computes ``worked_minutes`` from clock_in_at →
+        clock_out_at minus break_minutes.
+      - Appends ``[admin closure: <reason>]`` to ``notes`` (preserves
+        any prior notes — admin's reason for forcing the close lives
+        ON the row, not just on the audit log).
+      - Writes audit ``time_clock.admin_force_clock_out`` with both
+        the before-state (open) and after-state (closed) snapshots
+        AND the reason inside ``after_value.reason_note``.
+
+    Refuses with :class:`InvalidActionError` when the entry is
+    already closed (``clock_out_at IS NOT NULL``).
+    """
+    entry = await db.get(TimeClockEntry, entry_id)
+    if entry is None or entry.org_id != org_id:
+        raise TimeClockEntryNotFoundError("time_clock_entry_not_found")
+    if entry.clock_out_at is not None:
+        raise InvalidActionError("already_clocked_out")
+
+    now = clock_out_at or datetime.now(timezone.utc)
+    if await lock_check(
+        db, org_id=org_id, staff_id=entry.staff_id, when_dt=now,
+    ):
+        raise LockedWeekError("timesheet_locked")
+
+    before = _entry_to_dict(entry)
+    entry.clock_out_at = now
+    entry.worked_minutes = _compute_worked_minutes(
+        clock_in_at=entry.clock_in_at,
+        clock_out_at=now,
+        break_minutes=entry.break_minutes or 0,
+    )
+    suffix = f"[admin closure: {reason_note.strip()}]"
+    entry.notes = (
+        f"{entry.notes}\n{suffix}" if entry.notes else suffix
+    )
+    await db.flush()
+    await db.refresh(entry)
+
+    after = _entry_to_dict(entry)
+    after["reason_note"] = reason_note.strip()
+    await write_audit_log(
+        session=db,
+        org_id=org_id,
+        user_id=user_id,
+        action="time_clock.admin_force_clock_out",
+        entity_type="time_clock_entry",
+        entity_id=entry.id,
+        before_value=before,
+        after_value=after,
+        ip_address=ip_address,
+    )
+    return entry
+
+
 async def _match_scheduled_entry(
     db: AsyncSession,
     *,
@@ -569,6 +705,7 @@ async def kiosk_clock_action(
     action: str,
     photo_file_key: str,
     ip_address: str | None = None,
+    branch_id: uuid.UUID | None = None,
 ) -> TimeClockEntry:
     """Handle a kiosk clock-in or clock-out action.
 
@@ -584,6 +721,10 @@ async def kiosk_clock_action(
       - computes ``worked_minutes`` via :func:`_compute_worked_minutes`
         (R3.7),
       - writes audit ``time_clock.out``.
+
+    ``branch_id`` is derived from the kiosk user's JWT ``branch_ids[0]``
+    by the router and passed here. It is set on the TimeClockEntry for
+    timesheet branch scoping (Req 11.2).
 
     Raises:
       - :class:`PhotoRequiredError` — empty / missing ``photo_file_key``.
@@ -611,6 +752,7 @@ async def kiosk_clock_action(
         lng=None,
         created_by=None,
         ip_address=ip_address,
+        branch_id=branch_id,
     )
 
 
@@ -631,6 +773,7 @@ async def self_service_clock_action(
     source: str = "self_service_mobile",
     user_id: uuid.UUID | None = None,
     ip_address: str | None = None,
+    branch_id: uuid.UUID | None = None,
 ) -> TimeClockEntry:
     """Handle a self-service (mobile/web) clock-in or clock-out.
 
@@ -679,6 +822,7 @@ async def self_service_clock_action(
         lng=lng,
         created_by=user_id,
         ip_address=ip_address,
+        branch_id=branch_id,
     )
 
 
@@ -699,6 +843,7 @@ async def _perform_clock_action(
     lng: Decimal | None,
     created_by: uuid.UUID | None,
     ip_address: str | None,
+    branch_id: uuid.UUID | None = None,
 ) -> TimeClockEntry:
     """Insert a clock-in row OR update the open entry on clock-out.
 
@@ -729,6 +874,8 @@ async def _perform_clock_action(
             scheduled_entry_id=scheduled_entry_id,
             break_minutes=0,
             created_by=created_by,
+            branch_id=branch_id,
+            clock_in_ip=ip_address,
         )
         db.add(entry)
         await db.flush()
@@ -752,6 +899,9 @@ async def _perform_clock_action(
     open_entry.clock_out_photo_url = photo_file_key
     open_entry.clock_out_lat = lat
     open_entry.clock_out_lng = lng
+    # Set clock_out_branch_id if provided (for branch tracking on clock-out)
+    if branch_id is not None:
+        open_entry.clock_out_branch_id = branch_id
     open_entry.worked_minutes = _compute_worked_minutes(
         clock_in_at=open_entry.clock_in_at,
         clock_out_at=now,

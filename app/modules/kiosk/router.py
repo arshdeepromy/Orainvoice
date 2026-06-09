@@ -16,6 +16,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db_session
 from app.core.redis import get_redis
 from app.modules.auth.rbac import require_role
+from app.modules.customers.consent import current_consent_text
+from app.modules.customers.exceptions import RemindersConsentRequiredError
+from app.modules.organisations.service import get_org_settings
 from app.modules.kiosk.schemas import (
     KioskCheckInRequestV2,
     KioskCheckInResponseV2,
@@ -140,13 +143,25 @@ async def check_in(
             content={"detail": "Organisation context required"},
         )
 
-    result = await kiosk_check_in_v2(
-        db,
-        org_id=org_uuid,
-        user_id=user_uuid or uuid.uuid4(),
-        data=payload,
-        ip_address=ip_address,
-    )
+    user_agent = (request.headers.get("user-agent") or "")[:500] or None
+
+    try:
+        result = await kiosk_check_in_v2(
+            db,
+            org_id=org_uuid,
+            user_id=user_uuid or uuid.uuid4(),
+            data=payload,
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
+    except RemindersConsentRequiredError:
+        # Defence-in-depth: the kiosk path always supplies a consent_record,
+        # so the gate never fires here. If it somehow does, surface a 500 and
+        # let session.begin() roll back the whole check-in (Req 1.16).
+        return JSONResponse(
+            status_code=500,
+            content={"error": "consent_persistence_failed"},
+        )
 
     return result
 
@@ -241,6 +256,47 @@ async def customer_lookup(
     )
 
     return result
+
+
+@router.get(
+    "/consent-text",
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Kiosk role required"},
+        429: {"description": "Rate limit exceeded"},
+    },
+    summary="Kiosk reminder-consent banner text + version",
+    dependencies=[
+        require_role("kiosk"),
+        Depends(_check_kiosk_rate_limit),
+    ],
+)
+async def consent_text(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return the reminder-consent banner text and its version for the kiosk.
+
+    The text is a backend constant (``current_consent_text()``); the
+    ``{workshop_name}`` placeholder is substituted server-side with the org's
+    name so the frontend never sees the placeholder. Gated by the same
+    ``require_role("kiosk")`` + rate-limit pattern as every other kiosk route.
+
+    Requirements: 6.3
+    """
+    org_uuid, _user_uuid, _ip_address = _extract_org_context(request)
+    if not org_uuid:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    text, version = current_consent_text()
+    settings = await get_org_settings(db, org_id=org_uuid)
+    workshop_name = (settings or {}).get("org_name") or "your workshop"
+    text = text.replace("{workshop_name}", workshop_name)
+
+    return {"text": text, "version": version}
 
 
 # ---------------------------------------------------------------------------
@@ -416,6 +472,15 @@ async def clock_action(
             content={"detail": "Organisation context required"},
         )
 
+    # Derive branch_id from kiosk user's JWT branch_ids[0] (Req 11.2)
+    branch_ids_raw = getattr(request.state, "branch_ids", []) or []
+    kiosk_branch_id: uuid.UUID | None = None
+    if branch_ids_raw:
+        try:
+            kiosk_branch_id = uuid.UUID(str(branch_ids_raw[0]))
+        except (ValueError, TypeError, IndexError):
+            pass
+
     try:
         entry = await clock_service.kiosk_clock_action(
             db,
@@ -424,6 +489,7 @@ async def clock_action(
             action=payload.action,
             photo_file_key=payload.photo_file_key,
             ip_address=ip_address,
+            branch_id=kiosk_branch_id,
         )
     except clock_service.TimeClockServiceError as exc:
         return _translate_clock_service_error(exc)

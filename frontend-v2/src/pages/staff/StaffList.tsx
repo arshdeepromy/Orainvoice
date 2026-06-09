@@ -27,6 +27,8 @@ import StaffKpiStrip from './components/StaffKpiStrip'
 import SegmentedFilter from './components/SegmentedFilter'
 import DayPips from './components/DayPips'
 import { staffInitials } from './components/staffInitials'
+import ClockedInDrawer from './components/ClockedInDrawer'
+import AuthorizedAvatar from '@/components/AuthorizedAvatar'
 import { getPendingLeaveCount } from '@/api/staff'
 
 interface StaffMember {
@@ -48,6 +50,7 @@ interface StaffMember {
   skills: string[]
   availability_schedule: Record<string, { start: string; end: string }>
   is_active: boolean
+  on_file_photo_url: string | null
   created_at: string
 }
 
@@ -92,6 +95,7 @@ export default function StaffList() {
   const [roleFilter, setRoleFilter] = useState('')
   const [activeFilter, setActiveFilter] = useState('')
   const [pendingLeaveCount, setPendingLeaveCount] = useState(0)
+  const [clockedInOpen, setClockedInOpen] = useState(false)
   const pageSize = 20
 
   // Modal state
@@ -376,6 +380,32 @@ export default function StaffList() {
         <div className="head-actions">
           <button
             type="button"
+            onClick={() => setClockedInOpen(true)}
+            className="relative inline-flex h-10 items-center gap-2 rounded-ctl border border-border bg-card px-3.5 text-[13.5px] font-medium text-text hover:bg-canvas dark:hover:bg-canvas"
+          >
+            <span
+              className="relative inline-flex h-2 w-2"
+              aria-hidden="true"
+            >
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-ok opacity-75" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-ok" />
+            </span>
+            <svg
+              className="h-4 w-4 text-muted-2"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <circle cx="12" cy="12" r="9" />
+              <path d="M12 7v5l3 2" />
+            </svg>
+            Clocked in
+          </button>
+          <button
+            type="button"
             onClick={() => navigate('/leave/approvals')}
             className="relative inline-flex h-10 items-center gap-2 rounded-ctl border border-border bg-card px-3.5 text-[13.5px] font-medium text-text hover:bg-canvas dark:hover:bg-canvas"
           >
@@ -486,12 +516,13 @@ export default function StaffList() {
                     <td className="mono whitespace-nowrap px-4 py-3 text-muted">{member.employee_id || '—'}</td>
                     <td className="whitespace-nowrap px-4 py-3">
                       <div className="flex items-center gap-3">
-                        <span
-                          aria-hidden="true"
-                          className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-accent-soft text-[12px] font-semibold text-accent"
-                        >
-                          {staffInitials(member.first_name, member.last_name) || '—'}
-                        </span>
+                        <AuthorizedAvatar
+                          src={member.on_file_photo_url}
+                          initials={staffInitials(member.first_name, member.last_name) || '—'}
+                          className="h-8 w-8 shrink-0 rounded-full bg-accent-soft"
+                          fallbackClassName="text-[12px] font-semibold text-accent"
+                          alt={`Profile photo of ${member.first_name} ${member.last_name ?? ''}`.trim()}
+                        />
                         <div className="flex flex-col">
                           <button onClick={() => navigate(`/staff/${member.id}`)}
                             className="text-left text-[13.5px] font-medium text-accent hover:text-accent-press">
@@ -752,6 +783,11 @@ export default function StaffList() {
           </div>
         )}
       </Modal>
+
+      <ClockedInDrawer
+        open={clockedInOpen}
+        onClose={() => setClockedInOpen(false)}
+      />
     </div>
   )
 }

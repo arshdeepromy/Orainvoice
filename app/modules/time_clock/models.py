@@ -168,6 +168,19 @@ class TimeClockEntry(Base):
         nullable=True,
     )
     worked_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Branch association — added by migration 0195 (staff-timesheets).
+    # Populated from JWT branch_ids[0] for kiosk-sourced entries.
+    branch_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("branches.id"),
+        nullable=True,
+    )
+    clock_out_branch_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("branches.id"),
+        nullable=True,
+    )
+    clock_in_ip: Mapped[str | None] = mapped_column(Text, nullable=True)
     # G10 — JSONB soft-flags container. See module docstring + migration
     # 0207 for the naming rationale. ``default=dict`` populates the
     # client-side default on ORM-level inserts; ``server_default``
