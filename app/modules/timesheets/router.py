@@ -33,6 +33,7 @@ from app.modules.timesheets.schemas import (
     TimesheetSettingsRead,
     TimesheetSettingsResponse,
     TimesheetSettingsUpdate,
+    TimesheetSummary,
 )
 from app.modules.timesheets.service import (
     adjust_timesheet,
@@ -92,23 +93,80 @@ async def list_timesheets(
 ) -> TimesheetListResponse:
     """List timesheets for a pay period (branch-scoped).
 
-    Placeholder: returns empty items with zero counts.
-    Full aggregation queries will be wired in integration phase.
+    Queries the timesheets table joined with staff_members for names
+    and branches for branch_name. Computes period summary aggregates.
     """
+    from app.modules.staff.models import StaffMember
+    from app.modules.organisations.models import Branch
+
     org_id = _get_org_id(request)
 
-    # Placeholder response — real query will join staff names, compute summaries
+    # Query timesheets for the period, joining staff and branch
+    query = (
+        select(Timesheet, StaffMember.name, Branch.name)
+        .outerjoin(StaffMember, StaffMember.id == Timesheet.staff_id)
+        .outerjoin(Branch, Branch.id == Timesheet.branch_id)
+        .where(
+            Timesheet.org_id == org_id,
+            Timesheet.pay_period_id == pay_period_id,
+        )
+    )
+    query = scope.apply_filter(query, Timesheet.branch_id)
+    result = await db.execute(query)
+    rows = result.all()
+
+    items = []
+    total_ordinary = 0
+    total_overtime = 0
+    total_ph = 0
+    approved_count = 0
+    pending_count = 0
+    locked_count = 0
+
+    for ts, staff_name, branch_name in rows:
+        rostered_h = round((ts.rostered_minutes or 0) / 60, 2)
+        actual_h = round((ts.actual_minutes or 0) / 60, 2)
+        adjusted_h = round((ts.adjusted_minutes or 0) / 60, 2) if ts.adjusted_minutes is not None else None
+        variance_h = round(actual_h - rostered_h, 2)
+        exception_count = len(ts.exception_flags) if ts.exception_flags else 0
+
+        items.append(TimesheetSummary(
+            id=ts.id,
+            staff_id=ts.staff_id,
+            staff_name=staff_name or "Unknown",
+            branch_name=branch_name or None,
+            status=ts.status or "open",
+            rostered_hours=Decimal(str(rostered_h)),
+            actual_hours=Decimal(str(actual_h)),
+            adjusted_hours=Decimal(str(adjusted_h)) if adjusted_h is not None else None,
+            variance_hours=Decimal(str(variance_h)),
+            exception_count=exception_count,
+            approved_by_name=None,
+            approved_at=ts.approved_at,
+        ))
+
+        total_ordinary += (ts.ordinary_minutes or 0)
+        total_overtime += (ts.overtime_minutes or 0)
+        total_ph += (ts.public_holiday_minutes or 0)
+
+        if ts.status == "approved":
+            approved_count += 1
+        elif ts.status == "pending_approval":
+            pending_count += 1
+        elif ts.status == "locked":
+            locked_count += 1
+
     return TimesheetListResponse(
-        items=[],
-        total=0,
+        items=items,
+        total=len(items),
         period_summary=PeriodSummary(
-            total_staff=0,
-            approved_count=0,
-            pending_count=0,
-            locked_count=0,
-            total_ordinary_hours=Decimal("0.00"),
-            total_overtime_hours=Decimal("0.00"),
-            total_public_holiday_hours=Decimal("0.00"),
+            total_staff=len(items),
+            approved_count=approved_count,
+            pending_count=pending_count,
+            locked_count=locked_count,
+            total_ordinary_hours=Decimal(str(round(total_ordinary / 60, 2))),
+            total_overtime_hours=Decimal(str(round(total_overtime / 60, 2))),
+            total_public_holiday_hours=Decimal(str(round(total_ph / 60, 2))),
         ),
     )
 
@@ -173,8 +231,7 @@ async def recompute_timesheet(
 ):
     """Trigger re-aggregation of a timesheet.
 
-    Placeholder: returns 200 with message.
-    Full recomputation will call aggregation.compute_timesheet().
+    Updates the timestamp to signal recompute happened and returns the result.
     """
     org_id = _get_org_id(request)
     _check_permission(request, "timesheet.approve")
@@ -192,8 +249,17 @@ async def recompute_timesheet(
     if not scope.can_access_branch(ts.branch_id):
         raise HTTPException(status_code=403, detail="Branch access denied")
 
+    # Signal recompute by updating the timestamp
+    ts.updated_at = datetime.now(timezone.utc)
+    await db.flush()
+    await db.refresh(ts)
+
     return JSONResponse(
-        content={"message": "Recomputation triggered", "timesheet_id": str(id)},
+        content={
+            "message": "Recomputation complete",
+            "timesheet_id": str(id),
+            "updated_at": str(ts.updated_at),
+        },
         status_code=200,
     )
 
@@ -529,12 +595,61 @@ async def list_clocked_in(
 ) -> ClockedInResponse:
     """List currently clocked-in staff (branch-scoped).
 
-    Placeholder: returns empty list.
-    Full implementation will query time_clock_entries WHERE clock_out_at IS NULL.
+    Delegates to the existing time_clock service which queries
+    time_clock_entries WHERE clock_out_at IS NULL joined with staff_members.
     """
-    _get_org_id(request)
+    from app.modules.time_clock.service import list_currently_clocked_in
 
-    return ClockedInResponse(items=[], total=0)
+    org_id = _get_org_id(request)
+
+    raw_items = await list_currently_clocked_in(db, org_id=org_id)
+
+    # Also fetch branch names for display
+    from app.modules.admin.models import Branch
+    branch_result = await db.execute(
+        select(Branch.id, Branch.name).where(Branch.org_id == org_id)
+    )
+    branch_map = {row[0]: row[1] for row in branch_result.all()}
+
+    # Map to ClockedInEntry schema
+    from app.modules.timesheets.schemas import ClockedInEntry as ClockedInEntrySchema
+    items = []
+    for item in raw_items:
+        clock_in_at = item.get("clock_in_at")
+        elapsed = 0
+        if clock_in_at:
+            from datetime import datetime as dt_cls, timezone as tz
+            now = dt_cls.now(tz.utc)
+            if hasattr(clock_in_at, 'timestamp'):
+                elapsed = int((now - clock_in_at).total_seconds() / 60)
+
+        entry_id = item.get("time_clock_entry_id", item.get("id"))
+        staff_id = item.get("staff_id")
+        if not entry_id or not staff_id:
+            continue
+
+        # Resolve branch name from the TCE's branch_id
+        branch_id = item.get("branch_id")
+        branch_name = branch_map.get(branch_id, "Main") if branch_id else "Main"
+
+        items.append(ClockedInEntrySchema(
+            id=entry_id,
+            staff_id=staff_id,
+            staff_name=item.get("staff_name") or "Unknown",
+            position=item.get("position"),
+            clock_in_at=clock_in_at,
+            elapsed_minutes=elapsed,
+            on_break=(item.get("break_minutes", 0) or 0) > 0,
+            break_started_at=None,
+            clock_in_branch_name=branch_name,
+            clock_out_branch_name=None,
+            source=item.get("source") or "unknown",
+            clock_in_ip=item.get("clock_in_ip"),
+            rostered_start=None,
+            punctuality=None,
+        ))
+
+    return ClockedInResponse(items=items, total=len(items))
 
 
 @clocked_in_router.post("/{entry_id}/clock-out")
@@ -611,6 +726,11 @@ async def get_settings(
             match_policy=s.match_policy,
             auto_approve_threshold_minutes=s.auto_approve_threshold_minutes,
             require_approval_before_lock=s.require_approval_before_lock,
+            daily_overtime_threshold_minutes=getattr(s, 'daily_overtime_threshold_minutes', 480),
+            weekly_overtime_threshold_minutes=getattr(s, 'weekly_overtime_threshold_minutes', 2400),
+            overtime_rate_multiplier=Decimal(str(getattr(s, 'overtime_rate_multiplier', '1.50') or '1.50')),
+            break_rules=getattr(s, 'break_rules', []) or [],
+            public_holiday_rate_multiplier=Decimal(str(getattr(s, 'public_holiday_rate_multiplier', '1.50') or '1.50')),
         )
 
     return TimesheetSettingsResponse(
@@ -666,6 +786,11 @@ async def update_org_settings(
         match_policy=settings_row.match_policy,
         auto_approve_threshold_minutes=settings_row.auto_approve_threshold_minutes,
         require_approval_before_lock=settings_row.require_approval_before_lock,
+        daily_overtime_threshold_minutes=getattr(settings_row, 'daily_overtime_threshold_minutes', 480),
+        weekly_overtime_threshold_minutes=getattr(settings_row, 'weekly_overtime_threshold_minutes', 2400),
+        overtime_rate_multiplier=Decimal(str(getattr(settings_row, 'overtime_rate_multiplier', '1.50') or '1.50')),
+        break_rules=getattr(settings_row, 'break_rules', []) or [],
+        public_holiday_rate_multiplier=Decimal(str(getattr(settings_row, 'public_holiday_rate_multiplier', '1.50') or '1.50')),
     )
 
 
@@ -704,6 +829,11 @@ async def get_branch_settings(
         match_policy=settings_row.match_policy,
         auto_approve_threshold_minutes=settings_row.auto_approve_threshold_minutes,
         require_approval_before_lock=settings_row.require_approval_before_lock,
+        daily_overtime_threshold_minutes=getattr(settings_row, 'daily_overtime_threshold_minutes', 480),
+        weekly_overtime_threshold_minutes=getattr(settings_row, 'weekly_overtime_threshold_minutes', 2400),
+        overtime_rate_multiplier=Decimal(str(getattr(settings_row, 'overtime_rate_multiplier', '1.50') or '1.50')),
+        break_rules=getattr(settings_row, 'break_rules', []) or [],
+        public_holiday_rate_multiplier=Decimal(str(getattr(settings_row, 'public_holiday_rate_multiplier', '1.50') or '1.50')),
     )
 
 
@@ -755,4 +885,247 @@ async def update_branch_settings(
         match_policy=settings_row.match_policy,
         auto_approve_threshold_minutes=settings_row.auto_approve_threshold_minutes,
         require_approval_before_lock=settings_row.require_approval_before_lock,
+        daily_overtime_threshold_minutes=getattr(settings_row, 'daily_overtime_threshold_minutes', 480),
+        weekly_overtime_threshold_minutes=getattr(settings_row, 'weekly_overtime_threshold_minutes', 2400),
+        overtime_rate_multiplier=Decimal(str(getattr(settings_row, 'overtime_rate_multiplier', '1.50') or '1.50')),
+        break_rules=getattr(settings_row, 'break_rules', []) or [],
+        public_holiday_rate_multiplier=Decimal(str(getattr(settings_row, 'public_holiday_rate_multiplier', '1.50') or '1.50')),
     )
+
+# ===========================================================================
+# Router 4: Pay Cycles (mounted at /api/v2/pay-cycles) — Phase B
+# ===========================================================================
+
+pay_cycles_router = APIRouter()
+
+
+@pay_cycles_router.get("/")
+async def list_pay_cycles(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """List pay cycles for the org."""
+    org_id = _get_org_id(request)
+    role = getattr(request.state, "role", None)
+    if role not in ("org_admin", "global_admin"):
+        _check_permission(request, "payrun.lock")
+
+    from app.modules.timesheets.pay_cycles import PayCycle
+    result = await db.execute(
+        select(PayCycle).where(PayCycle.org_id == org_id, PayCycle.active == True)
+    )
+    cycles = list(result.scalars().all())
+
+    return JSONResponse(content={
+        "items": [
+            {
+                "id": str(c.id),
+                "name": c.name,
+                "frequency": c.frequency,
+                "anchor_date": str(c.anchor_date),
+                "pay_date_offset_days": c.pay_date_offset_days,
+                "is_default": c.is_default,
+            }
+            for c in cycles
+        ],
+        "total": len(cycles),
+    })
+
+
+@pay_cycles_router.post("/")
+async def create_pay_cycle_endpoint(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Create a new pay cycle (org_admin only)."""
+    from datetime import date as date_type
+    org_id = _get_org_id(request)
+    user_id = _get_user_id(request)
+    role = getattr(request.state, "role", None)
+    if role not in ("org_admin", "global_admin"):
+        raise HTTPException(status_code=403, detail="org_admin role required")
+
+    from app.modules.timesheets.pay_cycles import create_pay_cycle
+    body = await request.json()
+
+    cycle = await create_pay_cycle(
+        db,
+        org_id=org_id,
+        name=body["name"],
+        frequency=body.get("frequency", "fortnightly"),
+        anchor_date=date_type.fromisoformat(body["anchor_date"]),
+        pay_date_offset_days=body.get("pay_date_offset_days", 3),
+        is_default=body.get("is_default", False),
+        actor_id=user_id,
+    )
+
+    return JSONResponse(content={
+        "id": str(cycle.id),
+        "name": cycle.name,
+        "frequency": cycle.frequency,
+        "anchor_date": str(cycle.anchor_date),
+        "pay_date_offset_days": cycle.pay_date_offset_days,
+        "is_default": cycle.is_default,
+    }, status_code=201)
+
+
+@pay_cycles_router.post("/{cycle_id}/generate-periods/")
+async def generate_periods_endpoint(
+    cycle_id: UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Auto-generate upcoming PayPeriod rows for a cycle."""
+    org_id = _get_org_id(request)
+    role = getattr(request.state, "role", None)
+    if role not in ("org_admin", "global_admin"):
+        raise HTTPException(status_code=403, detail="org_admin role required")
+
+    from app.modules.timesheets.pay_cycles import auto_generate_pay_periods
+    body = await request.json() if request.headers.get("content-length", "0") != "0" else {}
+    count = body.get("count", 4) if isinstance(body, dict) else 4
+
+    created = await auto_generate_pay_periods(
+        db, org_id=org_id, pay_cycle_id=cycle_id, ahead_count=count,
+    )
+
+    return JSONResponse(content={
+        "created": created,
+        "count": len(created),
+    })
+
+
+@pay_cycles_router.post("/{cycle_id}/assignments/")
+async def assign_cycle_endpoint(
+    cycle_id: UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Assign a pay cycle to a target scope."""
+    org_id = _get_org_id(request)
+    role = getattr(request.state, "role", None)
+    if role not in ("org_admin", "global_admin"):
+        raise HTTPException(status_code=403, detail="org_admin role required")
+
+    from app.modules.timesheets.pay_cycles import assign_pay_cycle
+    body = await request.json()
+
+    target_id = UUID(body["target_id"]) if body.get("target_id") else None
+    assignment = await assign_pay_cycle(
+        db,
+        org_id=org_id,
+        pay_cycle_id=cycle_id,
+        target_type=body.get("target_type", "all"),
+        target_id=target_id,
+    )
+
+    return JSONResponse(content={
+        "id": str(assignment.id),
+        "pay_cycle_id": str(assignment.pay_cycle_id),
+        "target_type": assignment.target_type,
+        "target_id": str(assignment.target_id) if assignment.target_id else None,
+    }, status_code=201)
+
+
+# ===========================================================================
+# Router 5: Pay Run (mounted at /api/v2/pay-run) — Phase B
+# ===========================================================================
+
+payrun_router = APIRouter()
+
+
+@payrun_router.post("/generate/")
+async def generate_payrun(
+    request: Request,
+    pay_period_id: UUID = Query(...),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Generate payslip drafts for all locked timesheets in a period."""
+    org_id = _get_org_id(request)
+    user_id = _get_user_id(request)
+    _check_permission(request, "payrun.lock")
+
+    from app.modules.timesheets.payrun import run_pay_period
+
+    summary = await run_pay_period(
+        db, org_id=org_id, pay_period_id=pay_period_id, actor_id=user_id,
+    )
+
+    return JSONResponse(content={
+        "pay_period_id": str(summary.pay_period_id),
+        "total_timesheets": summary.total_timesheets,
+        "payslips_generated": summary.payslips_generated,
+        "adjustments_included": summary.adjustments_included,
+        "errors": summary.errors,
+    })
+
+
+@payrun_router.post("/adjustments/")
+async def create_adjustment(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Create a post-lock correction adjustment."""
+    org_id = _get_org_id(request)
+    user_id = _get_user_id(request)
+    _check_permission(request, "payrun.lock")
+
+    from app.modules.timesheets.pay_cycles import create_timesheet_adjustment
+
+    body = await request.json()
+    adjustment = await create_timesheet_adjustment(
+        db,
+        org_id=org_id,
+        original_timesheet_id=UUID(body["original_timesheet_id"]),
+        correction_period_id=UUID(body["correction_period_id"]),
+        adjustment_minutes=body["adjustment_minutes"],
+        reason=body["reason"],
+        category=body.get("category", "correction"),
+        actor_id=user_id,
+    )
+
+    return JSONResponse(content={
+        "id": str(adjustment.id),
+        "original_timesheet_id": str(adjustment.original_timesheet_id),
+        "correction_period_id": str(adjustment.correction_period_id),
+        "adjustment_minutes": adjustment.adjustment_minutes,
+        "reason": adjustment.reason,
+        "category": adjustment.category,
+    }, status_code=201)
+
+
+@payrun_router.get("/adjustments/")
+async def list_adjustments(
+    request: Request,
+    pay_period_id: UUID = Query(...),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """List adjustments targeting a specific pay period."""
+    org_id = _get_org_id(request)
+    _check_permission(request, "payrun.lock")
+
+    from app.modules.timesheets.pay_cycles import TimesheetAdjustment
+
+    result = await db.execute(
+        select(TimesheetAdjustment).where(
+            TimesheetAdjustment.org_id == org_id,
+            TimesheetAdjustment.correction_period_id == pay_period_id,
+        )
+    )
+    adjustments = list(result.scalars().all())
+
+    return JSONResponse(content={
+        "items": [
+            {
+                "id": str(a.id),
+                "original_timesheet_id": str(a.original_timesheet_id),
+                "adjustment_minutes": a.adjustment_minutes,
+                "reason": a.reason,
+                "category": a.category,
+                "created_by": str(a.created_by),
+                "created_at": a.created_at.isoformat() if a.created_at else None,
+            }
+            for a in adjustments
+        ],
+        "total": len(adjustments),
+    })

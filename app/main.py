@@ -532,10 +532,12 @@ def create_app() -> FastAPI:
     app.include_router(payslips_router, prefix="/api/v2", tags=["v2-payslips"])
 
     # --- Staff Timesheets module routers ---
-    from app.modules.timesheets.router import timesheets_router, clocked_in_router, settings_router
+    from app.modules.timesheets.router import timesheets_router, clocked_in_router, settings_router, pay_cycles_router, payrun_router
     app.include_router(timesheets_router, prefix="/api/v2/timesheets", tags=["v2-timesheets"])
     app.include_router(clocked_in_router, prefix="/api/v2/clocked-in", tags=["v2-clocked-in"])
     app.include_router(settings_router, prefix="/api/v2/timesheet-settings", tags=["v2-timesheet-settings"])
+    app.include_router(pay_cycles_router, prefix="/api/v2/pay-cycles", tags=["v2-pay-cycles"])
+    app.include_router(payrun_router, prefix="/api/v2/pay-run", tags=["v2-pay-run"])
 
     # --- Public staff roster viewer (no auth, token-gated, G5 rate-limited) ---
     from app.modules.staff.public_router import public_router as staff_public_router

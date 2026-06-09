@@ -402,6 +402,8 @@ async def list_currently_clocked_in(
             "clock_in_at": entry.clock_in_at,
             "source": entry.source,
             "break_minutes": int(entry.break_minutes or 0),
+            "branch_id": getattr(entry, "branch_id", None),
+            "clock_in_ip": getattr(entry, "clock_in_ip", None),
         })
     return items
 

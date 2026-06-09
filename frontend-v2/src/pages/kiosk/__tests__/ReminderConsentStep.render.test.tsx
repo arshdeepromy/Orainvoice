@@ -72,9 +72,14 @@ describe('ReminderConsentStep inspection-type rows', () => {
     renderStep(vehicle())
     expect(screen.queryByText('WOF expiry')).not.toBeInTheDocument()
     expect(screen.queryByText('COF expiry')).not.toBeInTheDocument()
-    // Registration + Service due still render for automotive.
-    expect(screen.getByText('Registration expiry')).toBeInTheDocument()
+    // Registration is NOT offered on the kiosk step; only Service due remains.
+    expect(screen.queryByText('Registration expiry')).not.toBeInTheDocument()
     expect(screen.getByText('Service due')).toBeInTheDocument()
+  })
+
+  it('never offers Registration expiry on the kiosk step', () => {
+    renderStep(vehicle({ inspection_type: 'wof', wof_expiry: '2026-07-01' }))
+    expect(screen.queryByText('Registration expiry')).not.toBeInTheDocument()
   })
 
   it('non-automotive shows only Service due (hides WOF/COF/registration)', () => {

@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy import (
     Boolean,
@@ -38,6 +39,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Integer,
+    Numeric,
     Text,
     UniqueConstraint,
     func,
@@ -239,6 +241,27 @@ class TimesheetSettings(Base):
     )
     require_approval_before_lock: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="true",
+    )
+    # Phase C — overtime thresholds
+    daily_overtime_threshold_minutes: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="480",
+    )
+    weekly_overtime_threshold_minutes: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="2400",
+    )
+    overtime_rate_multiplier: Mapped[Decimal] = mapped_column(
+        Numeric(4, 2), nullable=False, server_default="1.50",
+    )
+    # Phase C — break enforcement rules (JSONB array of rule objects)
+    break_rules: Mapped[dict] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=list,
+        server_default=text("'[]'::jsonb"),
+    )
+    # Phase C — public holiday rate multiplier
+    public_holiday_rate_multiplier: Mapped[Decimal] = mapped_column(
+        Numeric(4, 2), nullable=False, server_default="1.50",
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False,

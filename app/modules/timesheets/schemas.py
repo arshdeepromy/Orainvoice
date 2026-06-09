@@ -132,6 +132,12 @@ class TimesheetSettingsRead(BaseModel):
     match_policy: str
     auto_approve_threshold_minutes: int
     require_approval_before_lock: bool
+    # Phase C — overtime & holidays
+    daily_overtime_threshold_minutes: int = 480
+    weekly_overtime_threshold_minutes: int = 2400
+    overtime_rate_multiplier: Decimal = Decimal("1.50")
+    break_rules: list = Field(default_factory=list)
+    public_holiday_rate_multiplier: Decimal = Decimal("1.50")
 
 
 class TimesheetSettingsUpdate(BaseModel):
@@ -142,6 +148,12 @@ class TimesheetSettingsUpdate(BaseModel):
     match_policy: Literal["pay_actual", "round_to_roster", "actual_rounded"] | None = None
     auto_approve_threshold_minutes: int | None = Field(None, ge=0)
     require_approval_before_lock: bool | None = None
+    # Phase C — overtime & holidays
+    daily_overtime_threshold_minutes: int | None = Field(None, ge=0)
+    weekly_overtime_threshold_minutes: int | None = Field(None, ge=0)
+    overtime_rate_multiplier: Decimal | None = Field(None, ge=Decimal("1.0"))
+    break_rules: list | None = None
+    public_holiday_rate_multiplier: Decimal | None = Field(None, ge=Decimal("1.0"))
 
 
 class TimesheetSettingsResponse(BaseModel):

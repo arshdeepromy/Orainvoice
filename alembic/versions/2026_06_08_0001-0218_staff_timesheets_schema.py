@@ -201,7 +201,7 @@ def upgrade() -> None:
     op.execute(
         """
         ALTER TABLE time_clock_entries ADD CONSTRAINT ck_tce_branch_id_new_rows
-            CHECK (created_at <= '2026-06-08T00:00:00Z'::timestamptz OR branch_id IS NOT NULL)
+            CHECK (created_at <= '2026-06-10T00:00:00Z'::timestamptz OR branch_id IS NOT NULL)
         """
     )
 

@@ -62,18 +62,29 @@ const mockCustomer = {
   },
 }
 
-// All four categories enabled; wof_expiry on sms (covered), the rest uncovered.
+// Categories enabled; wof_expiry on sms (covered), the rest uncovered. The
+// WOF row shows only with a WOF vehicle and COF only with a COF vehicle, so
+// the fixture links one of each.
 const remindersResponse = {
   data: {
     service_due: { enabled: true, days_before: 30, channel: 'email' },
     wof_expiry: { enabled: true, days_before: 30, channel: 'sms' },
     cof_expiry: { enabled: true, days_before: 30, channel: 'email' },
-    registration_expiry: { enabled: true, days_before: 30, channel: 'email' },
-    // A COF vehicle so the COF row is shown (it's gated on COF vehicles).
     vehicles: [
       {
-        global_vehicle_id: 'veh-1',
-        rego: 'ABC123',
+        global_vehicle_id: 'veh-wof',
+        rego: 'WOF111',
+        make: 'Toyota',
+        model: 'Hilux',
+        year: 2021,
+        inspection_type: 'wof',
+        service_due_date: null,
+        wof_expiry: '2026-07-01',
+        cof_expiry: null,
+      },
+      {
+        global_vehicle_id: 'veh-cof',
+        rego: 'COF222',
         make: 'Hino',
         model: 'Truck',
         year: 2020,
@@ -108,18 +119,18 @@ describe('Configure Reminders modal — rows + consent indicators', () => {
       screen.getByRole('button', { name: /reminders configured|configure reminders/i }),
     )
 
-    // All four category headings render (F0).
+    // Service Due + the per-vehicle inspection rows render; Registration is
+    // no longer offered.
     await waitFor(() =>
       expect(screen.getByRole('heading', { name: /Service Due/ })).toBeInTheDocument(),
     )
     expect(screen.getByRole('heading', { name: /WOF Expiry/ })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: /COF Expiry/ })).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: /Registration Expiry/ })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: /Registration Expiry/ })).not.toBeInTheDocument()
 
     // wof_expiry on sms is covered → ✓; the others are not → ⚠ (F2).
     expect(screen.getByTestId('consent-ok-wof_expiry')).toBeInTheDocument()
     expect(screen.getByTestId('consent-needed-service_due')).toBeInTheDocument()
     expect(screen.getByTestId('consent-needed-cof_expiry')).toBeInTheDocument()
-    expect(screen.getByTestId('consent-needed-registration_expiry')).toBeInTheDocument()
   })
 })

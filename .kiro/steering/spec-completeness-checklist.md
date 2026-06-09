@@ -163,3 +163,44 @@ Before considering a design document complete, ask:
 - **`integration-credentials-architecture.md`** — Never use env vars for runtime config. All credentials and feature toggles live in the database.
 - **`safe-api-consumption.md`** — Frontend patterns for consuming API responses safely.
 - **`frontend-backend-contract-alignment.md`** — Pydantic schema ↔ frontend type alignment rules.
+
+### 9. Backend Data Wiring (Anti-Placeholder Rule)
+
+Before marking any endpoint task complete:
+
+- [ ] Does the endpoint execute a REAL database query (not return hardcoded empty data)?
+- [ ] Does the frontend component receive real data when test data exists in the DB?
+- [ ] Was an existing endpoint checked that already provides this data? (grep all router files for the table name)
+- [ ] If the endpoint depends on data from another module, is the JOIN or service import actually wired?
+- [ ] For settings pages: does changing a value, saving, and reloading show the new value?
+
+### 10. Existing Infrastructure Reuse Check
+
+Before creating any new endpoint or service function:
+
+- [ ] Search for existing endpoints that serve the same table/feature
+- [ ] Search for existing service functions that query the same data
+- [ ] Search for existing frontend components that display similar information
+- [ ] If found, DELEGATE to the existing implementation — do not duplicate
+
+**Commands to check:**
+```bash
+# Find existing endpoints for a table
+grep -rn "table_name" app/modules/*/router.py
+
+# Find existing service functions
+grep -rn "def.*table_name\|select(ModelName)" app/modules/*/service.py
+
+# Find existing frontend API calls
+grep -rn "/api/v2/feature-name" frontend-v2/src/
+```
+
+### 11. Outline Phase Guard
+
+When a spec says "Phase X (outline only)":
+
+- [ ] DO NOT create endpoint handlers that return placeholder data
+- [ ] DO NOT create frontend pages pointing at unimplemented endpoints
+- [ ] DO write design notes in the spec for future reference
+- [ ] IF you scaffold module structure, use `raise NotImplementedError()` not empty returns
+- [ ] When Phase X is later implemented, it MUST be end-to-end (real query → real UI)

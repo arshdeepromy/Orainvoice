@@ -157,6 +157,126 @@
 }
 
 /* ============================================================
+   KPI summary cards — `.kpis` (grid) / `.kpi` (card).
+   ------------------------------------------------------------
+   Ported from the prototype's ds.css. These were referenced by
+   the customer profile (and 5 other pages) but never defined in
+   frontend-v2, so the cards rendered as unstyled stacked text.
+   Defined here (unlayered) so they win over Tailwind utilities.
+   ============================================================ */
+
+.kpis {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--gap);
+  margin-bottom: var(--gap);
+}
+
+@media (max-width: 1080px) {
+  .kpis {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 560px) {
+  .kpis {
+    grid-template-columns: 1fr;
+  }
+}
+
+.kpi {
+  border: 1px solid var(--border);
+  border-radius: var(--r-card);
+  background: var(--card);
+  box-shadow: var(--shadow-card);
+  padding: 18px 20px;
+}
+
+.kpi .top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.kpi .label {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.kpi .val {
+  font-family: var(--mono);
+  font-size: 26px;
+  font-weight: 600;
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  color: var(--text);
+}
+
+.kpi .delta,
+.kpi .sub {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--muted-2);
+}
+
+/* ============================================================
+   Two-column detail grid + sidebar meta rows.
+   `.detail-grid` (main + sidebar), `.section-label`, `.meta-row`.
+   ============================================================ */
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.85fr) minmax(0, 1fr);
+  gap: var(--gap);
+  align-items: start;
+}
+
+@media (max-width: 980px) {
+  .detail-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.section-label {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-2);
+  margin-bottom: 12px;
+}
+
+.meta-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.meta-row:last-child {
+  border-bottom: 0;
+}
+
+.meta-row .k {
+  flex: 0 0 auto;
+  font-size: 12.5px;
+  color: var(--muted-2);
+}
+
+.meta-row .v {
+  min-width: 0;
+  text-align: right;
+  font-size: 13.5px;
+  color: var(--text);
+  word-break: break-word;
+}
+
+/* ============================================================
    Global scrollbars — thin + subtle, app-wide.
    ------------------------------------------------------------
    The prototype (OraInvoice_Handoff/app/ds.css) styles its scroll

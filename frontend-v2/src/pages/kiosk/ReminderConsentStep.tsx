@@ -70,7 +70,6 @@ function buildRows(
     if (isAutomotive) {
       const insp = inspectionCategory(resolveInspectionTypeRow(v))
       if (insp) cats.push(insp)
-      cats.push('registration_expiry')
     }
     cats.push('service_due')
     cats.forEach((category) => {

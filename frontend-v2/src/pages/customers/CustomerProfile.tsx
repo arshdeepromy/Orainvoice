@@ -187,6 +187,20 @@ function formatNZD(amount: string | number): string {
   return new Intl.NumberFormat('en-NZ', { style: 'currency', currency: 'NZD' }).format(num)
 }
 
+/* ── Small inline icons for the KPI cards (no icon dep) ── */
+function KpiSvg({ children }: { children: React.ReactNode }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.9}
+      strokeLinecap="round" strokeLinejoin="round" className="h-[17px] w-[17px]" aria-hidden="true">
+      {children}
+    </svg>
+  )
+}
+const DollarIcon = () => <KpiSvg><path d="M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6" /></KpiSvg>
+const AlertIcon = () => <KpiSvg><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4m0 4h.01" /></KpiSvg>
+const CarIcon = () => <KpiSvg><path d="M5 17a2 2 0 1 0 4 0M15 17a2 2 0 1 0 4 0M3 13l1.5-5A2 2 0 0 1 6.4 6.5h11.2A2 2 0 0 1 19.5 8L21 13M3 13h18v3a1 1 0 0 1-1 1h-1M5 17H4a1 1 0 0 1-1-1v-3" /></KpiSvg>
+const DocIcon = () => <KpiSvg><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M9 13h6M9 17h6" /></KpiSvg>
+
 function formatDate(dateStr: string | null | undefined): string {
   if (!dateStr) return '—'
   return new Intl.DateTimeFormat('en-NZ', { day: '2-digit', month: '2-digit', year: 'numeric' }).format(new Date(dateStr))
@@ -490,6 +504,10 @@ export default function CustomerProfilePage() {
   }
 
   const hasCofVehicles = (reminderConfig?.vehicles ?? []).some(v => v.inspection_type === 'cof')
+  // A vehicle is WOF-inspected when its inspection_type is 'wof' or unknown
+  // (light vehicles default to WOF). Only one inspection type is valid per
+  // vehicle, so the WOF / COF rows render per the linked vehicles' types.
+  const hasWofVehicles = (reminderConfig?.vehicles ?? []).some(v => v.inspection_type === 'wof' || !v.inspection_type)
 
   /* ---- Consent indicator per (category, channel) row (F2) ----
      Reads the customer's existing reminder_consent and shows whether the
@@ -899,24 +917,55 @@ export default function CustomerProfilePage() {
       {/* Summary KPI cards */}
       <div className="kpis">
         <div className="kpi">
-          <div className="top"><span className="label">Total Spend</span></div>
+          <div className="top">
+            <span className="label">Total Spend</span>
+            <span className="grid h-8 w-8 place-items-center rounded-[9px] bg-ok-soft text-ok">
+              <DollarIcon />
+            </span>
+          </div>
           <div className="val">{formatNZD(customer.total_spend)}</div>
+          <div className="sub">lifetime, incl. GST</div>
         </div>
         <div className="kpi">
-          <div className="top"><span className="label">Outstanding</span></div>
-          <div className={`val ${outstandingNum > 0 ? 'text-danger' : 'text-ok'}`}>
+          <div className="top">
+            <span className="label">Outstanding</span>
+            <span
+              className={`grid h-8 w-8 place-items-center rounded-[9px] ${
+                outstandingNum > 0 ? 'bg-danger-soft text-danger' : 'bg-ok-soft text-ok'
+              }`}
+            >
+              <AlertIcon />
+            </span>
+          </div>
+          <div
+            className="val"
+            style={{ color: outstandingNum > 0 ? 'var(--danger)' : 'var(--ok)' }}
+          >
             {formatNZD(customer.outstanding_balance)}
           </div>
+          <div className="sub">{outstandingNum > 0 ? 'awaiting payment' : 'all settled'}</div>
         </div>
         {vehiclesEnabled && (
         <div className="kpi">
-          <div className="top"><span className="label">Vehicles</span></div>
+          <div className="top">
+            <span className="label">Vehicles</span>
+            <span className="grid h-8 w-8 place-items-center rounded-[9px] bg-accent-soft text-accent">
+              <CarIcon />
+            </span>
+          </div>
           <div className="val">{customer.vehicles.length}</div>
+          <div className="sub">{customer.vehicles.length === 1 ? 'linked vehicle' : 'linked vehicles'}</div>
         </div>
         )}
         <div className="kpi">
-          <div className="top"><span className="label">Invoices</span></div>
+          <div className="top">
+            <span className="label">Invoices</span>
+            <span className="grid h-8 w-8 place-items-center rounded-[9px] bg-purple-soft text-purple">
+              <DocIcon />
+            </span>
+          </div>
           <div className="val">{customer.invoices.length}</div>
+          <div className="sub">total issued</div>
         </div>
       </div>
 
@@ -1374,8 +1423,8 @@ export default function CustomerProfilePage() {
             </div>
             )}
 
-            {/* WOF Expiry — automotive only */}
-            {isAutomotive && vehiclesEnabled && (
+            {/* WOF Expiry — shown when the customer has WOF-inspected vehicles */}
+            {hasWofVehicles && isAutomotive && vehiclesEnabled && (
             <div className="space-y-3 rounded-card border border-border p-4">
               <div className="flex items-center justify-between">
                 <h3 className="text-[13px] font-medium text-text">WOF Expiry{renderConsentIndicator('wof_expiry')}</h3>
@@ -1522,47 +1571,6 @@ export default function CustomerProfilePage() {
                     <p className="text-[11px] italic text-muted-2">No COF vehicles linked to this customer.</p>
                   )}
                 </>
-              )}
-            </div>
-            )}
-
-            {/* Registration Expiry — automotive only */}
-            {isAutomotive && vehiclesEnabled && (
-            <div className="space-y-3 rounded-card border border-border p-4">
-              <div className="flex items-center justify-between">
-                <h3 className="text-[13px] font-medium text-text">Registration Expiry{renderConsentIndicator('registration_expiry')}</h3>
-                <label className="relative inline-flex cursor-pointer items-center">
-                  <input
-                    type="checkbox"
-                    checked={reminderConfig?.registration_expiry?.enabled ?? false}
-                    onChange={(e) => updateReminder('registration_expiry', { enabled: e.target.checked })}
-                    className="peer sr-only"
-                  />
-                  <div className="peer h-5 w-9 rounded-full bg-border after:absolute after:left-[2px] after:top-[2px] after:h-4 after:w-4 after:rounded-full after:border after:border-border-strong after:bg-white after:transition-all after:content-[''] peer-checked:bg-accent peer-checked:after:translate-x-full peer-checked:after:border-white peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-accent-soft" />
-                  <span className="ml-2 text-[13px] text-muted">{reminderConfig?.registration_expiry?.enabled ? 'Enabled' : 'Disabled'}</span>
-                </label>
-              </div>
-              {reminderConfig?.registration_expiry?.enabled && (
-                <div className="grid grid-cols-2 gap-3">
-                  <Input
-                    label="Days before expiry"
-                    type="number"
-                    value={String(reminderConfig?.registration_expiry?.days_before ?? 30)}
-                    onChange={(e) => updateReminder('registration_expiry', { days_before: parseInt(e.target.value) || 30 })}
-                  />
-                  <Select
-                    label="Notify via"
-                    options={[
-                      { value: 'email', label: 'Email' },
-                      ...(smsEnabled ? [
-                        { value: 'sms', label: 'SMS' },
-                        { value: 'both', label: 'Email & SMS' },
-                      ] : []),
-                    ]}
-                    value={reminderConfig?.registration_expiry?.channel ?? 'email'}
-                    onChange={(e) => updateReminder('registration_expiry', { channel: e.target.value as 'email' | 'sms' | 'both' })}
-                  />
-                </div>
               )}
             </div>
             )}

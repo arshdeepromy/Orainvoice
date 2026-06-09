@@ -67,6 +67,8 @@ MODULE_ENDPOINT_MAP: dict[str, str] = {
     "/api/v2/timesheets": "timesheets",
     "/api/v2/clocked-in": "timesheets",
     "/api/v2/timesheet-settings": "timesheets",
+    "/api/v2/pay-cycles": "timesheets",
+    "/api/v2/pay-run": "timesheets",
     "/api/v1/vehicles": "vehicles",
     "/api/v1/ledger": "accounting",
     "/api/v1/gst": "accounting",

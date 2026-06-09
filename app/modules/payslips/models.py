@@ -152,6 +152,11 @@ class PayPeriod(Base):
     start_date: Mapped[date] = mapped_column(Date, nullable=False)
     end_date: Mapped[date] = mapped_column(Date, nullable=False)
     pay_date: Mapped[date] = mapped_column(Date, nullable=False)
+    pay_cycle_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("pay_cycles.id"),
+        nullable=True,
+    )
     status: Mapped[str] = mapped_column(
         Text, nullable=False, server_default="open",
     )
