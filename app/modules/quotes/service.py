@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import write_audit_log
 from app.modules.admin.models import Organisation
 from app.modules.auth.models import User
+from app.modules.customers.address_utils import resolve_customer_display_address
 from app.modules.customers.models import Customer
 from app.modules.quotes.attachment_models import QuoteAttachment
 from app.modules.quotes.attachment_service import get_attachment_count
@@ -1122,7 +1123,7 @@ async def generate_quote_pdf(
         "last_name": customer.last_name if customer else "",
         "email": customer.email if customer else None,
         "phone": customer.phone if customer else None,
-        "address": customer.address if customer else None,
+        "address": resolve_customer_display_address(customer) if customer else None,
     }
 
     # Render HTML

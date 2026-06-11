@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db_session
 from app.modules.admin.models import Organisation
+from app.modules.customers.address_utils import resolve_customer_display_address
 from app.modules.customers.models import Customer
 from app.modules.invoices.models import Invoice, LineItem
 from app.modules.invoices.service import (
@@ -97,9 +98,11 @@ async def view_shared_invoice(
     customer_context = {
         "first_name": customer.first_name if customer else "Unknown",
         "last_name": customer.last_name if customer else "",
+        "display_name": getattr(customer, "display_name", None) if customer else None,
+        "company_name": getattr(customer, "company_name", None) if customer else None,
         "email": customer.email if customer else None,
         "phone": customer.phone if customer else None,
-        "address": customer.address if customer else None,
+        "address": resolve_customer_display_address(customer) if customer else None,
     }
 
     # Vehicle info — prefer OrgVehicle over GlobalVehicle for the calling org so the

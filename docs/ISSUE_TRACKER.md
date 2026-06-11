@@ -6152,3 +6152,55 @@ The `app/modules/ppsr/pdf.py` template context dict surfaced `charges_cents` fro
 
 **Related Issues**: ISSUE-105 (PPSR module ship), the `1.22.0` polish series.
 
+
+---
+
+### ISSUE-173: "Bill To" address missing on public invoice, quote PDF, and public quote when address lives only in `billing_address` JSONB
+
+- **Date**: 2026-06-10
+- **Severity**: significant
+- **Status**: resolved
+- **Reporter**: user
+- **Regression of**: N/A — pre-existing drift since the public invoice/quote rendering paths were written
+
+**Symptoms**: Customers whose address was entered through the Edit Customer modal (which writes the structured `customers.billing_address` JSONB column and leaves the legacy plain-text `customers.address` column empty) showed **no address** in the "Bill To" / "Prepared For" block on three surfaces:
+
+1. The public / shared invoice view + public invoice PDF (e.g. "MUMA Whanau Services Ltd" with `address = NULL`, `billing_address = {"street": "842 Mahili Ave", "city": "Manukau", "state": "Auckland", "postal_code": "2104", "country": "NZ"}` rendered name + company but no address).
+2. The authenticated quote PDF.
+3. The public quote share link.
+
+The in-app invoice preview (`get_invoice`) and authenticated invoice PDF (`generate_invoice_pdf`) already worked because they had their own inline `billing_address` fallback. Separately, the public invoice context omitted `display_name` and `company_name` even though `invoice_share.html` renders them, so business customers never showed their company name on the shared invoice.
+
+**Root Cause**: Address-string resolution was duplicated independently across the customer-rendering call sites. The two invoice paths in `app/modules/invoices/service.py` (`get_invoice`, `generate_invoice_pdf`) were patched to add the `billing_address` JSONB fallback, but the public invoice path (`app/modules/invoices/public_router.py`), the authenticated quote PDF (`app/modules/quotes/service.py`), and the public quote path (`app/modules/quotes/public_router.py`) were written earlier and only read `customer.address`. The public quote path had **no `address` key at all** in its `customer_context`, and `quote_share.html` had **no address line** in its "Prepared For" block. With no shared helper, the logic drifted and three surfaces silently dropped the address.
+
+**Fix Applied**:
+
+1. Added a single shared helper `resolve_customer_display_address(customer)` in new file `app/modules/customers/address_utils.py`. Precedence: plain `customers.address` (verbatim) when non-empty → else comma-join the non-empty `billing_address` JSONB parts in order `street, city, state, postal_code, country` → else `None`. Guards non-dict `billing_address` and all-empty-strings JSONB (→ `None`). This matches the existing inline invoice logic exactly so the already-correct paths are byte-identical after centralisation.
+2. Wired the helper into all rendering surfaces:
+   - `app/modules/invoices/service.py::get_invoice` — replaced the inline `cust_address` fallback (preservation, identical output).
+   - `app/modules/invoices/service.py::generate_invoice_pdf` — set `customer_context["address"]` from the helper (preservation, identical output; `billing_address` key behaviour kept).
+   - `app/modules/invoices/public_router.py` — set the existing `address` key from the helper, and **added `display_name` and `company_name`** to `customer_context` (template already rendered both).
+   - `app/modules/quotes/service.py` — set the existing `address` key from the helper (`quote.html` already renders `customer.address`).
+   - `app/modules/quotes/public_router.py` — **added** the missing `"address": resolve_customer_display_address(customer)` key.
+3. Template change: `app/templates/pdf/quote_share.html` — added an address line to the "Prepared For" block (`{% if customer.address %}{{ customer.address }}{% endif %}`) with a `<br>` after the phone line so the address sits on its own line. Name / email / phone lines unchanged.
+4. Tests: added `tests/test_billto_address_bug_condition.py` (proves the three surfaces omitted the structured-only address on unfixed code, now pass) and `tests/test_billto_address_preservation.py` (locks plain-address precedence, no-address → empty, the two already-correct invoice paths, non-address fields, and the Req 80.2 compliance check unchanged).
+
+**Files Changed**:
+
+- `app/modules/customers/address_utils.py` (new — shared helper)
+- `app/modules/invoices/service.py` (`get_invoice`, `generate_invoice_pdf`)
+- `app/modules/invoices/public_router.py` (address fallback + `display_name` / `company_name`)
+- `app/modules/quotes/service.py` (authenticated quote PDF address fallback)
+- `app/modules/quotes/public_router.py` (added `address` key)
+- `app/templates/pdf/quote_share.html` (added address line to "Prepared For" block)
+- `tests/test_billto_address_bug_condition.py` (new)
+- `tests/test_billto_address_preservation.py` (new)
+- `docs/ISSUE_TRACKER.md` (this entry)
+
+**Out of scope (intentionally unchanged)**: The large-invoice buyer-address compliance check (Req 80.2) in `app/modules/invoices/service.py`. The in-app quote preview (`frontend-v2/src/pages/quotes/QuoteDetail.tsx`) renders only name + email client-side and shows no address today — a separate pre-existing limitation; the quote PDF is the address-bearing artifact. No DB migration required — purely a read/serialisation fix; the data already exists in `billing_address`.
+
+**Similar Bugs Found & Fixed**: The public invoice context's missing `display_name` / `company_name` was the same class of drift (context omitting fields the template already supports) and was fixed alongside the address fallback.
+
+**Related Issues**: N/A
+
+**Spec**: `.kiro/specs/invoice-billto-address-fix/` (bugfix workflow — bugfix.md, design.md, tasks.md)
