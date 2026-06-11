@@ -102,7 +102,7 @@
   - Regression: a customer with a plain `address` still shows that value everywhere
   - _Requirements: 2.1, 2.6, 2.7, 3.1, 3.2, 3.7_
 
-- [-] 5. Update issue tracker + commit
+- [x] 5. Update issue tracker + commit
   - Add an entry to `docs/ISSUE_TRACKER.md` for this fix
   - Git commit to a feature branch and push (do not deploy to Pi PROD until approved)
   - _Requirements: All_
