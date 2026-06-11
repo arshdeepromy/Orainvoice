@@ -125,7 +125,8 @@
         <div class="section-title">Prepared For</div>
         <strong>{{ customer.first_name }} {{ customer.last_name }}</strong><br>
         {% if customer.email %}{{ customer.email }}<br>{% endif %}
-        {% if customer.phone %}{{ customer.phone }}{% endif %}
+        {% if customer.phone %}{{ customer.phone }}<br>{% endif %}
+        {% if customer.address %}{{ customer.address }}{% endif %}
       </div>
       {% if quote.vehicle_rego %}
       <div class="details-col">

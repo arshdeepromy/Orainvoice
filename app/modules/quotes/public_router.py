@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db_session
 from app.modules.admin.models import Organisation
+from app.modules.customers.address_utils import resolve_customer_display_address
 from app.modules.customers.models import Customer
 from app.modules.quotes.models import Quote, QuoteLineItem
 from app.modules.quotes.service import accept_quote_by_token
@@ -74,6 +75,7 @@ async def view_shared_quote(
         "last_name": customer.last_name if customer else "",
         "email": customer.email if customer else None,
         "phone": customer.phone if customer else None,
+        "address": resolve_customer_display_address(customer) if customer else None,
     }
 
     gst_percentage = settings.get("gst_percentage", 15)

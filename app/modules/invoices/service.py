@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import write_audit_log
 from app.modules.admin.models import Organisation
 from app.modules.customers.models import Customer
+from app.modules.customers.address_utils import resolve_customer_display_address
 from app.modules.catalogue.models import LabourRate, ServiceCatalogue
 from app.modules.invoices.models import (
     CreditNote,
@@ -1784,18 +1785,9 @@ async def get_invoice(
         )
         customer = cust_result.scalar_one_or_none()
         if customer:
-            # Build address: prefer plain text `address`, fall back to structured billing_address
-            cust_address = getattr(customer, "address", None)
-            if not cust_address:
-                ba = getattr(customer, "billing_address", None) or {}
-                if isinstance(ba, dict) and any(ba.values()):
-                    cust_address = ", ".join(filter(None, [
-                        ba.get("street"),
-                        ba.get("city"),
-                        ba.get("state"),
-                        ba.get("postal_code"),
-                        ba.get("country"),
-                    ]))
+            # Build address via shared helper: prefer plain text `address`,
+            # fall back to structured billing_address JSONB.
+            cust_address = resolve_customer_display_address(customer)
             result["customer"] = {
                 "id": str(customer.id),
                 "first_name": customer.first_name,
@@ -4326,8 +4318,12 @@ async def generate_invoice_pdf(
         )
     )
     customer = cust_result.scalar_one_or_none()
-    # Build address: prefer plain text, fall back to structured billing_address
-    _cust_addr = customer.address if customer else None
+    # Build address via shared helper: prefer plain text `address`, fall back
+    # to the structured billing_address JSONB (single source of truth).
+    cust_address = resolve_customer_display_address(customer) if customer else None
+    # Structured-only billing_address string: the base PDF templates check
+    # `customer.billing_address` first, then `customer.address`. Keep this key
+    # behaviour as-is so existing output is preserved.
     _cust_billing_addr = None
     if customer:
         _ba = getattr(customer, "billing_address", None) or {}
@@ -4339,8 +4335,6 @@ async def generate_invoice_pdf(
                 _ba.get("postal_code"),
                 _ba.get("country"),
             ]))
-            if not _cust_addr:
-                _cust_addr = _cust_billing_addr
     customer_context = {
         "first_name": customer.first_name if customer else "Unknown",
         "last_name": customer.last_name if customer else "",
@@ -4348,7 +4342,7 @@ async def generate_invoice_pdf(
         "company_name": getattr(customer, "company_name", None) if customer else None,
         "email": customer.email if customer else None,
         "phone": customer.phone if customer else None,
-        "address": _cust_addr or None,
+        "address": cust_address or None,
         "billing_address": _cust_billing_addr or None,
     }
 
