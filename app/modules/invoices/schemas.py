@@ -211,6 +211,7 @@ class CustomerSummary(BaseModel):
     last_name: str
     email: str | None = None
     phone: str | None = None
+    address: str | None = None
     company_name: str | None = None
     display_name: str | None = None
 

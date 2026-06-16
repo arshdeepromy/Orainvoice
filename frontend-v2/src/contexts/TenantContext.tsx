@@ -39,6 +39,7 @@ export interface InvoiceSettings {
   default_notes_enabled: boolean
   payment_terms_enabled: boolean
   terms_and_conditions_enabled: boolean
+  pos_preview_enabled: boolean
 }
 
 export interface TenantSettings {
@@ -119,6 +120,7 @@ export function TenantProvider({ children }: { children: ReactNode }) {
         default_notes_enabled?: boolean
         payment_terms_enabled?: boolean
         terms_and_conditions_enabled?: boolean
+        pos_preview_enabled?: boolean
         trade_family: string | null
         trade_category: string | null
         sidebar_display_mode?: string
@@ -153,6 +155,7 @@ export function TenantProvider({ children }: { children: ReactNode }) {
           default_notes_enabled: data?.default_notes_enabled ?? false,
           payment_terms_enabled: data?.payment_terms_enabled ?? true,
           terms_and_conditions_enabled: data?.terms_and_conditions_enabled ?? true,
+          pos_preview_enabled: data?.pos_preview_enabled ?? true,
         },
         addressCountry: data.address_country ?? null,
       }

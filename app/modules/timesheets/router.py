@@ -556,7 +556,7 @@ async def match_all_endpoint(
     )
 
 
-@timesheets_router.post("/materialise")
+@timesheets_router.post("/materialise/")
 async def materialise_endpoint(
     request: Request,
     pay_period_id: UUID = Query(...),

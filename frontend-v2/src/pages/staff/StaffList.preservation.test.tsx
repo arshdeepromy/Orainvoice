@@ -152,7 +152,10 @@ describe('StaffList preservation (Requirement 6)', () => {
     // Add modal heading + required first-name field.
     expect(await screen.findByText('Add Staff Member')).toBeInTheDocument()
     expect(screen.getByText('First Name *')).toBeInTheDocument()
-    // The WorkSchedule editor renders its per-day toggles (Mon…Sun).
+    // Work Days editor is gated on the "Fixed shifts" working arrangement.
+    // Select it, then the per-day toggles (Mon…Sun) render.
+    const arrangement = screen.getByDisplayValue('Rostered / rotating shifts')
+    await user.selectOptions(arrangement, 'fixed')
     expect(screen.getByRole('button', { name: 'Mon' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Sun' })).toBeInTheDocument()
   })
@@ -168,7 +171,9 @@ describe('StaffList preservation (Requirement 6)', () => {
     // First name input pre-filled from the row.
     expect(screen.getByDisplayValue('Jordan')).toBeInTheDocument()
     expect(screen.getByDisplayValue('Blake')).toBeInTheDocument()
-    // WorkSchedule editor still present in the edit modal.
+    // Work Days editor appears once the Fixed shifts arrangement is chosen.
+    const arrangement = screen.getByDisplayValue('Rostered / rotating shifts')
+    await user.selectOptions(arrangement, 'fixed')
     expect(screen.getByRole('button', { name: 'Mon' })).toBeInTheDocument()
   })
 

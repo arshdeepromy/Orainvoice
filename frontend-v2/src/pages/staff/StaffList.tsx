@@ -45,6 +45,8 @@ interface StaffMember {
   shift_start: string | null
   shift_end: string | null
   role_type: string
+  employment_basis: string
+  working_arrangement: string
   hourly_rate: string | null
   overtime_rate: string | null
   skills: string[]
@@ -63,6 +65,8 @@ interface StaffFormData {
   position: string
   reporting_to: string
   role_type: string
+  employment_basis: string
+  working_arrangement: string
   hourly_rate: string
   overtime_rate: string
   skills: string
@@ -79,7 +83,8 @@ const DEFAULT_SCHEDULE: WeekSchedule = {
 const emptyForm: StaffFormData = {
   first_name: '', last_name: '', email: '', phone: '',
   employee_id: '', position: '', reporting_to: '',
-  role_type: 'employee', hourly_rate: '', overtime_rate: '', skills: '',
+  role_type: 'employee', employment_basis: 'full_time', working_arrangement: 'rostered',
+  hourly_rate: '', overtime_rate: '', skills: '',
 }
 
 const modalInputCls = 'w-full rounded-ctl border border-border bg-card px-3 py-2 text-sm text-text focus:border-accent focus:outline-none focus:shadow-[0_0_0_3px_var(--accent-soft)]'
@@ -211,6 +216,8 @@ export default function StaffList() {
       position: member.position || '',
       reporting_to: member.reporting_to || '',
       role_type: member.role_type || 'employee',
+      employment_basis: member.employment_basis || 'full_time',
+      working_arrangement: member.working_arrangement || 'rostered',
       hourly_rate: member.hourly_rate || '',
       overtime_rate: member.overtime_rate || '',
       skills: (member.skills || []).join(', '),
@@ -236,8 +243,10 @@ export default function StaffList() {
         employee_id: form.employee_id.trim() || null,
         position: form.position.trim() || null,
         reporting_to: form.reporting_to || null,
-        availability_schedule: schedule,
+        availability_schedule: form.working_arrangement === 'fixed' ? schedule : {},
         role_type: form.role_type,
+        employment_basis: form.employment_basis,
+        working_arrangement: form.working_arrangement,
         hourly_rate: form.hourly_rate ? parseFloat(form.hourly_rate) : null,
         overtime_rate: form.overtime_rate ? parseFloat(form.overtime_rate) : null,
         skills: form.skills ? form.skills.split(',').map((s: string) => s.trim()).filter(Boolean) : [],
@@ -659,6 +668,27 @@ export default function StaffList() {
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
+                  <label className={modalLabelCls}>Employment Basis</label>
+                  <select value={form.employment_basis} onChange={(e) => setForm(f => ({ ...f, employment_basis: e.target.value }))}
+                    className={modalInputCls}>
+                    <option value="full_time">Full-time employee</option>
+                    <option value="part_time">Part-time employee</option>
+                    <option value="casual">Casual</option>
+                    <option value="contractor">Contractor</option>
+                  </select>
+                </div>
+                <div>
+                  <label className={modalLabelCls}>Working Arrangement</label>
+                  <select value={form.working_arrangement} onChange={(e) => setForm(f => ({ ...f, working_arrangement: e.target.value }))}
+                    className={modalInputCls}>
+                    <option value="fixed">Fixed shifts (set days &amp; hours)</option>
+                    <option value="rostered">Rostered / rotating shifts</option>
+                    <option value="casual_on_demand">Casual — on demand</option>
+                  </select>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
                   <label className={modalLabelCls}>Overtime Rate ($)</label>
                   <input type="number" step="0.01" min="0" value={form.overtime_rate}
                     onChange={(e) => setForm(f => ({ ...f, overtime_rate: e.target.value }))}
@@ -732,7 +762,23 @@ export default function StaffList() {
                 </div>
               )}
 
-              <WorkSchedule schedule={schedule} onChange={setSchedule} />
+              {form.working_arrangement === 'fixed' ? (
+                <div className="rounded-ctl border border-border bg-canvas p-4 space-y-2">
+                  <WorkSchedule schedule={schedule} onChange={setSchedule} />
+                  <p className="text-xs text-muted-2">
+                    These fixed hours are the source of truth for this staff member&apos;s timesheets — they
+                    generate rostered hours automatically each pay period, ready to approve and pay.
+                  </p>
+                </div>
+              ) : (
+                <div className="rounded-ctl border border-dashed border-border bg-canvas p-4">
+                  <p className="text-xs text-muted-2">
+                    {form.working_arrangement === 'rostered'
+                      ? 'Hours come from the published roster (Schedule page) and clock-in/out activity. Set up shifts on the Schedule page.'
+                      : 'Casual on-demand — hours come from actual clock-in/out activity. No fixed work days to define.'}
+                  </p>
+                </div>
+              )}
               {formError && <p className="text-sm text-danger">{formError}</p>}
             </div>
             <div className="flex items-center justify-end gap-3 border-t border-border px-6 py-4 bg-canvas rounded-b-card">

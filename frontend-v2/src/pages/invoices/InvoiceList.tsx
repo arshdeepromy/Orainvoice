@@ -28,6 +28,8 @@ import { QrPaymentWaitingPopup } from './QrPaymentWaitingPopup'
 import { QrPaymentAmountModal } from './QrPaymentAmountModal'
 import { SendEmailModal } from '@/components/email/SendEmailModal'
 import { SURFACE_REGISTRY } from '@/components/email/surfaceRegistry'
+import { useMediaQuery } from '@/hooks/useMediaQuery'
+import { resolvePaneVisibility, type NarrowPane } from './responsiveLayout'
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -407,7 +409,7 @@ export default function InvoiceList() {
   const location = useLocation()
   const { id: routeId } = useParams<{ id: string }>()
   const isCreating = location.pathname === '/invoices/new'
-  const { tradeFamily } = useTenant()
+  const { tradeFamily, settings } = useTenant()
   const { branches: branchList, selectedBranchId } = useBranch()
   const { user } = useAuth()
   // Null tradeFamily treated as automotive for backward compat
@@ -428,6 +430,18 @@ export default function InvoiceList() {
   const [invoice, setInvoice] = useState<InvoiceDetailData | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState('')
+
+  /* --- Responsive master/detail state --- */
+  // Only viewport observation in the feature: at/above the Wide_Threshold both
+  // panes show side-by-side; below it exactly one pane shows.
+  const isWide = useMediaQuery('(min-width: 1280px)')
+  // Which pane a sub-Wide_Threshold user is viewing. This is an explicit intent,
+  // NOT a function of hasSelection (the list auto-selects a first invoice on
+  // load, which must not flip a bare narrow load to the detail pane). Initialized
+  // from the route at mount and only changed by explicit user actions.
+  const [narrowPane, setNarrowPane] = useState<NarrowPane>(
+    () => (routeId || isCreating ? 'detail' : 'list'),
+  )
 
   /* --- Unsaved changes guard for invoice sidebar clicks --- */
   const [unsavedModalOpen, setUnsavedModalOpen] = useState(false)
@@ -468,6 +482,9 @@ export default function InvoiceList() {
   const [moreMenuOpen, setMoreMenuOpen] = useState(false)
   const [reminderMenuOpen, setReminderMenuOpen] = useState(false)
   const [selectedPreview, setSelectedPreview] = useState<'invoice' | 'receipt'>('invoice')
+  /* Org-level toggle (Invoice Settings) — when off, hide the POS receipt
+     preview panel and the "Print POS Receipt" action. Defaults to on. */
+  const posPreviewEnabled = settings?.invoice?.pos_preview_enabled ?? true
   const [shareModalOpen, setShareModalOpen] = useState(false)
   const [shareUrl, setShareUrl] = useState('')
 
@@ -496,6 +513,19 @@ export default function InvoiceList() {
   const moreMenuRef = useRef<HTMLDivElement>(null)
   const reminderMenuRef = useRef<HTMLDivElement>(null)
 
+  /* --- Focus-management targets for responsive transitions (Req 7.1, 7.3) --- */
+  // A visible interactive element in each region that focus can land on after a
+  // responsive transition hides the region that previously held focus.
+  const listFocusRef = useRef<HTMLInputElement>(null)      // list region: search input
+  const backButtonRef = useRef<HTMLButtonElement>(null)    // detail region: Back control
+
+  /* --- Invoice preview "scale to fit" --- */
+  // The invoice preview card keeps its native document width (DESIGN_W) and is
+  // proportionally scaled (CSS zoom) to fit the width actually available to it,
+  // so the document format is preserved at narrow widths instead of reflowing.
+  const invoicePreviewColRef = useRef<HTMLDivElement>(null)
+  const [invoiceZoom, setInvoiceZoom] = useState(1)
+
   /* --- Inject print styles --- */
   useEffect(() => {
     const style = document.createElement('style')
@@ -504,6 +534,21 @@ export default function InvoiceList() {
     document.head.appendChild(style)
     return () => { style.remove() }
   }, [])
+
+  /* --- Keep the invoice preview scaled to fit its column (preserve format) --- */
+  useEffect(() => {
+    const col = invoicePreviewColRef.current
+    if (!col) return
+    const DESIGN_W = 768 // native invoice document width (max-w-3xl)
+    const compute = () => {
+      const avail = col.clientWidth
+      if (avail > 0) setInvoiceZoom(Math.min(1, avail / DESIGN_W))
+    }
+    compute()
+    const ro = new ResizeObserver(compute)
+    ro.observe(col)
+    return () => ro.disconnect()
+  }, [invoice, detailLoading, isCreating, isWide, narrowPane, selectedId])
 
   /* --- Fetch Stripe Connect status for QR Payment button visibility --- */
   useEffect(() => {
@@ -953,12 +998,63 @@ export default function InvoiceList() {
   const paymentSummary = invoice ? computePaymentSummary(invoice.payments || []) : { totalPaid: 0, totalRefunded: 0, netPaid: 0 }
   const refundableAmount = paymentSummary.netPaid
 
+  /* --- Responsive pane resolution --- */
+  // Pure decision: which of list / detail panes (and the Back control) are
+  // visible. At the Wide tier both panes always show; below it exactly one.
+  // selectedId / selectedIdRef / invoice and the selectedId-keyed fetchDetail
+  // effect are untouched, so crossing the threshold never refetches.
+  const { showList, showDetail, showBackControl } = resolvePaneVisibility(
+    isWide,
+    !!selectedId,
+    narrowPane,
+    isCreating,
+  )
+
+  /* Back_To_List_Control activation (Req 2.3, 2.7, 7.3). Returns the narrow
+     single-pane view from the detail region to the list: switch the active
+     pane, navigate to the Invoices_List_Path so a reload/deep-link resolves to
+     the list, and move focus into the list region. selectedId is deliberately
+     NOT cleared, so the list row keeps its persistent selected-state highlight
+     (Req 2.5). */
+  const handleBackToList = useCallback(() => {
+    setNarrowPane('list')
+    navigate('/invoices')
+    // Best-effort immediate focus; the responsive focus effect below is the
+    // reliable mechanism once the list pane mounts (guarded — Req 7.3).
+    listFocusRef.current?.focus()
+  }, [navigate])
+
+  /* Focus management across responsive transitions (Req 7.1). When a transition
+     removes the region that held keyboard focus, the browser resets focus to
+     <body>; move it into a visible interactive element of the newly shown
+     region so keyboard users are not stranded. Guarded focus calls leave focus
+     on <body> rather than throwing if the target is not mounted. */
+  const prevPaneRef = useRef<{ showList: boolean; showDetail: boolean } | null>(null)
+  useEffect(() => {
+    const prev = prevPaneRef.current
+    prevPaneRef.current = { showList, showDetail }
+    // Skip the initial mount — only respond to actual transitions.
+    if (prev === null) return
+    const hidList = prev.showList && !showList
+    const hidDetail = prev.showDetail && !showDetail
+    if (!hidList && !hidDetail) return
+    const active = document.activeElement
+    const focusLost = !active || active === document.body
+    if (!focusLost) return
+    if (showDetail) {
+      backButtonRef.current?.focus()
+    } else if (showList) {
+      listFocusRef.current?.focus()
+    }
+  }, [showList, showDetail])
+
   return (
     <div className="flex h-full overflow-hidden bg-canvas" data-testid="invoice-list">
       {/* ============================================================ */}
       {/*  LEFT SIDEBAR — Invoice List                                  */}
       {/* ============================================================ */}
-      <div className="w-80 min-w-[320px] flex flex-col border-r border-border bg-card" data-print-hide>
+      {showList && (
+      <div className={`${isWide ? 'w-80 min-w-[320px] border-r' : 'flex-1 min-w-0'} flex flex-col border-border bg-card`} data-print-hide>
         {/* Sidebar header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-border">
           <div className="flex items-center gap-2">
@@ -1009,6 +1105,7 @@ export default function InvoiceList() {
               onChange={(e) => setSearchQuery(e.target.value)}
               className="w-full py-1.5 text-sm bg-transparent outline-none placeholder:text-muted-2"
               aria-label="Search invoices"
+              ref={listFocusRef}
             />
           </div>
         </div>
@@ -1044,7 +1141,14 @@ export default function InvoiceList() {
                     return
                   }
                   setSelectedId(inv.id)
-                  if (isCreating) navigate(`/invoices/${inv.id}`, { replace: true })
+                  // Narrow screen: selecting a row is an explicit intent to view
+                  // the detail pane, and navigates to /invoices/:id (Req 2.4, 2.8).
+                  if (!isWide) setNarrowPane('detail')
+                  if (isCreating) {
+                    navigate(`/invoices/${inv.id}`, { replace: true })
+                  } else if (!isWide) {
+                    navigate(`/invoices/${inv.id}`)
+                  }
                 }}
                 className={`w-full text-left px-4 py-3 border-b border-border transition-colors ${
                   isActive
@@ -1136,11 +1240,32 @@ export default function InvoiceList() {
           </div>
         )}
       </div>
+      )}
 
       {/* ============================================================ */}
       {/*  RIGHT PANEL — Invoice Detail or Create                       */}
       {/* ============================================================ */}
-      <div className="flex-1 flex flex-col overflow-hidden" data-print-content>
+      {showDetail && (
+      <div className="flex-1 min-w-0 flex flex-col overflow-hidden" data-print-content>
+        {/* Back_To_List_Control — shown only in narrow single-pane mode (Req 2.1,
+            2.2). Native <button> for free Tab reachability, Enter+Space
+            activation, and a visible focus ring (Req 2.6). */}
+        {showBackControl && (
+          <div className="px-6 pt-3 pb-1 bg-card" data-print-hide>
+            <button
+              ref={backButtonRef}
+              type="button"
+              onClick={handleBackToList}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 -ml-1.5 text-sm font-medium text-muted hover:text-text hover:bg-canvas rounded-ctl transition-colors"
+              aria-label="Back to invoices"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
+              </svg>
+              Back to invoices
+            </button>
+          </div>
+        )}
         {isCreating && (
           <div className="flex-1 overflow-y-auto">
             <InvoiceCreate />
@@ -1176,14 +1301,14 @@ export default function InvoiceList() {
         {!isCreating && invoice && !detailLoading && (
           <>
             {/* ---- Top toolbar ---- */}
-            <div className="flex items-center justify-between px-6 py-3 border-b border-border bg-card" data-print-hide>
+            <div className="flex flex-wrap items-center justify-between gap-2 px-4 sm:px-6 py-3 border-b border-border bg-card" data-print-hide>
               <div className="flex items-center gap-3">
                 <h2 className="text-lg font-semibold text-text mono">
                   {invoice.invoice_number || 'Draft Invoice'}
                 </h2>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center justify-end gap-2">
                 {/* Edit button */}
                 {canEdit && (
                   <button
@@ -1316,12 +1441,14 @@ export default function InvoiceList() {
                       >
                         Print Invoice
                       </button>
-                      <button
-                        onClick={handlePrintReceipt}
-                        className="w-full text-left px-4 py-2 text-sm text-text hover:bg-canvas"
-                      >
-                        Print POS Receipt
-                      </button>
+                      {posPreviewEnabled && (
+                        <button
+                          onClick={handlePrintReceipt}
+                          className="w-full text-left px-4 py-2 text-sm text-text hover:bg-canvas"
+                        >
+                          Print POS Receipt
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>
@@ -1467,13 +1594,20 @@ export default function InvoiceList() {
             )}
 
             {/* ---- Invoice Preview + POS Receipt Side by Side ---- */}
-            <div className="flex-1 overflow-y-auto px-6 py-4">
-              <div className="flex gap-4 max-w-6xl mx-auto items-start">
-              {/* Left: Invoice Preview Card */}
-              <div className="flex-1 min-w-0" data-preview="invoice">
+            {/* @container/detail: the detail scroll region is a named container so the
+                POS panel can stack below the preview based on this region's own width
+                (POS_Stack_Threshold = 900px), independent of the viewport. */}
+            <div className="@container/detail flex-1 min-w-0 overflow-y-auto overflow-x-auto px-4 sm:px-6 py-4">
+              {/* Beside at ≥900px region width; stacked (column) below 900px. */}
+              <div className="flex min-w-0 @max-[900px]/detail:flex-col @max-[900px]/detail:items-stretch gap-4 max-w-6xl mx-auto items-start">
+              {/* Left: Invoice Preview Card — kept at its native document width
+                  and proportionally scaled down (zoom) to fit the available
+                  width so the layout/format is preserved instead of reflowing. */}
+              <div className="flex-1 min-w-0" data-preview="invoice" ref={invoicePreviewColRef}>
+              <div className="invoice-doc-scale" style={{ ['--inv-zoom' as string]: String(invoiceZoom) } as React.CSSProperties}>
               <div
                 onClick={() => setSelectedPreview('invoice')}
-                className={`max-w-3xl bg-card rounded-card shadow-card overflow-hidden cursor-pointer transition-all ${selectedPreview === 'invoice' ? 'ring-2 ring-accent border border-accent' : 'border border-border hover:border-border-strong'}`}
+                className={`max-w-3xl bg-card rounded-card shadow-card overflow-hidden cursor-pointer transition-all ${selectedPreview === 'invoice' || !posPreviewEnabled ? 'ring-2 ring-accent border border-accent' : 'border border-border hover:border-border-strong'}`}
               >
                 {/* Watermark for draft */}
                 <div className="relative">
@@ -1879,6 +2013,7 @@ export default function InvoiceList() {
                   </div>
                 </div>
               </div>
+              </div>
 
               {/* Vehicle info is now inside the invoice card above */}
 
@@ -2002,10 +2137,11 @@ export default function InvoiceList() {
               </div>{/* end left column */}
 
               {/* Right: POS Receipt Preview */}
+              {posPreviewEnabled && (
               <div
                 data-preview="receipt"
                 onClick={() => setSelectedPreview('receipt')}
-                className={`w-[280px] shrink-0 sticky top-0 cursor-pointer rounded-card p-3 transition-all ${selectedPreview === 'receipt' ? 'ring-2 ring-accent bg-accent-soft' : 'hover:bg-canvas'}`}
+                className={`w-[280px] shrink-0 sticky top-0 @max-[900px]/detail:w-full @max-[900px]/detail:max-w-3xl @max-[900px]/detail:static cursor-pointer rounded-card p-3 transition-all ${selectedPreview === 'receipt' ? 'ring-2 ring-accent bg-accent-soft' : 'hover:bg-canvas'}`}
               >
                 <h3 className="text-xs font-semibold text-muted uppercase tracking-wider mb-3">POS Receipt</h3>
                 {/* Vehicle info for receipt */}
@@ -2046,6 +2182,7 @@ export default function InvoiceList() {
                 })()}
                 <POSReceiptPreview receiptData={invoiceToReceiptData(invoice)} paperWidth={80} />
               </div>
+              )}
               </div>{/* end flex row */}
 
               {/* Bottom spacer */}
@@ -2054,6 +2191,7 @@ export default function InvoiceList() {
           </>
         )}
       </div>
+      )}
 
       {/* ============================================================ */}
       {/*  MODALS                                                       */}

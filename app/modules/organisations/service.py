@@ -234,6 +234,10 @@ SETTINGS_JSONB_KEYS = {
     "default_notes_enabled",
     "payment_terms_enabled",
     "terms_and_conditions_enabled",
+    # Invoice POS receipt preview toggle — controls whether the in-app
+    # split-panel POS receipt preview and the "Print POS Receipt" action
+    # are shown. Defaults to True (preserves existing behaviour).
+    "pos_preview_enabled",
     # Staff Management Phase 1 (B6) — per-org floor for compliance counter
     # (C9) and save-time minimum-wage gate (C10). Default 23.15 NZD applied
     # at call-sites when key is missing from JSONB; no row backfill needed.
@@ -374,6 +378,7 @@ async def _load_org_settings_from_db(
         "default_notes_enabled": False,
         "payment_terms_enabled": True,
         "terms_and_conditions_enabled": True,
+        "pos_preview_enabled": True,
     }
 
     settings_dict = {key: settings_data.get(key) for key in SETTINGS_JSONB_KEYS}

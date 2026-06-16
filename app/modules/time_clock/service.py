@@ -882,6 +882,35 @@ async def _perform_clock_action(
         db.add(entry)
         await db.flush()
         await db.refresh(entry)
+
+        # Lazy-create Timesheet for this staff+period (Req 1.2a)
+        try:
+            from app.modules.timesheets.service import get_or_create_timesheet
+            from app.modules.payslips.models import PayPeriod
+            from sqlalchemy import select as sel, and_
+            from datetime import date as date_cls
+            today = entry.clock_in_at.date() if entry.clock_in_at else date_cls.today()
+            period_result = await db.execute(
+                sel(PayPeriod).where(
+                    and_(
+                        PayPeriod.org_id == org_id,
+                        PayPeriod.start_date <= today,
+                        PayPeriod.end_date >= today,
+                    )
+                ).limit(1)
+            )
+            period = period_result.scalar_one_or_none()
+            if period:
+                await get_or_create_timesheet(
+                    db,
+                    org_id=org_id,
+                    staff_id=staff.id,
+                    pay_period_id=period.id,
+                    branch_id=getattr(entry, 'branch_id', None),
+                )
+        except Exception:
+            pass  # Non-critical: timesheet creation failure shouldn't block clock-in
+
         await write_audit_log(
             session=db,
             org_id=org_id,

@@ -209,6 +209,12 @@ def create_app() -> FastAPI:
     from app.modules.ha.middleware import StandbyWriteProtectionMiddleware
     app.add_middleware(StandbyWriteProtectionMiddleware)
 
+    # 10.5b — Restore-maintenance gate (HTTP 503 + drain during a full restore).
+    # Reads backup_config.restore_maintenance_active and blocks all non-Global-
+    # Admin / non-health traffic while a full restore is applying (Req 12.1/12.2).
+    from app.modules.backup_restore.middleware import RestoreMaintenanceMiddleware
+    app.add_middleware(RestoreMaintenanceMiddleware)
+
     # 10.6 — Branch context (validates X-Branch-Id header, needs org_id from Auth)
     from app.core.branch_context import BranchContextMiddleware
     app.add_middleware(BranchContextMiddleware)
@@ -398,6 +404,16 @@ def create_app() -> FastAPI:
     # --- Dashboard (branch-scoped metrics) ---
     from app.modules.organisations.dashboard_router import router as dashboard_router
     app.include_router(dashboard_router, prefix="/api/v1/dashboard", tags=["dashboard"])
+
+    # --- Cloud Backup & Restore (platform DR/BCP; Global-Admin only) ---
+    # The router already carries its own `/api/v1/backup` prefix and a
+    # router-level `require_role("global_admin")` dependency.
+    from app.modules.backup_restore.router import router as backup_restore_router
+    app.include_router(backup_restore_router)
+    # Public OAuth callback (no global_admin dependency — reached by a provider
+    # redirect with no JWT; authenticated by the OAuth code + state).
+    from app.modules.backup_restore.router import public_router as backup_restore_public_router
+    app.include_router(backup_restore_public_router)
 
     # --- V2 Routers (universal platform) ---
     # Existing V1 modules are also available under /api/v2/ for continuity.

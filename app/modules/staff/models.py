@@ -72,6 +72,12 @@ class StaffMember(Base):
     role_type: Mapped[str] = mapped_column(
         String(20), default="employee", nullable=False,
     )
+    employment_basis: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="full_time",
+    )
+    working_arrangement: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="rostered",
+    )
     hourly_rate: Mapped[Decimal | None] = mapped_column(
         Numeric(10, 2), nullable=True,
     )

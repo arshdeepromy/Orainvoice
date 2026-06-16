@@ -139,6 +139,21 @@ const NotificationManager = lazy(() => import('@/pages/admin/NotificationManager
 const GlobalBranchOverview = lazy(() => import('@/pages/admin/GlobalBranchOverview'))
 const GlobalAdminProfile = lazy(() => import('@/pages/admin/GlobalAdminProfile').then((m) => ({ default: m.GlobalAdminProfile })))
 
+// Cloud Backup & Restore (Task 17) — the six global-admin backup pages mounted
+// under /admin/backup/* behind RequireGlobalAdmin. Created as placeholder stubs
+// in Task 17.1 (route wiring); the real pages are built in Tasks 17.2-17.7.
+// Lazy-loaded for per-route code-splitting, mirroring the admin route tree.
+const BackupDashboard = lazy(() => import('@/pages/admin/backup/BackupDashboard').then((m) => ({ default: m.BackupDashboard })))
+const BackupSettings = lazy(() => import('@/pages/admin/backup/BackupSettings').then((m) => ({ default: m.BackupSettings })))
+const BackupHistory = lazy(() => import('@/pages/admin/backup/BackupHistory').then((m) => ({ default: m.BackupHistory })))
+const RestoreWizard = lazy(() => import('@/pages/admin/backup/RestoreWizard').then((m) => ({ default: m.RestoreWizard })))
+const KeyRecoveryKit = lazy(() => import('@/pages/admin/backup/KeyRecoveryKit').then((m) => ({ default: m.KeyRecoveryKit })))
+const Rehearsals = lazy(() => import('@/pages/admin/backup/Rehearsals').then((m) => ({ default: m.Rehearsals })))
+const BackupGuide = lazy(() => import('@/pages/admin/backup/BackupGuide').then((m) => ({ default: m.BackupGuide })))
+// Sub-navigation shell wrapping the six backup pages so each is reachable from
+// the others (Overview / Destinations / History / Restore / Keys / Rehearsals).
+const BackupLayout = lazy(() => import('@/layouts/BackupLayout').then((m) => ({ default: m.BackupLayout })))
+
 // Invoices (Tasks 19, 20) — InvoiceList is the split-panel list+detail+create
 // page; the original frontend mounts it at /invoices, /invoices/new and
 // /invoices/:id. The standalone create/edit form (InvoiceCreate, Task 20) is
@@ -927,6 +942,20 @@ function AppRoutes() {
 
             {/* Profile — reached from the AdminLayout user menu. */}
             <Route path="profile" element={<GlobalAdminProfile />} />
+
+            {/* Cloud Backup & Restore (Task 17) — the six global-admin backup
+                pages under /admin/backup/*, wrapped in BackupLayout which
+                renders the shared sub-navigation between them. Reached from the
+                "Cloud Backup" item in the Admin Console sidebar (AdminLayout). */}
+            <Route path="backup" element={<BackupLayout />}>
+              <Route index element={<BackupDashboard />} />
+              <Route path="settings" element={<BackupSettings />} />
+              <Route path="history" element={<BackupHistory />} />
+              <Route path="restore" element={<RestoreWizard />} />
+              <Route path="keys" element={<KeyRecoveryKit />} />
+              <Route path="rehearsals" element={<Rehearsals />} />
+              <Route path="guide" element={<BackupGuide />} />
+            </Route>
 
             {/* Index — redirect /admin to the dashboard. */}
             <Route index element={<Navigate to="dashboard" replace />} />

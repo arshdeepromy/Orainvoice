@@ -143,6 +143,13 @@ _ADMIN_ONLY_PREFIXES: tuple[str, ...] = (
     "/api/v2/admin/",
     "/api/v1/ha/",
     "/api/v2/ha/",
+    # Cloud Backup & Restore is a platform-wide DR/BCP feature operated by
+    # global admins only — it has no org context (the backup tables carry no
+    # org_id). Like /admin and /ha, it must be exempt from the REM-10 tenant
+    # org-context requirement, otherwise every /backup call 403s for a
+    # global_admin who has not selected an active org.
+    "/api/v1/backup/",
+    "/api/v2/backup/",
 )
 
 
@@ -150,7 +157,20 @@ def _is_public(path: str) -> bool:
     """Return True if the path does not require a JWT."""
     if path in PUBLIC_PATHS:
         return True
-    return any(path.startswith(prefix) for prefix in PUBLIC_PREFIXES)
+    if any(path.startswith(prefix) for prefix in PUBLIC_PREFIXES):
+        return True
+    # The Cloud Backup OAuth callback is hit by a top-level browser redirect from
+    # the provider (Google / Microsoft), so it never carries the app's JWT. It is
+    # authenticated by the OAuth authorization code + state instead (the code is
+    # exchanged server-side using the client secret). Mirror the existing public
+    # accounting OAuth callback. Path shape:
+    #   /api/v1/backup/destinations/{id}/oauth/callback
+    if (
+        path.startswith("/api/v1/backup/destinations/")
+        or path.startswith("/api/v2/backup/destinations/")
+    ) and path.endswith("/oauth/callback"):
+        return True
+    return False
 
 
 def is_auth_endpoint(path: str) -> bool:

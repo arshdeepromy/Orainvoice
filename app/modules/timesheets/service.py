@@ -250,6 +250,63 @@ class MaterialisationResult:
     no_activity_staff: list[UUID] = field(default_factory=list)
 
 
+# Map Python ``datetime.weekday()`` (Mon=0..Sun=6) onto the lowercase
+# weekday keys used by ``staff.availability_schedule``.
+_WEEKDAY_KEYS = (
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+)
+
+
+def _parse_hhmm(value: str | None) -> int | None:
+    """Parse an ``"HH:MM"`` string into minutes-since-midnight."""
+    if not value or ":" not in value:
+        return None
+    try:
+        h, m = value.split(":", 1)
+        return int(h) * 60 + int(m)
+    except (ValueError, TypeError):
+        return None
+
+
+def compute_fixed_rostered_minutes(
+    availability_schedule: dict | None,
+    start_date,
+    end_date,
+) -> int:
+    """Sum the fixed work-day minutes across a pay period.
+
+    Walks each calendar day in ``[start_date, end_date]`` inclusive and,
+    for every day whose weekday has a configured ``{start, end}`` entry in
+    ``availability_schedule``, adds the shift duration. This makes a staff
+    member's configured work days + hours the single source of truth for
+    rostered hours when their working arrangement is ``fixed``.
+
+    Overnight shifts (end <= start) are treated as wrapping past midnight.
+    """
+    if not availability_schedule:
+        return 0
+
+    from datetime import timedelta
+
+    total = 0
+    cursor = start_date
+    while cursor <= end_date:
+        key = _WEEKDAY_KEYS[cursor.weekday()]
+        entry = availability_schedule.get(key)
+        if isinstance(entry, dict):
+            start_min = _parse_hhmm(entry.get("start"))
+            end_min = _parse_hhmm(entry.get("end"))
+            if start_min is not None and end_min is not None:
+                duration = end_min - start_min
+                if duration <= 0:
+                    # Overnight shift wraps to the next day.
+                    duration += 24 * 60
+                total += duration
+        cursor += timedelta(days=1)
+
+    return total
+
+
 async def materialise_missing_timesheets(
     db: AsyncSession,
     *,
@@ -258,18 +315,20 @@ async def materialise_missing_timesheets(
 ) -> MaterialisationResult:
     """Sweep to create missing timesheets before pay-run cutoff.
 
-    Queries staff with ScheduleEntry or approved LeaveRequest in the period
-    but no Timesheet row. Creates Timesheet rows for them.
-    Staff with NO clock, NO leave, NO schedule are flagged as no_activity
-    (no row created).
+    Two sources feed materialisation:
+      1. Staff with clock entries in the period but no timesheet row.
+      2. Staff whose ``working_arrangement`` is ``fixed`` — their
+         configured work days + hours (``availability_schedule``) are
+         the single source of truth, so a timesheet is created (and its
+         ``rostered_minutes`` seeded from the schedule) even without any
+         clock punch or roster entry.
 
-    Placeholder implementation — the full query joining schedule_entries
-    and leave_requests will be refined during integration testing.
-    For now, creates timesheets for any staff with existing clock entries
-    in the period who lack a timesheet.
+    Staff with NO clock, NO fixed arrangement, NO activity are left as
+    no_activity (no row created).
     """
     from app.modules.time_clock.models import TimeClockEntry
     from app.modules.payslips.models import PayPeriod
+    from app.modules.staff.models import StaffMember
 
     # Get the pay period boundaries
     period_result = await db.execute(
@@ -279,16 +338,13 @@ async def materialise_missing_timesheets(
     if not period:
         return MaterialisationResult()
 
-    # Find staff with clock entries in this period who lack a timesheet
-    from sqlalchemy import and_, not_, exists
-
     # Staff IDs that already have a timesheet for this period
     has_timesheet = select(Timesheet.staff_id).where(
         Timesheet.pay_period_id == pay_period_id,
         Timesheet.org_id == org_id,
     )
 
-    # Staff IDs with clock entries in this period
+    # Source 1: staff IDs with clock entries in this period (no timesheet yet)
     staff_with_clocks = await db.execute(
         select(TimeClockEntry.staff_id).where(
             TimeClockEntry.org_id == org_id,
@@ -297,15 +353,47 @@ async def materialise_missing_timesheets(
             TimeClockEntry.staff_id.not_in(has_timesheet),
         ).distinct()
     )
-    missing_staff_ids = [row[0] for row in staff_with_clocks.all()]
+    clock_staff_ids = {row[0] for row in staff_with_clocks.all()}
+
+    # Source 2: active fixed-arrangement staff (schedule is source of truth)
+    fixed_staff_result = await db.execute(
+        select(StaffMember).where(
+            StaffMember.org_id == org_id,
+            StaffMember.is_active == True,  # noqa: E712
+            StaffMember.working_arrangement == "fixed",
+            StaffMember.id.not_in(has_timesheet),
+        )
+    )
+    fixed_staff = {s.id: s for s in fixed_staff_result.scalars().all()}
 
     result = MaterialisationResult()
 
-    for staff_id in missing_staff_ids:
+    # Need StaffMember rows for any clock-only staff to read their arrangement
+    clock_only_ids = clock_staff_ids - set(fixed_staff.keys())
+    clock_staff_map: dict = {}
+    if clock_only_ids:
+        rows = await db.execute(
+            select(StaffMember).where(StaffMember.id.in_(clock_only_ids))
+        )
+        clock_staff_map = {s.id: s for s in rows.scalars().all()}
+
+    all_staff_ids = clock_staff_ids | set(fixed_staff.keys())
+
+    for staff_id in all_staff_ids:
+        staff = fixed_staff.get(staff_id) or clock_staff_map.get(staff_id)
+        rostered = 0
+        # Seed rostered minutes from the fixed schedule (source of truth).
+        if staff is not None and staff.working_arrangement == "fixed":
+            rostered = compute_fixed_rostered_minutes(
+                staff.availability_schedule,
+                period.start_date,
+                period.end_date,
+            )
         timesheet = Timesheet(
             org_id=org_id,
             staff_id=staff_id,
             pay_period_id=pay_period_id,
+            rostered_minutes=rostered,
             status="open",
         )
         db.add(timesheet)

@@ -212,7 +212,7 @@ export function PpsrHistoryTable({
 
   return (
     <section
-      className="rounded-card border border-border bg-card p-6 shadow-card"
+      className="rounded-card border border-border bg-card p-4 sm:p-6 shadow-card"
       aria-label="Recent PPSR checks"
       data-testid="ppsr-history-table"
     >
@@ -236,7 +236,7 @@ export function PpsrHistoryTable({
       )}
 
       <div className="mt-3 overflow-x-auto">
-        <table className="min-w-full">
+        <table className="w-full min-w-[720px]">
           <thead>
             <tr>
               <th
@@ -333,7 +333,7 @@ export function PpsrHistoryTable({
                         e.stopPropagation()
                         if (row?.id) handleRowClick(row.id)
                       }}
-                      className="mono text-left font-medium text-accent hover:underline focus:outline-none focus:ring-2 focus:ring-accent"
+                      className="mono whitespace-nowrap text-left font-medium text-accent hover:underline focus:outline-none focus:ring-2 focus:ring-accent"
                       aria-label={`View PPSR check from ${formatDate(row?.created_at)}`}
                     >
                       {formatDate(row?.created_at)}
@@ -345,7 +345,7 @@ export function PpsrHistoryTable({
                   <td className="px-4 py-2 text-sm">
                     {ppsrCheckRan ? (
                       <span
-                        className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium ${chip.className}`}
+                        className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 py-0.5 text-xs font-medium ${chip.className}`}
                         aria-label={chip.label}
                       >
                         <span aria-hidden="true">{chip.glyph}</span>
@@ -353,7 +353,7 @@ export function PpsrHistoryTable({
                       </span>
                     ) : (
                       <span
-                        className="inline-flex items-center rounded-full border border-border-strong bg-canvas px-2.5 py-0.5 text-xs font-medium text-muted-2"
+                        className="inline-flex items-center whitespace-nowrap rounded-full border border-border-strong bg-canvas px-2.5 py-0.5 text-xs font-medium text-muted-2"
                         aria-label="No PPSR check performed"
                       >
                         No PPSR performed
@@ -373,7 +373,7 @@ export function PpsrHistoryTable({
                       <span className="text-muted-2">—</span>
                     ) : row.owner_check_match ? (
                       <span
-                        className="inline-flex items-center gap-1.5 rounded-full border border-ok/40 bg-ok-soft px-2.5 py-0.5 text-xs font-medium text-ok"
+                        className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border border-ok/40 bg-ok-soft px-2.5 py-0.5 text-xs font-medium text-ok"
                         aria-label="Ownership confirmed"
                       >
                         <span aria-hidden="true">✅</span>
@@ -381,7 +381,7 @@ export function PpsrHistoryTable({
                       </span>
                     ) : (
                       <span
-                        className="inline-flex items-center gap-1.5 rounded-full border border-danger/40 bg-danger-soft px-2.5 py-0.5 text-xs font-medium text-danger"
+                        className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border border-danger/40 bg-danger-soft px-2.5 py-0.5 text-xs font-medium text-danger"
                         aria-label="Ownership not confirmed"
                       >
                         <span aria-hidden="true">❌</span>

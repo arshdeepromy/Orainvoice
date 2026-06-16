@@ -291,6 +291,8 @@ class StaffService:
             overtime_rate=payload.overtime_rate,
             availability_schedule=payload.availability_schedule,
             skills=payload.skills,
+            employment_basis=payload.employment_basis,
+            working_arrangement=payload.working_arrangement,
             # ----------------------------------------------------------
             # Phase 1 employment record fields (R2.1).
             # ----------------------------------------------------------

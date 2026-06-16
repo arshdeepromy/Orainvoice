@@ -146,18 +146,18 @@ export default function OrgSwitcher() {
     <Menu as="div" className="relative">
       {/* Trigger — full-width `.org-switch` row on the ink palette. */}
       <MenuButton
-        className="flex w-full items-center gap-[10px] rounded-ctl px-[10px] py-2 text-left transition-colors hover:bg-sb-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-fg focus-visible:ring-offset-2 focus-visible:ring-offset-sb-bg"
+        className="shell-org-switch-btn flex w-full items-center gap-[10px] rounded-ctl px-[10px] py-2 text-left transition-colors hover:bg-sb-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-fg focus-visible:ring-offset-2 focus-visible:ring-offset-sb-bg"
         aria-label={`Organisation: ${orgName}. Open organisation menu`}
       >
         {/* Gradient avatar (accent → purple) with initials. */}
         <div className="grid h-[30px] w-[30px] flex-shrink-0 place-items-center rounded-lg bg-gradient-to-br from-accent to-purple text-[13px] font-bold text-white">
           {initials}
         </div>
-        <div className="min-w-0 leading-tight">
+        <div className="shell-org-text min-w-0 leading-tight">
           <div className="truncate text-[13px] font-semibold text-white">{orgName}</div>
           <div className="mono text-[10.5px] uppercase text-sb-muted">{planLine}</div>
         </div>
-        <span className="ml-auto flex-shrink-0 text-sb-muted">
+        <span className="shell-org-chevron ml-auto flex-shrink-0 text-sb-muted">
           <Glyph d={ICON.chevron} size={16} strokeWidth={2} />
         </span>
       </MenuButton>

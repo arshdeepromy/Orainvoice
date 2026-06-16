@@ -79,6 +79,10 @@ class Settings(BaseSettings):
     google_client_id: str = ""
     google_client_secret: str = ""
 
+    # --- Microsoft / OneDrive OAuth (Microsoft identity platform) ---
+    microsoft_client_id: str = ""
+    microsoft_client_secret: str = ""
+
     # --- WebAuthn / Passkeys ---
     # Legacy single-value fallback (used when a request's origin is not on the
     # trusted allowlist below — e.g. server-to-server or a missing Origin header).
@@ -126,6 +130,16 @@ class Settings(BaseSettings):
 
     # --- Encryption ---
     encryption_master_key: str = "change-me-in-production"
+
+    # --- Backup blob naming (content-addressed store) ---
+    # Platform secret used to key the HMAC-SHA-256 that names content-addressed
+    # backup File_Blobs (cloud-backup-restore Req 21.5). It is a *blob-naming*
+    # secret only — it never encrypts artifacts (that is the escrowed BDK's job,
+    # Req 21.4). When left empty it is derived deterministically from
+    # ``encryption_master_key`` (a deployment secret) via HKDF with domain
+    # separation, so the destination cannot infer plaintext equality from blob
+    # names while the platform's own File_Index still dedups.
+    backup_blob_hmac_secret: str = ""
 
     # --- Database SSL (Requirement 52.1, 52.2) ---
     database_ssl_mode: str = "prefer"  # require | prefer | disable

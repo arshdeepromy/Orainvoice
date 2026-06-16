@@ -181,6 +181,10 @@ class OrgSettingsResponse(BaseModel):
     invoice_start_number: Optional[int] = Field(None, description="Starting invoice number")
     default_due_days: Optional[int] = Field(None, description="Default due days from issue date")
     default_notes: Optional[str] = Field(None, description="Default invoice notes")
+    pos_preview_enabled: Optional[bool] = Field(
+        None,
+        description="Show the in-app POS receipt preview and the Print POS Receipt action",
+    )
 
     # Payment terms
     payment_terms_days: Optional[int] = Field(None, description="Payment terms in days")
@@ -320,6 +324,10 @@ class OrgSettingsUpdateRequest(BaseModel):
     )
     default_notes: Optional[str] = Field(
         None, max_length=2000, description="Default invoice notes"
+    )
+    pos_preview_enabled: Optional[bool] = Field(
+        None,
+        description="Show the in-app POS receipt preview and the Print POS Receipt action",
     )
 
     # Payment terms

@@ -177,7 +177,7 @@ function buildOwnerCheckRows(
 // ===========================================================================
 
 const CARD =
-  'rounded-card border border-border bg-card p-6 shadow-card'
+  'rounded-card border border-border bg-card p-4 sm:p-6 shadow-card'
 const SECTION_TITLE =
   'text-base font-medium text-text'
 const BODY_TEXT = 'text-sm text-muted'
@@ -246,7 +246,7 @@ export function PpsrResultPanel({
       <div
         role="status"
         aria-live="polite"
-        className={`flex items-start justify-between gap-4 rounded-card border-2 p-4 ${style.banner}`}
+        className={`flex flex-col gap-3 rounded-card border-2 p-4 sm:flex-row sm:items-start sm:justify-between sm:gap-4 ${style.banner}`}
       >
         <div className="flex items-start gap-3">
           <span
@@ -416,7 +416,7 @@ export function PpsrResultPanel({
         <div className={CARD} data-testid="ppsr-financing-statements">
           <h3 className={SECTION_TITLE}>Financing statements</h3>
           <div className="mt-3 overflow-x-auto">
-            <table className="min-w-full">
+            <table className="w-full min-w-[640px]">
               <thead>
                 <tr>
                   <th scope="col" className={TABLE_HEADER}>Secured party</th>
@@ -434,12 +434,12 @@ export function PpsrResultPanel({
                     <td className={TABLE_CELL}>
                       {readString(row, 'collateral_description', 'collateral', 'description') || '—'}
                     </td>
-                    <td className={`mono ${TABLE_CELL}`}>
+                    <td className={`mono whitespace-nowrap ${TABLE_CELL}`}>
                       {formatRegistrationDate(
                         readString(row, 'registration_date', 'date', 'created_at'),
                       ) || '—'}
                     </td>
-                    <td className={TABLE_CELL}>
+                    <td className={`whitespace-nowrap ${TABLE_CELL}`}>
                       {readString(row, 'status') || '—'}
                     </td>
                   </tr>
@@ -492,7 +492,7 @@ export function PpsrResultPanel({
         <div className={CARD} data-testid="ppsr-ownership">
           <h3 className={SECTION_TITLE}>Ownership</h3>
           <div className="mt-3 overflow-x-auto">
-            <table className="min-w-full">
+            <table className="w-full min-w-[520px]">
               <thead>
                 <tr>
                   <th scope="col" className={TABLE_HEADER}>Owner name</th>

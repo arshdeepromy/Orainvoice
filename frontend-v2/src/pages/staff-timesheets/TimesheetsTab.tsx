@@ -25,11 +25,61 @@ export default function TimesheetsTab({ onPeriodSummary }: TimesheetsTabProps) {
   const [adjustNotes, setAdjustNotes] = useState<string>('')
   const [adjusting, setAdjusting] = useState(false)
 
+  // Fetch available pay periods
+  const [periods, setPeriods] = useState<{ id: string; start_date: string; end_date: string; status: string }[]>([])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    const loadPeriods = async () => {
+      try {
+        // First check if there's a configured pay cycle
+        const cyclesRes = await apiClient.get<{ items: any[]; total: number }>('/api/v2/pay-cycles/', { signal: controller.signal })
+        const cycles = cyclesRes.data?.items ?? []
+
+        // If a cycle exists, try to generate periods from it (idempotent)
+        if (cycles.length > 0) {
+          const cycleId = cycles[0]?.id
+          if (cycleId) {
+            try {
+              await apiClient.post(`/api/v2/pay-cycles/${cycleId}/generate-periods/`, { count: 8 })
+            } catch { /* ignore — already exists or not org_admin */ }
+          }
+        }
+
+        // Now fetch periods
+        const res = await apiClient.get<{ items: any[]; total: number; pay_periods?: any[] }>('/api/v2/pay-periods', { signal: controller.signal })
+        const items = res.data?.items ?? res.data?.pay_periods ?? []
+        if (Array.isArray(items) && items.length > 0) {
+          // Sort by start_date descending (most recent first) and limit to recent 20
+          const sorted = [...items]
+            .sort((a: any, b: any) => (b?.start_date ?? '').localeCompare(a?.start_date ?? ''))
+            .slice(0, 20)
+          setPeriods(sorted)
+          // Auto-select the period covering today
+          const today = new Date().toISOString().split('T')[0]
+          const current = sorted.find((p: any) => p?.start_date <= today && p?.end_date >= today)
+          if (current) {
+            setSelectedPeriod(current.id)
+          } else if (sorted[0]) {
+            setSelectedPeriod(sorted[0].id)
+          }
+        }
+      } catch { /* ignore */ }
+    }
+    loadPeriods()
+    return () => controller.abort()
+  }, [])
+
   const fetchData = useCallback(async (signal?: AbortSignal) => {
+    if (!selectedPeriod || selectedPeriod === 'current' || selectedPeriod === 'previous') {
+      // No valid period selected yet
+      setLoading(false)
+      return
+    }
     try {
       setLoading(true)
       const res = await apiClient.get<TimesheetListResponse>('/api/v2/timesheets/', {
-        params: { pay_period_id: '00000000-0000-0000-0000-000000000000' },
+        params: { pay_period_id: selectedPeriod },
         signal,
       })
       setData(res.data)
@@ -145,8 +195,30 @@ export default function TimesheetsTab({ onPeriodSummary }: TimesheetsTabProps) {
             onChange={(e) => setSelectedPeriod(e.target.value)}
             className="h-9 rounded-lg border border-border bg-canvas px-3 text-sm text-text focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20"
           >
-            <option value="current">Current Period</option>
-            <option value="previous">Previous Period</option>
+            {periods.length === 0 && <option value="">Loading periods...</option>}
+            {periods.map((p) => {
+              const start = new Date(p.start_date + 'T00:00:00')
+              const end = new Date(p.end_date + 'T00:00:00')
+              const today = new Date().toISOString().split('T')[0]
+              const rel = p.end_date < today ? '' : p.start_date > today ? ' • Upcoming' : ' • This week'
+              // ISO week number of the period start.
+              const wk = (() => {
+                const t = new Date(Date.UTC(start.getFullYear(), start.getMonth(), start.getDate()))
+                const dayNr = (t.getUTCDay() + 6) % 7
+                t.setUTCDate(t.getUTCDate() - dayNr + 3)
+                const firstThu = new Date(Date.UTC(t.getUTCFullYear(), 0, 4))
+                const firstDayNr = (firstThu.getUTCDay() + 6) % 7
+                firstThu.setUTCDate(firstThu.getUTCDate() - firstDayNr + 3)
+                return 1 + Math.round((t.getTime() - firstThu.getTime()) / (7 * 24 * 3600 * 1000))
+              })()
+              const fmtStart = (d: Date) => d.toLocaleDateString('en-NZ', { day: 'numeric', month: 'short' })
+              const fmtEnd = (d: Date) => d.toLocaleDateString('en-NZ', { day: 'numeric', month: 'short', year: 'numeric' })
+              return (
+                <option key={p.id} value={p.id}>
+                  Wk {wk} · {fmtStart(start)} – {fmtEnd(end)}{rel}{p.status !== 'open' ? ` (${p.status})` : ''}
+                </option>
+              )
+            })}
           </select>
           <span className="text-xs text-muted">{total} timesheets</span>
         </div>
@@ -172,7 +244,17 @@ export default function TimesheetsTab({ onPeriodSummary }: TimesheetsTabProps) {
             Match All
           </button>
           <button
-            onClick={() => fetchData()}
+            onClick={async () => {
+              // First materialise missing timesheets for this period, then refresh
+              if (selectedPeriod && selectedPeriod !== 'current' && selectedPeriod !== 'previous') {
+                try {
+                  await apiClient.post(`/api/v2/timesheets/materialise/`, null, {
+                    params: { pay_period_id: selectedPeriod },
+                  })
+                } catch { /* ignore — materialise is best-effort */ }
+              }
+              fetchData()
+            }}
             className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-card px-3 text-xs font-medium text-text hover:bg-canvas transition-colors"
           >
             <svg className="h-3.5 w-3.5 text-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>

@@ -16,7 +16,7 @@
  * backend PDF exactly. `.mono`/tabular-nums stays on numbers/codes.
  */
 
-import { useEffect, useState, useCallback, useMemo } from 'react'
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import apiClient from '@/api/client'
 import { useTenant } from '@/contexts/TenantContext'
@@ -234,6 +234,13 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
   /* --- Send Email composer modal (shared SendEmailModal) --- */
   const [emailModalOpen, setEmailModalOpen] = useState(false)
 
+  /* --- Preview "scale to fit" --- */
+  // The quote document preview keeps its native width (DESIGN_W) and is
+  // proportionally scaled (CSS zoom) to fit the width available to it, so the
+  // document format is preserved at narrow widths instead of reflowing.
+  const previewWrapRef = useRef<HTMLDivElement>(null)
+  const [previewZoom, setPreviewZoom] = useState(1)
+
   const templateStyles = useMemo(
     () => resolveTemplateStyles(
       quote?.invoice_template_id,
@@ -280,6 +287,21 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
     document.head.appendChild(style)
     return () => { style.remove() }
   }, [])
+
+  // Keep the quote preview scaled to fit its available width (preserve format)
+  useEffect(() => {
+    const wrap = previewWrapRef.current
+    if (!wrap) return
+    const DESIGN_W = 768 // native document width (max-w-3xl)
+    const compute = () => {
+      const avail = wrap.clientWidth
+      if (avail > 0) setPreviewZoom(Math.min(1, avail / DESIGN_W))
+    }
+    compute()
+    const ro = new ResizeObserver(compute)
+    ro.observe(wrap)
+    return () => ro.disconnect()
+  }, [quote, loading])
 
   const handleDownloadPDF = async (): Promise<void> => {
     if (!quote) return
@@ -438,7 +460,7 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
   return (
     <div className="px-4 py-6 sm:px-6 lg:px-8">
       {/* Action toolbar */}
-      <div className="flex items-center justify-between mb-6" data-print-hide>
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-6" data-print-hide>
         <div className="flex items-center gap-4">
           <button onClick={() => navigate('/quotes')} className="text-muted-2 hover:text-text" aria-label="Back">
             ← Back
@@ -448,7 +470,7 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
             {quote.subject && <p className="text-sm text-muted mt-0.5">{quote.subject}</p>}
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
           <Button variant="ghost" onClick={handlePrint}>Print</Button>
           <Button variant="ghost" onClick={handleDownloadPDF} loading={downloading} disabled={downloading}>
             {downloading ? 'Downloading…' : 'Download PDF'}
@@ -557,6 +579,11 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
       )}
 
       {/* ---- Document Template Preview ---- */}
+      {/* Kept at native document width and proportionally scaled (CSS zoom) to
+          fit the available width, preserving the document format at narrow
+          widths instead of reflowing (see .invoice-doc-scale in shell.css). */}
+      <div ref={previewWrapRef}>
+      <div className="invoice-doc-scale mx-auto" style={{ ['--inv-zoom' as string]: String(previewZoom) } as React.CSSProperties}>
       <div className="max-w-3xl mx-auto bg-white rounded-xl shadow-sm overflow-hidden border border-gray-200" data-print-content>
         <div className="relative">
           {/* Draft watermark */}
@@ -864,6 +891,8 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
             </div>
           </div>
         </div>
+      </div>
+      </div>
       </div>
 
       {/* Attachments (below the preview card) */}

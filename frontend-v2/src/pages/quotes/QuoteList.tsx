@@ -19,6 +19,8 @@ import { useNavigate, useLocation, useParams } from 'react-router-dom'
 import apiClient from '@/api/client'
 import { Spinner } from '@/components/ui'
 import { useBranch } from '@/contexts/BranchContext'
+import { useMediaQuery } from '@/hooks/useMediaQuery'
+import { resolvePaneVisibility } from '@/pages/invoices/responsiveLayout'
 import QuoteDetail from './QuoteDetail'
 
 const QuoteCreate = lazy(() => import('./QuoteCreate'))
@@ -134,6 +136,15 @@ export default function QuoteList() {
   /* --- Detail state --- */
   const [selectedId, setSelectedId] = useState<string | null>(routeId || null)
 
+  /* --- Responsive master/detail state --- */
+  // At/above the Wide_Threshold both panes show side-by-side; below it exactly
+  // one pane shows. Which pane (below Wide) is driven by the route: a present
+  // routeId means the user is viewing a specific quote's detail, absent means
+  // the list. The auto-select effect intentionally does NOT navigate on narrow,
+  // so a bare narrow load stays on the list even when a quote auto-selects.
+  const isWide = useMediaQuery('(min-width: 1280px)')
+  const listFocusRef = useRef<HTMLInputElement>(null)
+
   /* --- Delete state --- */
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null)
   const [deleting, setDeleting] = useState(false)
@@ -172,10 +183,12 @@ export default function QuoteList() {
       setTotal(totalCount)
       setTotalPages(Math.ceil(totalCount / PAGE_SIZE) || 1)
 
-      // Auto-select first quote if none selected and not creating
+      // Auto-select first quote if none selected and not creating. On narrow
+      // screens we select internally but do NOT navigate, so a bare load stays
+      // on the list pane (the route only changes when the user picks a row).
       if (!selectedId && !isCreating && items.length > 0) {
         setSelectedId(items[0].id)
-        navigate(`/quotes/${items[0].id}`, { replace: true })
+        if (isWide) navigate(`/quotes/${items[0].id}`, { replace: true })
       }
     } catch (err: unknown) {
       if ((err as { name?: string })?.name === 'CanceledError') return
@@ -184,7 +197,7 @@ export default function QuoteList() {
     } finally {
       setListLoading(false)
     }
-  }, [selectedId, isCreating, navigate, selectedBranchId])
+  }, [selectedId, isCreating, navigate, selectedBranchId, isWide])
 
   // Debounced search/filter
   useEffect(() => {
@@ -228,12 +241,38 @@ export default function QuoteList() {
     }
   }
 
+  /* --- Responsive pane resolution --- */
+  // Below the Wide_Threshold, the active pane is derived from the route: a
+  // present routeId ⇒ detail, absent ⇒ list. At/above Wide both panes show.
+  const { showList, showDetail } = resolvePaneVisibility(
+    isWide,
+    !!selectedId,
+    routeId ? 'detail' : 'list',
+    isCreating,
+  )
+
+  /* --- Focus management across responsive transitions --- */
+  // When a transition hides the region that held focus (browser resets focus to
+  // <body>), move focus into the newly shown list region so keyboard users are
+  // not stranded.
+  const prevPaneRef = useRef<{ showList: boolean; showDetail: boolean } | null>(null)
+  useEffect(() => {
+    const prev = prevPaneRef.current
+    prevPaneRef.current = { showList, showDetail }
+    if (prev === null) return
+    const hidDetail = prev.showDetail && !showDetail
+    if (!hidDetail || !showList) return
+    const active = document.activeElement
+    if (!active || active === document.body) listFocusRef.current?.focus()
+  }, [showList, showDetail])
+
   return (
     <div className="flex h-full overflow-hidden bg-canvas" data-testid="quote-list">
       {/* ============================================================ */}
       {/*  LEFT SIDEBAR — Quote List                                    */}
       {/* ============================================================ */}
-      <div className="w-80 min-w-[320px] flex flex-col border-r border-border bg-card" data-print-hide>
+      {showList && (
+      <div className={`${isWide ? 'w-80 min-w-[320px] border-r' : 'flex-1 min-w-0'} flex flex-col border-border bg-card`} data-print-hide>
         {/* Sidebar header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-border">
           <div className="flex items-center gap-2">
@@ -284,6 +323,7 @@ export default function QuoteList() {
               onChange={(e) => setSearchQuery(e.target.value)}
               className="w-full py-1.5 text-sm bg-transparent outline-none placeholder:text-muted-2"
               aria-label="Search quotes"
+              ref={listFocusRef}
             />
           </div>
         </div>
@@ -396,11 +436,13 @@ export default function QuoteList() {
           </div>
         )}
       </div>
+      )}
 
       {/* ============================================================ */}
       {/*  RIGHT PANEL — Quote Detail or Create                         */}
       {/* ============================================================ */}
-      <div className="flex-1 flex flex-col overflow-hidden">
+      {showDetail && (
+      <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
         {isCreating && (
           <div className="flex-1 overflow-y-auto">
             <Suspense fallback={<div className="flex items-center justify-center py-12"><Spinner label="Loading" /></div>}>
@@ -426,6 +468,7 @@ export default function QuoteList() {
           </div>
         )}
       </div>
+      )}
 
       {/* Delete confirmation modal */}
       {deleteTargetId && (

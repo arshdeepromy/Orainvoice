@@ -91,6 +91,137 @@
 }
 
 /* ============================================================
+   Compact_Band — icon-only docked rail (responsive-invoice-layout
+   Req 4.1–4.9, design.md §3 "Responsive icon-only sidebar").
+   ------------------------------------------------------------
+   At 861–1279px (above the ≤860px drawer tier, below the 1280px
+   Wide_Threshold) the docked rail collapses to an icon-only ~72px
+   strip; the reclaimed width flows to `.shell-main` automatically
+   because the sidebar is a `flex-shrink-0` flex child of the
+   `.app-shell` flex row (Req 4.2, 4.4). This is presentation-only:
+   nothing here writes or persists `sidebar_display_mode` (Req 4.6,
+   4.7) — it is pure CSS gated by a media query that only matches the
+   Compact_Band, so ≥1280px renders the wide rail unchanged (Req 4.5)
+   and ≤860px keeps the drawer (Req 4.3).
+
+   LAYERING / SELECTOR STRATEGY — identical to the ≤860px drawer rule
+   above: scoped as `.app-shell .shell-sidebar …`, authored here in
+   this intentionally-unlayered stylesheet (`@import`ed after Tailwind
+   via tokens.css). That beats the Tailwind `.w-rail` utility on BOTH
+   counts — unlayered beats layered, AND specificity (0,2,0) > (0,1,0)
+   — so the width override needs no `!important`, no double-class hack,
+   and no `aside` qualifier. The label / group-heading / wordmark /
+   OrgSwitcher collapse rules are scoped the same way so they reliably
+   override their Tailwind counterparts.
+   ============================================================ */
+
+@media (min-width: 861px) and (max-width: 1279px) {
+  /* ── Narrow the rail: 264px (w-rail) → ~72px ──
+     First rule to override the rail *width* through this selector
+     (the drawer rule overrides position/transform but keeps 264px).
+     Reclaimed ~190px is handed to `.shell-main` by the flex row. */
+  .app-shell .shell-sidebar {
+    width: var(--rail-icon, 72px);
+  }
+
+  /* ── Header: collapse the "OraInvoice" wordmark, center the logo ──
+     The wordmark would overflow the ~72px rail (Req 4.9), so hide it
+     and center the remaining 32px logo mark + tighten the padding. */
+  .app-shell .shell-sidebar .shell-brand {
+    justify-content: center;
+    gap: 0;
+    padding-left: 0;
+    padding-right: 0;
+  }
+  .app-shell .shell-sidebar .shell-brand-wordmark {
+    display: none;
+  }
+
+  /* ── Group headings: drop the text labels (decorative grouping) ── */
+  .app-shell .shell-sidebar .shell-nav-group-heading {
+    display: none;
+  }
+
+  /* ── Nav rows: center the icon, drop the label gap/padding ──
+     The label text is NOT removed — it is visually hidden via the
+     clip technique below so it stays in the accessibility tree
+     (Req 4.8); each NavLink also carries an `aria-label` as a
+     belt-and-braces measure. */
+  .app-shell .shell-sidebar nav a {
+    justify-content: center;
+    gap: 0;
+    padding-left: 0;
+    padding-right: 0;
+  }
+
+  /* Visually hide the nav label WITHOUT removing it from the a11y
+     tree (sr-only-style clip; no display:none, which would drop the
+     accessible name). */
+  .app-shell .shell-sidebar .shell-nav-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  /* ── Footer OrgSwitcher: collapse to the avatar only ──
+     The org name/plan text and the chevron would overflow the rail
+     (Req 4.9); hide them, center the avatar, tighten padding so the
+     switcher stays usable as an icon-only control. */
+  .app-shell .shell-sidebar .shell-foot {
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+  .app-shell .shell-sidebar .shell-org-switch-btn {
+    justify-content: center;
+    gap: 0;
+  }
+  .app-shell .shell-sidebar .shell-org-text,
+  .app-shell .shell-sidebar .shell-org-chevron {
+    display: none;
+  }
+}
+
+/* ============================================================
+   Invoice preview "scale to fit" (responsive-invoice-layout)
+   ------------------------------------------------------------
+   The invoice preview card is authored at its native document width
+   (768px / max-w-3xl). Rather than reflowing its internal layout at
+   narrow widths (which scrambles the document), it is proportionally
+   scaled down with CSS `zoom` so the EXACT desktop format is retained,
+   just smaller. The zoom ratio (available width ÷ 768) is computed in
+   InvoiceList.tsx via a ResizeObserver and supplied as `--inv-zoom`.
+
+   `zoom` (not `transform: scale`) is used deliberately: it reflows the
+   element's layout box to the scaled size, so the surrounding page
+   flows correctly with no manual height bookkeeping.
+
+   Unlayered (this file is @imported after Tailwind) so it wins over
+   utilities without `!important`.
+
+   PRINT: zoom is reset to 1 and the width released so the invoice
+   prints at full page width (the existing print rules then take over).
+   ============================================================ */
+.invoice-doc-scale {
+  width: 768px;
+  max-width: 100%;
+  zoom: var(--inv-zoom, 1);
+}
+
+@media print {
+  .invoice-doc-scale {
+    width: 100% !important;
+    max-width: 100% !important;
+    zoom: 1 !important;
+  }
+}
+
+/* ============================================================
    Page layout primitives — `.page` / `.page-wide` / `.page-head`
    ------------------------------------------------------------
    Ported 1:1 from the prototype's content/page-header rules in

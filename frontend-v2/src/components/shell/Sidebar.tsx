@@ -300,6 +300,7 @@ function NavRow({ item, onClose, badge }: { item: NavItem; onClose: () => void; 
       to={item.to}
       end={item.end}
       onClick={onClose}
+      aria-label={item.label}
       className={({ isActive }) =>
         `group relative flex h-10 items-center gap-[11px] rounded-ctl px-3 text-[13.5px] font-medium transition-colors duration-150 ${
           isActive
@@ -318,7 +319,7 @@ function NavRow({ item, onClose, badge }: { item: NavItem; onClose: () => void; 
             />
           )}
           <NavIcon d={item.icon} active={isActive} />
-          <span className="truncate">{item.label}</span>
+          <span className="shell-nav-label truncate">{item.label}</span>
           {badge && <NavBadge {...badge} />}
         </>
       )}
@@ -374,13 +375,13 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
       aria-label="Primary navigation"
     >
       {/* Head — logo lockup (matches .sb-head: 64px tall, bottom border). */}
-      <div className="flex h-16 flex-shrink-0 items-center gap-[11px] border-b border-sb-border px-[18px]">
+      <div className="shell-brand flex h-16 flex-shrink-0 items-center gap-[11px] border-b border-sb-border px-[18px]">
         <div className="grid h-8 w-8 flex-shrink-0 place-items-center rounded-[9px] bg-accent text-white shadow-card">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round" className="h-[18px] w-[18px]">
             <path d={ICON.inv} />
           </svg>
         </div>
-        <div className="text-base font-semibold tracking-[-0.01em] text-white">
+        <div className="shell-brand-wordmark text-base font-semibold tracking-[-0.01em] text-white">
           <b className="font-bold">Ora</b>
           <span className="font-medium text-sb-muted">Invoice</span>
         </div>
@@ -407,7 +408,7 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
           if (items.length === 0) return null
           return (
             <div key={group.label} className="mb-[14px]">
-              <div className="mono px-3 pb-[7px] text-[10.5px] font-medium uppercase tracking-[0.13em] text-sb-muted">
+              <div className="shell-nav-group-heading mono px-3 pb-[7px] text-[10.5px] font-medium uppercase tracking-[0.13em] text-sb-muted">
                 {group.label}
               </div>
               {items.map((item) => (
@@ -430,7 +431,7 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
       </nav>
 
       {/* Foot — org switcher (matches .sb-foot: top border). */}
-      <div className="flex-shrink-0 border-t border-sb-border p-3">
+      <div className="shell-foot flex-shrink-0 border-t border-sb-border p-3">
         <OrgSwitcher />
       </div>
     </aside>

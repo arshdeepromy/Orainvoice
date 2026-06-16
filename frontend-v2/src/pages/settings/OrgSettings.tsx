@@ -55,6 +55,7 @@ interface InvoiceForm {
   payment_terms_text: string
   payment_terms_enabled: boolean
   allow_partial_payments: boolean
+  pos_preview_enabled: boolean
 }
 
 /* ── Branding Tab ── */
@@ -289,10 +290,11 @@ function GstTab() {
 /* ── Invoice Tab ── */
 
 function InvoiceTab() {
+  const { refetch: refetchTenant } = useTenant()
   const [form, setForm] = useState<InvoiceForm>({
     invoice_prefix: 'INV-', invoice_start_number: 1, default_due_days: 14,
     default_notes: '', default_notes_enabled: false, payment_terms_days: 14, payment_terms_text: '',
-    payment_terms_enabled: true, allow_partial_payments: false,
+    payment_terms_enabled: true, allow_partial_payments: false, pos_preview_enabled: true,
   })
   const [saving, setSaving] = useState(false)
   const { toasts, addToast, dismissToast } = useToast()
@@ -306,6 +308,7 @@ function InvoiceTab() {
         payment_terms_days: data.payment_terms_days ?? 14, payment_terms_text: data.payment_terms_text || '',
         payment_terms_enabled: data?.payment_terms_enabled ?? true,
         allow_partial_payments: data.allow_partial_payments ?? false,
+        pos_preview_enabled: data?.pos_preview_enabled ?? true,
       })
     })
   }, [])
@@ -315,6 +318,7 @@ function InvoiceTab() {
     try {
       await apiClient.put('/org/settings', form)
       addToast('success', 'Invoice settings saved')
+      await refetchTenant()
     } catch {
       addToast('error', 'Failed to save invoice settings')
     } finally {
@@ -373,6 +377,19 @@ function InvoiceTab() {
           className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${form.allow_partial_payments ? 'bg-accent' : 'bg-border-strong'}`}>
           <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${form.allow_partial_payments ? 'translate-x-6' : 'translate-x-1'}`} />
         </button>
+      </div>
+      <hr className="border-border" />
+      <h3 className="text-base font-medium text-text">POS Receipt</h3>
+      <div className="flex flex-col gap-1">
+        <div className="flex items-center gap-3">
+          <label htmlFor="pos-preview-toggle" className="text-sm font-medium text-text">Show POS receipt preview</label>
+          <button id="pos-preview-toggle" role="switch" aria-checked={form.pos_preview_enabled}
+            onClick={() => setForm((p) => ({ ...p, pos_preview_enabled: !p.pos_preview_enabled }))}
+            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${form.pos_preview_enabled ? 'bg-accent' : 'bg-border-strong'}`}>
+            <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${form.pos_preview_enabled ? 'translate-x-6' : 'translate-x-1'}`} />
+          </button>
+        </div>
+        <p className="text-xs text-muted">When off, the POS receipt panel on the invoice screen is hidden and "Print POS Receipt" is removed from the PDF/Print menu.</p>
       </div>
       <Button onClick={save} loading={saving}>Save Invoice Settings</Button>
     </div>

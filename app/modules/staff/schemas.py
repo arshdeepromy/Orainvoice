@@ -40,6 +40,8 @@ from app.modules.staff.security import (
 # ---------------------------------------------------------------------------
 
 EmploymentType = Literal["permanent", "casual", "fixed_term"]
+EmploymentBasis = Literal["full_time", "part_time", "casual", "contractor"]
+WorkingArrangement = Literal["fixed", "rostered", "casual_on_demand"]
 TaxCode = Literal["M", "ME", "S", "SH", "ST", "SB", "CAE", "NSW", "ND"]
 ResidencyType = Literal[
     "citizen", "permanent_resident", "work_visa", "student_visa", "other",
@@ -75,6 +77,8 @@ class StaffMemberCreate(BaseModel):
     shift_start: str | None = Field(None, pattern=r"^\d{2}:\d{2}$")
     shift_end: str | None = Field(None, pattern=r"^\d{2}:\d{2}$")
     role_type: str = Field(default="employee", pattern="^(employee|contractor)$")
+    employment_basis: EmploymentBasis = "full_time"
+    working_arrangement: WorkingArrangement = "rostered"
     hourly_rate: Decimal | None = None
     overtime_rate: Decimal | None = None
     availability_schedule: dict = Field(default_factory=dict)
@@ -147,6 +151,8 @@ class StaffMemberUpdate(BaseModel):
     shift_start: str | None = None
     shift_end: str | None = None
     role_type: str | None = Field(None, pattern="^(employee|contractor)$")
+    employment_basis: EmploymentBasis | None = None
+    working_arrangement: WorkingArrangement | None = None
     hourly_rate: Decimal | None = None
     overtime_rate: Decimal | None = None
     is_active: bool | None = None
@@ -255,6 +261,8 @@ class StaffMemberResponse(BaseModel):
     shift_start: str | None = None
     shift_end: str | None = None
     role_type: str
+    employment_basis: str = "full_time"
+    working_arrangement: str = "rostered"
     hourly_rate: Decimal | None = None
     overtime_rate: Decimal | None = None
     is_active: bool

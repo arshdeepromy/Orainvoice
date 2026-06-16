@@ -79,8 +79,8 @@ export default function ClockedInTab() {
     setClockingOut(true)
     try {
       // Use the existing time-clock admin clock-out endpoint
-      await apiClient.post(`/api/v2/time-clock/${clockOutTarget.id}/clock-out`, {
-        notes: 'Manual clock-out from timesheets admin',
+      await apiClient.post(`/api/v2/time-clock/admin-clock-out/${clockOutTarget.id}`, {
+        reason_note: 'Manual clock-out from timesheets admin',
       })
       setClockOutTarget(null)
       // Refresh the list
@@ -218,7 +218,9 @@ export default function ClockedInTab() {
                 </span>
               )}
               <div className="text-right">
-                <p className="text-sm font-mono font-medium text-text">{entry.elapsed_minutes} min</p>
+                <p className="text-sm font-mono font-medium text-text">
+                  {Math.floor(entry.elapsed_minutes / 60)}h {entry.elapsed_minutes % 60}m
+                </p>
                 <p className="text-xs text-muted capitalize">{entry.source?.replace(/_/g, ' ')}</p>
               </div>
               <button

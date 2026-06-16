@@ -273,6 +273,7 @@ export default function CustomerList() {
     // F3: Pre-submit check for missing consent coverage
     const { vehicles: _v, ...configOnly } = reminderConfig
     const missing = computeMissingConsent(null, configOnly as any)
+    console.log('[Consent Gate] configOnly:', configOnly, 'missing:', missing)
     if (missing.length > 0) {
       // Open consent confirmation modal instead of saving directly
       setConsentMissing(missing)

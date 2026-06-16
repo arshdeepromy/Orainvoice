@@ -182,6 +182,26 @@ class TestAuthMiddleware:
         )
         assert resp.status_code == 200
 
+    def test_global_admin_on_backup_path_no_org_context_needed(self):
+        """Global admin accessing the platform-wide Cloud Backup API doesn't need
+        org context. Backup is a global-admin-only DR/BCP feature with no org_id
+        (regression guard: without the /api/v1/backup/ exemption in
+        _ADMIN_ONLY_PREFIXES, REM-10 would 403 every backup call)."""
+        app = _build_app([AuthMiddleware])
+
+        @app.get("/api/v1/backup/config")
+        async def backup_config(request: Request):
+            return {"ok": True}
+
+        client = TestClient(app)
+        token = _make_token(user_id="ga4", org_id=None, role="global_admin")
+        # No Redis mock needed — backup paths skip the org context check.
+        resp = client.get(
+            "/api/v1/backup/config",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200
+
 
 # ---------------------------------------------------------------------------
 # TenantMiddleware tests

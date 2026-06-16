@@ -53,6 +53,8 @@ const adminNavItems: AdminNavItem[] = [
   { to: '/admin/migration', label: 'Migration Tool', flagKey: 'migration_tool' },
   { to: '/admin/live-migration', label: 'Live Migration' },
   { to: '/admin/ha-replication', label: 'HA Replication' },
+  { type: 'section', label: 'Backup & Restore' },
+  { to: '/admin/backup', label: 'Cloud Backup' },
 ]
 
 export function AdminLayout() {

@@ -2035,6 +2035,14 @@ from app.tasks.subscriptions import (
     check_trial_expiry_task,
     process_recurring_billing_task,
 )
+# Cloud Backup & Restore scheduled-task entry points (cloud-backup-restore
+# spec, task 15.2). Defined in the backup_restore service facade; registered in
+# _DAILY_TASKS + WRITE_TASKS below so they run on the primary node only.
+from app.modules.backup_restore.service import (
+    run_blob_gc_task,
+    run_rehearsal_task,
+    run_scheduled_backup_task,
+)
 
 # Tasks that write to the database and must be skipped on standby nodes.
 # ALL tasks that INSERT, UPDATE, or DELETE rows must be listed here.
@@ -2073,6 +2081,13 @@ WRITE_TASKS: set[str] = {
     "check_late_arrivals",         # check_late_arrivals_task — sends late-arrival SMS, sets Redis dedupe (Staff Phase 3, C1)
     "check_missed_clock_outs",     # check_missed_clock_outs_task — sends missed-clock-out SMS (Staff Phase 3, C2)
     "roll_pay_periods",            # roll_pay_periods_task — INSERTs next 4 pay_periods rows + audit_log (Staff Phase 4, C1)
+    # Cloud Backup & Restore (cloud-backup-restore spec, task 15.2 / Req 8.8).
+    # All three write platform/global rows (backups, blobs, jobs, rehearsals,
+    # audit_log) on the PRIMARY only — the standby receives them via logical
+    # replication, so running them on the standby would double-write (ISSUE-147).
+    "backup_scheduled",            # run_scheduled_backup_task — creates Backup_Jobs + backups + blobs
+    "backup_blob_gc",              # run_blob_gc_task — prunes/deletes backups + blobs (retention + orphan GC)
+    "backup_rehearsal",            # run_rehearsal_task — writes restore_rehearsals rows
 }
 
 # (task_fn, interval_seconds, name)
@@ -2120,6 +2135,18 @@ _DAILY_TASKS: list[tuple] = [
     # payroll module enabled. Idempotent via UNIQUE(org_id, start_date)
     # + ON CONFLICT DO NOTHING; a same-day re-run is a no-op.
     (roll_pay_periods_task, 86400, "roll_pay_periods"),
+    # Cloud Backup & Restore (cloud-backup-restore spec, task 15.2). Each task
+    # ticks every 60s; the body short-circuits internally:
+    #   - run_scheduled_backup_task honours the configured NZ-tz cron +
+    #     Backup_Window (fires only inside the matching minute/window), with an
+    #     in-process per-minute dedupe so a double-tick never starts two backups.
+    #   - run_blob_gc_task runs retention prune + orphan GC under the
+    #     per-destination prune/GC lock (no-ops when no primary is configured).
+    #   - run_rehearsal_task honours the configured rehearsal_cron.
+    # All three are WRITE_TASKS so the scheduler skips them on standby nodes.
+    (run_scheduled_backup_task, 60, "backup_scheduled"),
+    (run_blob_gc_task, 3600, "backup_blob_gc"),
+    (run_rehearsal_task, 60, "backup_rehearsal"),
 ]
 
 _stop_event: asyncio.Event | None = None
