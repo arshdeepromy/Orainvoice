@@ -255,6 +255,15 @@ async def provision_organisation(
             "COA seeding failed for org %s: %s", org.id, exc
         )
 
+    # 12. Seed the default statutory leave-type catalogue.
+    try:
+        from app.modules.leave.provisioning import ensure_default_leave_types
+        await ensure_default_leave_types(db, org.id)
+    except Exception as exc:
+        logger.warning(
+            "Default leave-type seeding failed for org %s: %s", org.id, exc
+        )
+
     return {
         "organisation_id": str(org.id),
         "organisation_name": name,

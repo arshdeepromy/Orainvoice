@@ -258,6 +258,7 @@ export default function RosterGridPage() {
     date: Date
   } | null>(null)
   const [leaveSubmitting, setLeaveSubmitting] = useState(false)
+  const [leaveError, setLeaveError] = useState<string | null>(null)
 
   // Leave paint and template paint are mutually exclusive.
   const handleSelectLeaveType = useCallback((lt: LeaveType | null) => {
@@ -450,6 +451,7 @@ export default function RosterGridPage() {
       // In leave-paint mode, a click on any cell opens the mark-leave
       // confirmation for that staff member + day.
       if (leaveMode && selectedLeaveType) {
+        setLeaveError(null)
         setLeaveConfirm({ staffId, date })
         return
       }
@@ -468,6 +470,7 @@ export default function RosterGridPage() {
   const handleConfirmLeave = useCallback(async () => {
     if (!leaveConfirm || !selectedLeaveType) return
     setLeaveSubmitting(true)
+    setLeaveError(null)
     try {
       const res = await markDayLeave({
         staff_id: leaveConfirm.staffId,
@@ -506,12 +509,21 @@ export default function RosterGridPage() {
       const detail = (
         err as { response?: { data?: { detail?: unknown } } }
       )?.response?.data?.detail
-      addToast(
-        'error',
-        typeof detail === 'string'
-          ? detail
-          : 'Failed to mark leave. Please try again.',
-      )
+      // The eligibility gate returns a structured object with a friendly
+      // `message`; other errors return a plain string. Show the explanation
+      // inline in the open modal so the user can read the dates, and keep
+      // the modal open rather than dismissing it.
+      let msg = 'Failed to mark leave. Please try again.'
+      if (typeof detail === 'string') {
+        msg = detail
+      } else if (
+        detail &&
+        typeof detail === 'object' &&
+        typeof (detail as { message?: unknown }).message === 'string'
+      ) {
+        msg = (detail as { message: string }).message
+      }
+      setLeaveError(msg)
     } finally {
       setLeaveSubmitting(false)
     }
@@ -1412,7 +1424,10 @@ export default function RosterGridPage() {
       <Modal
         open={!!leaveConfirm}
         onClose={() => {
-          if (!leaveSubmitting) setLeaveConfirm(null)
+          if (!leaveSubmitting) {
+            setLeaveConfirm(null)
+            setLeaveError(null)
+          }
         }}
         title="Mark leave"
         className="max-w-md"
@@ -1440,27 +1455,42 @@ export default function RosterGridPage() {
               </span>
               ?
             </p>
-            <p className="text-xs text-muted">
-              Their shift that day will be published to Open Shifts so it can be
-              covered.
-            </p>
+            {leaveError ? (
+              <div
+                role="alert"
+                className="rounded-ctl border border-warn/40 bg-warn-soft px-3 py-2 text-sm text-text"
+              >
+                <p className="font-medium text-warn">Not eligible yet</p>
+                <p className="mt-1 text-text">{leaveError}</p>
+              </div>
+            ) : (
+              <p className="text-xs text-muted">
+                Their shift that day will be published to Open Shifts so it can
+                be covered.
+              </p>
+            )}
             <div className="flex items-center justify-end gap-3">
               <button
                 type="button"
-                onClick={() => setLeaveConfirm(null)}
+                onClick={() => {
+                  setLeaveConfirm(null)
+                  setLeaveError(null)
+                }}
                 disabled={leaveSubmitting}
                 className="rounded-ctl border border-border bg-card px-4 py-2 text-sm font-medium text-text hover:bg-canvas disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
               >
-                Cancel
+                {leaveError ? 'Close' : 'Cancel'}
               </button>
-              <button
-                type="button"
-                onClick={handleConfirmLeave}
-                disabled={leaveSubmitting}
-                className="rounded-ctl bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-press disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-              >
-                {leaveSubmitting ? 'Marking…' : 'Confirm'}
-              </button>
+              {!leaveError && (
+                <button
+                  type="button"
+                  onClick={handleConfirmLeave}
+                  disabled={leaveSubmitting}
+                  className="rounded-ctl bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-press disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                >
+                  {leaveSubmitting ? 'Marking…' : 'Confirm'}
+                </button>
+              )}
             </div>
           </div>
         )}

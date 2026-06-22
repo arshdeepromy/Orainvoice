@@ -139,6 +139,20 @@ class LeavePermissionDenied(LeaveServiceError):
         super().__init__(reason)
 
 
+class LeaveEligibilityError(LeaveServiceError):
+    """Raised when a staff member is not yet statutorily eligible for the
+    leave type being marked (continuous-service milestone not reached, or the
+    Hours_Test not met). Carries a structured, human-readable payload so the
+    UI can explain *why* and *when* the staff member becomes eligible.
+
+    Router maps this to HTTP 422 with ``detail`` set to :attr:`payload`.
+    """
+
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self.payload = payload
+        super().__init__(payload.get("message", "not_eligible"))
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -170,6 +184,147 @@ def _std_daily_hours(staff: StaffMember) -> Decimal:
             Decimal("0.01")
         )
     return Decimal("8.00")
+
+
+def _staff_display_name(staff: StaffMember) -> str:
+    """Best-effort display name for messages."""
+    full = f"{getattr(staff, 'first_name', '') or ''} {getattr(staff, 'last_name', '') or ''}".strip()
+    return full or (getattr(staff, "name", None) or "This staff member")
+
+
+def _add_months(start: date, months: int) -> date:
+    """Add whole calendar months to a date, clamping to month length."""
+    import calendar
+
+    month_index = start.month - 1 + months
+    year = start.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(start.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day)
+
+
+# Human-readable Service_Milestone labels for eligibility messages.
+_MILESTONE_MONTHS = {"day_1": 0, "six_months": 6, "twelve_months": 12}
+_MILESTONE_PHRASE = {
+    "day_1": "from their first day",
+    "six_months": "after 6 months of continuous service",
+    "twelve_months": "after 12 months of continuous service",
+}
+
+
+async def check_mark_eligibility(
+    db: AsyncSession,
+    *,
+    staff: StaffMember,
+    leave_type: LeaveType,
+    on_date: date,
+) -> None:
+    """Statutory eligibility gate for marking/approving a single-day leave.
+
+    Only the rule-set's accrual/hours-test-gated leave types (annual, sick,
+    bereavement, family_violence) are gated here. Day-one entitlements
+    (public holiday / alternative holiday / jury service) and non-statutory or
+    discretionary types (unpaid, TOIL, parental — administered outside the
+    Holidays Act engine) are always allowed.
+
+    Raises :class:`LeaveEligibilityError` with a structured, human-readable
+    payload when the staff member has not reached the gating milestone or the
+    Hours_Test is not met.
+    """
+    from app.modules.leave.rules.eligibility import evaluate_eligibility
+    from app.modules.leave.rules.registry import (
+        NoApplicableRuleSet,
+        resolve_rule_set,
+    )
+    from app.modules.leave.rules.service_period import compute_continuous_service
+    from app.modules.leave.rules.sweep import build_staff_snapshot
+
+    try:
+        rule_set = resolve_rule_set(on_date)
+    except NoApplicableRuleSet:
+        # No statutory rule-set applies to this date — do not block.
+        return
+
+    gated_codes = {r.leave_type_code for r in rule_set.rules}
+    if leave_type.code not in gated_codes:
+        return
+
+    snapshot = await build_staff_snapshot(db, staff, evaluation_date=on_date)
+    results = evaluate_eligibility(snapshot, on_date, rule_set)
+    result = next(
+        (r for r in results if r.leave_type_code == leave_type.code), None
+    )
+    if result is None or result.eligible:
+        return
+
+    # --- Build the friendly, structured "why / when" payload. ----------------
+    name = _staff_display_name(staff)
+    start = snapshot.employment_start_date
+    service = compute_continuous_service(start, on_date)
+    days_employed = (on_date - start).days if start else None
+    months_completed = service.completed_months if service else None
+
+    milestone_months = _MILESTONE_MONTHS.get(result.milestone_key, 6)
+    eligible_on = _add_months(start, milestone_months) if start else None
+    hours_test_required = result.hours_test is not None
+    hours_test_met = (
+        result.hours_test.met if result.hours_test is not None else None
+    )
+
+    if result.reason == "start_date_required":
+        message = (
+            f"{name} has no employment start date on record, so statutory "
+            f"leave eligibility can't be worked out. Add their start date on "
+            f"the staff profile first."
+        )
+    elif result.reason == "casual_payg":
+        message = (
+            f"{name} is paid annual holidays as 8% with each pay (casual "
+            f"pay-as-you-go), so annual leave isn't accrued to mark here."
+        )
+    elif hours_test_required and hours_test_met is False and (
+        service is not None
+        and service.is_milestone_reached(milestone_months)
+    ):
+        # Milestone reached but the Hours_Test failed.
+        message = (
+            f"{name} has reached {milestone_months} months of service "
+            f"(started {start.isoformat()}, {days_employed} days ago) but "
+            f"doesn't meet the hours test for {leave_type.name.lower()} "
+            f"(an average of at least 10 hours/week). This leave can't be "
+            f"marked until the hours test is met."
+        )
+    else:
+        # Milestone not yet reached.
+        phrase = _MILESTONE_PHRASE.get(result.milestone_key, "")
+        eligible_str = eligible_on.isoformat() if eligible_on else "their milestone date"
+        message = (
+            f"{name} isn't eligible for {leave_type.name.lower()} yet. "
+            f"They started on {start.isoformat()} "
+            f"({months_completed} month(s), {days_employed} days ago) and "
+            f"become eligible {phrase} — on {eligible_str}."
+        )
+        if hours_test_required:
+            message += " The hours test must also be met at that point."
+
+    raise LeaveEligibilityError(
+        {
+            "code": "not_eligible",
+            "reason": result.reason,
+            "leave_type_code": leave_type.code,
+            "leave_type_name": leave_type.name,
+            "staff_name": name,
+            "employment_start_date": start.isoformat() if start else None,
+            "days_employed": days_employed,
+            "months_completed": months_completed,
+            "milestone_key": result.milestone_key,
+            "milestone_months": milestone_months,
+            "eligible_on": eligible_on.isoformat() if eligible_on else None,
+            "hours_test_required": hours_test_required,
+            "hours_test_met": hours_test_met,
+            "message": message,
+        }
+    )
 
 
 def _audit_after_value(
@@ -1461,6 +1616,19 @@ async def mark_day_leave(
     if staff is None or staff.org_id != org_id:
         raise LeaveServiceError("staff_not_found")
 
+    # Resolve the leave type up front so we can run the statutory eligibility
+    # gate and build the request payload correctly.
+    leave_type = await db.get(LeaveType, leave_type_id)
+    if leave_type is None or leave_type.org_id != org_id:
+        raise LeaveServiceError("leave_type_not_found")
+
+    # Statutory eligibility gate (continuous service + Hours_Test). Raises
+    # LeaveEligibilityError with a friendly "why / when" payload when the staff
+    # member hasn't vested the leave type yet.
+    await check_mark_eligibility(
+        db, staff=staff, leave_type=leave_type, on_date=on_date
+    )
+
     day_start = datetime.combine(on_date, _time.min, tzinfo=timezone.utc)
     day_end = datetime.combine(
         on_date + timedelta(days=1), _time.min, tzinfo=timezone.utc
@@ -1508,10 +1676,6 @@ async def mark_day_leave(
         )
     ).scalar_one_or_none()
     if balance is None:
-        # Validate the leave type belongs to the org before creating a row.
-        leave_type = await db.get(LeaveType, leave_type_id)
-        if leave_type is None or leave_type.org_id != org_id:
-            raise LeaveServiceError("leave_type_not_found")
         db.add(
             LeaveBalance(
                 org_id=org_id,
@@ -1524,11 +1688,17 @@ async def mark_day_leave(
         )
         await db.flush()
 
+    # Bereavement requires a relationship on submit (R4.7/G1). The roster
+    # quick-mark has no relationship picker, so default to ``close_family``
+    # (the more generous 3-day cap) — a single day is always within cap.
+    relationship = "close_family" if leave_type.code == "bereavement" else None
+
     payload = LeaveRequestCreate(
         leave_type_id=leave_type_id,
         start_date=on_date,
         end_date=on_date,
         hours_requested=hours,
+        relationship_to_subject=relationship,
     )
     leave_request = await submit_request(
         db,

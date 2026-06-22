@@ -84,6 +84,7 @@ from app.modules.leave.service import (
     BereavementValidationError,
     InsufficientLeaveError,
     InsufficientToilBalanceError,
+    LeaveEligibilityError,
     LeavePermissionDenied,
     LeaveServiceError,
 )
@@ -340,6 +341,9 @@ async def mark_day_leave_endpoint(
             request=request,
             publish_to_open_shifts=payload.publish_to_open_shifts,
         )
+    except LeaveEligibilityError as exc:
+        # Structured "why / when eligible" payload for the UI.
+        raise HTTPException(status_code=422, detail=exc.payload)
     except (
         LeaveServiceError,
         InsufficientLeaveError,
