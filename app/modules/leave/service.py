@@ -203,6 +203,68 @@ def _add_months(start: date, months: int) -> date:
     return date(year, month, day)
 
 
+# Map Python ``date.weekday()`` (Mon=0..Sun=6) onto the lowercase weekday keys
+# used by ``staff_members.availability_schedule``.
+_WEEKDAY_KEYS = (
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+)
+
+
+def _materialise_fixed_shift(
+    staff: StaffMember,
+    on_date: date,
+    org_tz,
+    org_id: uuid.UUID,
+) -> "ScheduleEntry | None":
+    """Build (but do not add) a ScheduleEntry for a fixed-hours staff member's
+    configured shift on ``on_date``, or ``None`` when they have no shift that
+    weekday.
+
+    Fixed-arrangement staff carry their recurring hours in
+    ``availability_schedule`` (``{"monday": {"start": "09:00", "end": "17:00"},
+    ...}``) rather than as materialised ``schedule_entries``. To put that shift
+    into the Open-Shifts / cover system (which is keyed on a real
+    ``schedule_entries`` row), it must first be materialised. Times are
+    interpreted in the org's local timezone and stored in UTC. Overnight shifts
+    (``end <= start``) wrap to the next day.
+    """
+    from datetime import timedelta
+
+    schedule = getattr(staff, "availability_schedule", None)
+    if not isinstance(schedule, dict) or not schedule:
+        return None
+
+    entry = schedule.get(_WEEKDAY_KEYS[on_date.weekday()])
+    if not isinstance(entry, dict):
+        return None
+
+    try:
+        sh, sm = str(entry.get("start")).split(":")
+        eh, em = str(entry.get("end")).split(":")
+        start_t = time(int(sh), int(sm))
+        end_t = time(int(eh), int(em))
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+    start_dt = datetime.combine(on_date, start_t, tzinfo=org_tz).astimezone(
+        timezone.utc
+    )
+    end_on = on_date + timedelta(days=1) if end_t <= start_t else on_date
+    end_dt = datetime.combine(end_on, end_t, tzinfo=org_tz).astimezone(
+        timezone.utc
+    )
+
+    return ScheduleEntry(
+        org_id=org_id,
+        staff_id=staff.id,
+        start_time=start_dt,
+        end_time=end_dt,
+        entry_type="job",
+        status="scheduled",
+        title=getattr(staff, "position", None) or "Shift",
+    )
+
+
 # Human-readable Service_Milestone labels for eligibility messages.
 _MILESTONE_MONTHS = {"day_1": 0, "six_months": 6, "twelve_months": 12}
 _MILESTONE_PHRASE = {
@@ -1606,6 +1668,9 @@ async def mark_day_leave(
     failures (the router maps these to HTTP 422).
     """
     from datetime import datetime, time as _time, timedelta
+    from zoneinfo import ZoneInfo
+
+    from sqlalchemy import text as _sql_text
 
     from app.modules.leave.schemas import LeaveRequestCreate
     from app.modules.scheduling_v2.models import ScheduleEntry
@@ -1629,10 +1694,28 @@ async def mark_day_leave(
         db, staff=staff, leave_type=leave_type, on_date=on_date
     )
 
-    day_start = datetime.combine(on_date, _time.min, tzinfo=timezone.utc)
-    day_end = datetime.combine(
-        on_date + timedelta(days=1), _time.min, tzinfo=timezone.utc
+    # Resolve the org's local timezone — schedule_entries are stored in UTC,
+    # but a roster "day" is the org's local calendar day (an NZ 09:00 shift is
+    # stored as the previous UTC day). Using UTC day bounds here would miss
+    # morning shifts, so we convert the local day to a UTC [start, end) window.
+    tz_row = (
+        await db.execute(
+            _sql_text("SELECT timezone FROM organisations WHERE id = :oid"),
+            {"oid": str(org_id)},
+        )
+    ).first()
+    tz_name = (tz_row[0] if tz_row else None) or "Pacific/Auckland"
+    try:
+        org_tz = ZoneInfo(tz_name)
+    except Exception:  # noqa: BLE001 - fall back to UTC on a bad tz string
+        org_tz = ZoneInfo("UTC")
+
+    day_start = datetime.combine(on_date, _time.min, tzinfo=org_tz).astimezone(
+        timezone.utc
     )
+    day_end = datetime.combine(
+        on_date + timedelta(days=1), _time.min, tzinfo=org_tz
+    ).astimezone(timezone.utc)
 
     # 1. Displaced work shifts on that date (capture BEFORE approval so the
     #    new leave schedule row approve() may insert is never picked up here).
@@ -1647,6 +1730,22 @@ async def mark_day_leave(
         )
     )
     displaced = list(displaced_res.scalars().all())
+
+    # 1b. Fixed-hours staff have NO materialised schedule_entries — their
+    #     shifts are virtual, derived from ``availability_schedule``. So when a
+    #     fixed-hours staff member is marked on leave there is nothing to send
+    #     to Open Shifts. Materialise their configured shift for that weekday
+    #     into a real ScheduleEntry so it can be published (and reassigned to
+    #     whoever covers it). Only done when no real entry already exists.
+    if not displaced:
+        materialised = _materialise_fixed_shift(
+            staff, on_date, org_tz, org_id
+        )
+        if materialised is not None:
+            db.add(materialised)
+            await db.flush()
+            await db.refresh(materialised)
+            displaced = [materialised]
 
     total_minutes = sum(
         int((e.end_time - e.start_time).total_seconds() // 60)
