@@ -664,6 +664,44 @@ export default function RosterGrid({
                   isWeek2Start ? 'border-l-2 border-l-border-strong' : ''
                 }`
 
+                // Approved leave displaces the shift for that day — show the
+                // leave overlay for ALL staff, including fixed-hours rows
+                // (whose read-only branch below would otherwise mask it).
+                if (isLeave) {
+                  return (
+                    <div
+                      key={`c-${s.id}-${dateKey}`}
+                      role="gridcell"
+                      tabIndex={isFocused ? 0 : -1}
+                      aria-disabled="true"
+                      data-staff-id={s.id}
+                      data-date={dateKey}
+                      data-leave="true"
+                      data-conflict={isConflict ? 'true' : undefined}
+                      onPointerDown={(e) =>
+                        handleCellPointerDown(e, rowIndex, colIndex)
+                      }
+                      onPointerEnter={() =>
+                        handleCellPointerEnter(rowIndex, colIndex)
+                      }
+                      className={`${baseCellClass} bg-canvas text-muted ${
+                        isInPaint ? 'ring-2 ring-accent' : ''
+                      } ${
+                        isConflict ? 'outline outline-2 outline-danger' : ''
+                      }`}
+                      style={{
+                        backgroundImage:
+                          'repeating-linear-gradient(45deg, rgba(0,0,0,0.04) 0 4px, transparent 4px 8px)',
+                      }}
+                      title={`${leave.leave_type_label} (leave)`}
+                    >
+                      <div className="text-[11px] font-medium">
+                        {leave.leave_type_label}
+                      </div>
+                    </div>
+                  )
+                }
+
                 // Fixed-arrangement rows are READ-ONLY: their recurring
                 // hours are pre-populated from the staff record's
                 // availability_schedule and cannot be edited from the grid.
@@ -719,41 +757,6 @@ export default function RosterGrid({
                         <span className="text-[10px] text-muted-2">—</span>
                       )}
                     </button>
-                  )
-                }
-
-                if (isLeave) {
-                  return (
-                    <div
-                      key={`c-${s.id}-${dateKey}`}
-                      role="gridcell"
-                      tabIndex={isFocused ? 0 : -1}
-                      aria-disabled="true"
-                      data-staff-id={s.id}
-                      data-date={dateKey}
-                      data-leave="true"
-                      data-conflict={isConflict ? 'true' : undefined}
-                      onPointerDown={(e) =>
-                        handleCellPointerDown(e, rowIndex, colIndex)
-                      }
-                      onPointerEnter={() =>
-                        handleCellPointerEnter(rowIndex, colIndex)
-                      }
-                      className={`${baseCellClass} bg-canvas text-muted ${
-                        isInPaint ? 'ring-2 ring-accent' : ''
-                      } ${
-                        isConflict ? 'outline outline-2 outline-danger' : ''
-                      }`}
-                      style={{
-                        backgroundImage:
-                          'repeating-linear-gradient(45deg, rgba(0,0,0,0.04) 0 4px, transparent 4px 8px)',
-                      }}
-                      title={`${leave.leave_type_label} (leave)`}
-                    >
-                      <div className="text-[11px] font-medium">
-                        {leave.leave_type_label}
-                      </div>
-                    </div>
                   )
                 }
 
