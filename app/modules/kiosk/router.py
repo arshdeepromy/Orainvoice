@@ -472,7 +472,7 @@ async def clock_action(
             content={"detail": "Organisation context required"},
         )
 
-    # Derive branch_id from kiosk user's JWT branch_ids[0] (Req 11.2)
+    # Derive branch_id from kiosk user's JWT branch_ids[0] (Req 11.2).
     branch_ids_raw = getattr(request.state, "branch_ids", []) or []
     kiosk_branch_id: uuid.UUID | None = None
     if branch_ids_raw:
@@ -480,6 +480,34 @@ async def clock_action(
             kiosk_branch_id = uuid.UUID(str(branch_ids_raw[0]))
         except (ValueError, TypeError, IndexError):
             pass
+
+    # Fallback: a kiosk user with no branch scope (empty ``branch_ids``) would
+    # otherwise insert a NULL ``branch_id`` and trip the
+    # ``ck_tce_branch_id_new_rows`` CHECK (new rows require a branch), surfacing
+    # to staff as a misleading "clock-in/out state out of sync" 409. Resolve the
+    # org's default branch instead so clock-in works without manual branch setup.
+    if kiosk_branch_id is None:
+        from sqlalchemy import select
+
+        from app.modules.organisations.models import Branch
+
+        kiosk_branch_id = (
+            await db.execute(
+                select(Branch.id)
+                .where(Branch.org_id == org_uuid, Branch.is_default.is_(True))
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if kiosk_branch_id is None:
+            # No default flagged — fall back to any branch in the org.
+            kiosk_branch_id = (
+                await db.execute(
+                    select(Branch.id)
+                    .where(Branch.org_id == org_uuid)
+                    .order_by(Branch.created_at.asc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
 
     try:
         entry = await clock_service.kiosk_clock_action(

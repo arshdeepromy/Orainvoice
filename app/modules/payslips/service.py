@@ -332,6 +332,63 @@ async def _attach_casual_8pct_line(
     await db.flush()
 
 
+async def _attach_statutory_lines(
+    db: AsyncSession,
+    *,
+    payslip: Payslip,
+    calc: PayslipCalc,
+) -> None:
+    """Insert / refresh the auto-computed statutory deduction lines —
+    PAYE income tax, ACC earner levy, and student-loan repayment.
+
+    Idempotent: removes any prior auto-generated rows (identified by
+    their stable labels) before inserting fresh amounts, so re-running
+    on a draft never double-counts and never clobbers admin-entered
+    deductions that use different labels.
+    """
+    auto_labels = (
+        "PAYE income tax",
+        "ACC earner levy",
+        "Student loan repayment",
+    )
+    await db.execute(
+        PayslipDeduction.__table__.delete().where(
+            and_(
+                PayslipDeduction.payslip_id == payslip.id,
+                PayslipDeduction.label.in_(auto_labels),
+            )
+        )
+    )
+    if calc.paye > 0:
+        db.add(
+            PayslipDeduction(
+                payslip_id=payslip.id,
+                kind="paye",
+                label="PAYE income tax",
+                amount=calc.paye,
+            )
+        )
+    if calc.acc_levy > 0:
+        db.add(
+            PayslipDeduction(
+                payslip_id=payslip.id,
+                kind="acc_levy",
+                label="ACC earner levy",
+                amount=calc.acc_levy,
+            )
+        )
+    if calc.student_loan > 0:
+        db.add(
+            PayslipDeduction(
+                payslip_id=payslip.id,
+                kind="student_loan",
+                label="Student loan repayment",
+                amount=calc.student_loan,
+            )
+        )
+    await db.flush()
+
+
 async def recompute_payslip(
     db: AsyncSession,
     *,
@@ -352,11 +409,12 @@ async def recompute_payslip(
         )
     # First pass — get the math without the auto-generated rows.
     calc = await compute_payslip(db, staff, period, payslip=payslip)
-    # Attach / refresh KiwiSaver + casual-8% rows that depend on gross.
+    # Attach / refresh KiwiSaver + casual-8% + statutory (PAYE/ACC/SL) rows.
     await _attach_kiwisaver_lines(db, payslip=payslip, calc=calc, staff=staff)
     await _attach_casual_8pct_line(db, payslip=payslip, calc=calc)
+    await _attach_statutory_lines(db, payslip=payslip, calc=calc)
     # Second pass — recompute now that the lines are attached so the
-    # totals reflect the freshly-inserted KiwiSaver / casual lines.
+    # totals reflect the freshly-inserted KiwiSaver / casual / statutory lines.
     calc = await compute_payslip(db, staff, period, payslip=payslip)
     _apply_calc_to_payslip(payslip, calc)
     await db.flush()
@@ -464,6 +522,13 @@ async def generate_for_period(
     """Create one DRAFT payslip per active staff in ``staff_ids`` (or
     all active staff in the org when ``staff_ids`` is ``None``).
 
+    Cycle-scoping: when ``staff_ids is None`` and the period carries a
+    ``pay_cycle_id`` (a multi-cycle org), the bulk path is restricted to
+    active staff whose RESOLVED pay cycle equals the period's cycle. A
+    legacy period (``pay_cycle_id is None``) still drafts for all active
+    staff, and an explicit ``staff_ids`` list is never cycle-filtered (the
+    caller chose those staff deliberately — e.g. the termination path).
+
     Idempotent: re-running on a period with existing drafts is a
     no-op for those staff (UNIQUE on ``(staff_id, pay_period_id)``);
     only NEW drafts are created. Each draft has the recurring
@@ -490,6 +555,34 @@ async def generate_for_period(
     if staff_ids:
         base_stmt = base_stmt.where(StaffMember.id.in_(staff_ids))
     staff_rows = list((await db.execute(base_stmt)).scalars().all())
+
+    # Cycle-scope the bulk "generate for the whole period" path. When the
+    # period belongs to a pay cycle AND the caller didn't name explicit
+    # staff, restrict the active-staff list to staff whose RESOLVED pay
+    # cycle matches this period's cycle — otherwise a multi-cycle org would
+    # draft a payslip for every active staff regardless of cycle.
+    #
+    # When the caller passes explicit ``staff_ids`` (e.g. the termination
+    # payout path) we deliberately DO NOT apply the cycle filter: the caller
+    # has chosen exactly which staff to draft for. Likewise a legacy period
+    # with ``pay_cycle_id is None`` preserves the original behaviour (all
+    # active staff), so existing single-cycle orgs are unaffected.
+    if period.pay_cycle_id is not None and staff_ids is None and staff_rows:
+        # Local import avoids any import cycle (mirrors the codebase's
+        # existing local-import style for cross-module service calls).
+        from app.modules.timesheets.pay_cycles import (
+            resolve_pay_cycles_for_staff_batch,
+        )
+
+        resolved = await resolve_pay_cycles_for_staff_batch(
+            db, org_id=org_id, staff_members=staff_rows,
+        )
+        staff_rows = [
+            staff
+            for staff in staff_rows
+            if (rc := resolved.get(staff.id)) is not None
+            and rc.cycle.id == period.pay_cycle_id
+        ]
 
     created: list[Payslip] = []
 

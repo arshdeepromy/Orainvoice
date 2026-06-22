@@ -29,7 +29,7 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import apiClient from '@/api/client'
 import { Badge } from '@/components/ui'
 import WorkSchedule, { type WeekSchedule } from '@/components/WorkSchedule'
@@ -40,7 +40,14 @@ import ThisMonthPanel from '../components/ThisMonthPanel'
 import CreateAccountModal from '../components/CreateAccountModal'
 import StaffPhotoUploader from '../components/StaffPhotoUploader'
 import AuthorizedAvatar from '@/components/AuthorizedAvatar'
-import { getStaffMonthStats, type StaffMonthStats } from '@/api/staff'
+import {
+  getStaffMonthStats,
+  getOnboardingLinkStatus,
+  resendOnboardingLink,
+  revokeOnboardingLink,
+  type StaffMonthStats,
+  type OnboardingLinkStatus,
+} from '@/api/staff'
 
 // ---------------------------------------------------------------------------
 // Types — mirrors `app/modules/staff/schemas.py::StaffMemberResponse`.
@@ -84,6 +91,8 @@ interface StaffMember {
   employment_start_date: string | null
   employment_end_date: string | null
   employment_type: string
+  employment_basis?: string | null
+  working_arrangement?: string | null
   standard_hours_per_week: string | null
   tax_code: string | null
   ird_number: string | null // masked on the wire
@@ -103,6 +112,26 @@ interface StaffMember {
   weekly_roster_sms_enabled: boolean
   last_pay_review_date: string | null
   employment_agreement_upload_id: string | null
+  // Per-staff pay cycle (per-staff-pay-cycle feature). Read-only resolved
+  // fields; all null/false when the staff member has no resolved cycle
+  // (no matching assignment and no default — REQ 5.3).
+  pay_cycle_id: string | null
+  pay_cycle_name: string | null
+  pay_cycle_is_default: boolean
+}
+
+/**
+ * Active pay cycle as returned by `GET /api/v2/pay-cycles/` (the endpoint
+ * filters to `active == True`, so every item is an Active_Cycle). Mirrors the
+ * shape consumed by the StaffList Add modal and the timesheets/pay-run tabs.
+ */
+interface PayCycle {
+  id: string
+  name: string
+  frequency: string
+  anchor_date: string
+  pay_date_offset_days: number
+  is_default: boolean
 }
 
 interface OverviewTabProps {
@@ -129,6 +158,11 @@ interface FormState {
   employment_start_date: string
   employment_end_date: string
   position: string
+  employee_id: string
+  reporting_to: string
+  role_type: string
+  employment_basis: string
+  working_arrangement: string
   probation_end_date: string
   residency_type: ResidencyType
   visa_expiry_date: string
@@ -151,6 +185,13 @@ interface FormState {
   skills: string
 
   availability_schedule: WeekSchedule
+
+  /**
+   * Selected pay cycle (per-staff-pay-cycle feature). Empty string means
+   * "Use organisation default" — clears any staff-level assignment so the
+   * staff member resolves to the org Default_Cycle (REQ 1.4, 3.3).
+   */
+  pay_cycle_id: string
 }
 
 const EMPTY_FORM: FormState = {
@@ -166,6 +207,11 @@ const EMPTY_FORM: FormState = {
   employment_start_date: '',
   employment_end_date: '',
   position: '',
+  employee_id: '',
+  reporting_to: '',
+  role_type: 'employee',
+  employment_basis: 'full_time',
+  working_arrangement: 'rostered',
   probation_end_date: '',
   residency_type: 'citizen',
   visa_expiry_date: '',
@@ -187,18 +233,19 @@ const EMPTY_FORM: FormState = {
 
   skills: '',
   availability_schedule: {},
+
+  pay_cycle_id: '',
 }
 
-const MASKED_IRD_RE = /^\*+\d{0,3}$/
-const MASKED_BANK_RE = /^\*+\d{0,4}$/
-
+// A masked display value (from the API) always contains asterisks; a real,
+// freshly-typed IRD / bank number never does. Detecting "contains an asterisk"
+// is therefore both sufficient and immune to mask-format drift between the
+// frontend and the backend mask helpers (app/modules/staff/security.py).
 function isMaskedIrd(v: string | null | undefined): boolean {
-  if (!v) return false
-  return MASKED_IRD_RE.test(v.trim())
+  return !!v && v.includes('*')
 }
 function isMaskedBank(v: string | null | undefined): boolean {
-  if (!v) return false
-  return MASKED_BANK_RE.test(v.trim())
+  return !!v && v.includes('*')
 }
 
 /**
@@ -216,6 +263,38 @@ function formatLastSignIn(iso: string | null | undefined): string {
   })
 }
 
+/**
+ * Format an ISO timestamp to a readable date (no time component).
+ * Returns "—" for null/empty/unparseable values.
+ */
+function formatDate(iso: string | null | undefined): string {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return '—'
+  return d.toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  })
+}
+
+/**
+ * Format an ISO timestamp to a readable date + time (for "last saved").
+ * Returns "—" for null/empty/unparseable values.
+ */
+function formatDateTime(iso: string | null | undefined): string {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return '—'
+  return d.toLocaleString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
 function staffToForm(s: StaffMember): FormState {
   return {
     first_name: s.first_name ?? '',
@@ -230,6 +309,11 @@ function staffToForm(s: StaffMember): FormState {
     employment_start_date: s.employment_start_date ?? '',
     employment_end_date: s.employment_end_date ?? '',
     position: s.position ?? '',
+    employee_id: s.employee_id ?? '',
+    reporting_to: s.reporting_to ?? '',
+    role_type: s.role_type ?? 'employee',
+    employment_basis: s.employment_basis ?? 'full_time',
+    working_arrangement: s.working_arrangement ?? 'rostered',
     probation_end_date: s.probation_end_date ?? '',
     residency_type: (s.residency_type ?? 'citizen') as ResidencyType,
     visa_expiry_date: s.visa_expiry_date ?? '',
@@ -254,6 +338,13 @@ function staffToForm(s: StaffMember): FormState {
       s.availability_schedule && typeof s.availability_schedule === 'object'
         ? { ...s.availability_schedule }
         : {},
+
+    // Prefill the pay-cycle selector from the resolved cycle ONLY when it is an
+    // explicit staff-level assignment (pay_cycle_is_default === false). When the
+    // staff resolves via the org default, leave the empty "Use organisation
+    // default" option selected (REQ 1.3, 1.4).
+    pay_cycle_id:
+      s.pay_cycle_id && !s.pay_cycle_is_default ? s.pay_cycle_id : '',
   }
 }
 
@@ -266,6 +357,7 @@ function formToPayload(
   form: FormState,
   original: StaffMember,
   overrideMinWage: boolean,
+  includePayCycle: boolean,
 ): Record<string, unknown> {
   const payload: Record<string, unknown> = {
     first_name: form.first_name.trim() || null,
@@ -276,6 +368,11 @@ function formToPayload(
     emergency_contact_phone: form.emergency_contact_phone.trim() || null,
     on_file_photo_url: form.on_file_photo_url.trim() || null,
     position: form.position.trim() || null,
+    employee_id: form.employee_id.trim() || null,
+    reporting_to: form.reporting_to || null,
+    role_type: form.role_type || null,
+    employment_basis: form.employment_basis || null,
+    working_arrangement: form.working_arrangement || null,
 
     employment_type: form.employment_type || null,
     employment_start_date: form.employment_start_date || null,
@@ -303,7 +400,12 @@ function formToPayload(
     skills: form.skills
       ? form.skills.split(',').map((s) => s.trim()).filter(Boolean)
       : [],
-    availability_schedule: form.availability_schedule ?? {},
+    // Schedule only applies to a Fixed working arrangement; for Rostered /
+    // Casual it is cleared so stale work-days don't linger (mirrors the modal).
+    availability_schedule:
+      form.working_arrangement === 'fixed'
+        ? (form.availability_schedule ?? {})
+        : {},
   }
 
   // IRD: skip when unchanged-masked; null on explicit clear; otherwise plaintext.
@@ -335,6 +437,15 @@ function formToPayload(
 
   if (overrideMinWage) {
     payload.minimum_wage_override = true
+  }
+  // Per-staff pay cycle (REQ 2.2, 3.3). Only send when the org has at least one
+  // active cycle and the selector is therefore shown — otherwise the field is
+  // hidden and the existing assignment must be left untouched. A chosen cycle
+  // sends its uuid (set/replace); "Use organisation default" (empty string)
+  // sends null to clear any existing staff-level assignment so the staff member
+  // resolves to the org Default_Cycle.
+  if (includePayCycle) {
+    payload.pay_cycle_id = form.pay_cycle_id || null
   }
   return payload
 }
@@ -496,6 +607,256 @@ const TAX_CODE_OPTIONS = [
 
 const KIWISAVER_RATES = ['3.00', '4.00', '6.00', '8.00', '10.00']
 
+// ---------------------------------------------------------------------------
+// OnboardingLinkCard — staff-detail "Onboarding link" lifecycle card (R10, R13).
+//
+// On mount fetches GET /staff/{id}/onboarding-link via the api/staff.ts status
+// helper and renders the lifecycle state (not_started / in_progress / completed
+// / expired / revoked / none) with Resend / Revoke / Send actions. When the
+// state is in_progress it also shows a progress bar with the server-computed
+// completion percentage and the last-saved timestamp (R13.2, R13.5).
+//
+// - Resend → POST .../resend; surfaces an inline error when the email send
+//   fails (onboarding_email_sent === false), then refetches the status.
+// - Revoke → POST .../revoke, then refetches the status.
+// - Send (from a terminal/none state) → calls resend, which revokes any prior
+//   token (a no-op when none), mints a fresh one, and emails it.
+//
+// Safe API consumption throughout: the helper already defaults to
+// `state: 'none'` and null timestamps, and any fetch failure here falls back
+// to a 'none' status so the tab never crashes.
+// ---------------------------------------------------------------------------
+
+// Lifecycle states that have an active/usable link → show Resend + Revoke.
+// Per design.md §Frontend Design, revoked/expired/none have no active link and
+// instead surface a single "Send onboarding link" button (which mints fresh).
+const ONBOARDING_ACTION_STATES: ReadonlySet<OnboardingLinkStatus['state']> =
+  new Set(['not_started', 'in_progress'])
+
+const ONBOARDING_NONE_STATUS: OnboardingLinkStatus = {
+  state: 'none',
+  expires_at: null,
+  created_at: null,
+  consumed_at: null,
+  completion_percentage: null,
+  last_saved_at: null,
+}
+
+function OnboardingLinkCard({ staffId }: { staffId: string }) {
+  const [status, setStatus] = useState<OnboardingLinkStatus>(
+    ONBOARDING_NONE_STATUS,
+  )
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState<null | 'resend' | 'revoke' | 'send'>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
+
+  const cardCls = 'rounded-card border border-border bg-card shadow-card mb-4'
+
+  // Fetch status; default to a 'none' status on any failure so the tab never
+  // crashes (R13.5, safe-api-consumption).
+  const fetchStatus = useCallback(
+    async (signal?: AbortSignal): Promise<void> => {
+      try {
+        const res = await getOnboardingLinkStatus(staffId, signal)
+        if (signal?.aborted) return
+        setStatus(res ?? ONBOARDING_NONE_STATUS)
+      } catch {
+        if (signal?.aborted) return
+        setStatus(ONBOARDING_NONE_STATUS)
+      } finally {
+        if (!signal?.aborted) setLoading(false)
+      }
+    },
+    [staffId],
+  )
+
+  useEffect(() => {
+    const controller = new AbortController()
+    setLoading(true)
+    setActionError(null)
+    void fetchStatus(controller.signal)
+    return () => controller.abort()
+  }, [fetchStatus])
+
+  const handleResend = useCallback(
+    async (kind: 'resend' | 'send') => {
+      setBusy(kind)
+      setActionError(null)
+      try {
+        const res = await resendOnboardingLink(staffId)
+        if (!res.onboarding_email_sent) {
+          setActionError(
+            'The onboarding email could not be sent. Please check the staff email address and try again.',
+          )
+        }
+        await fetchStatus()
+      } catch {
+        setActionError('Could not send the onboarding link. Please try again.')
+      } finally {
+        setBusy(null)
+      }
+    },
+    [fetchStatus, staffId],
+  )
+
+  const handleRevoke = useCallback(async () => {
+    setBusy('revoke')
+    setActionError(null)
+    try {
+      await revokeOnboardingLink(staffId)
+      await fetchStatus()
+    } catch {
+      setActionError('Could not revoke the onboarding link. Please try again.')
+    } finally {
+      setBusy(null)
+    }
+  }, [fetchStatus, staffId])
+
+  const pct = Math.max(0, Math.min(100, status.completion_percentage ?? 0))
+  const showActions = ONBOARDING_ACTION_STATES.has(status.state)
+
+  // Headline + secondary line per lifecycle state (R13.5).
+  let headline = 'No active onboarding link'
+  let detail: string | null = null
+  switch (status.state) {
+    case 'not_started':
+      headline = 'Onboarding link sent — not started yet'
+      detail = `Expires ${formatDate(status.expires_at)}`
+      break
+    case 'in_progress':
+      headline = 'Onboarding in progress'
+      detail = `Expires ${formatDate(status.expires_at)}`
+      break
+    case 'completed':
+      headline = 'Onboarding completed'
+      detail = `Completed ${formatDate(status.consumed_at)}`
+      break
+    case 'expired':
+      headline = 'Onboarding link expired'
+      detail = `Expired ${formatDate(status.expires_at)}`
+      break
+    case 'revoked':
+      headline = 'Onboarding link revoked'
+      break
+    case 'none':
+    default:
+      headline = 'No active onboarding link'
+      break
+  }
+
+  const btnSecondaryCls =
+    'inline-flex min-h-[44px] items-center justify-center rounded-ctl border border-border px-3 text-[13px] font-medium text-text hover:bg-canvas disabled:opacity-50'
+  const btnPrimaryCls =
+    'inline-flex min-h-[44px] items-center justify-center rounded-ctl bg-accent px-3 text-[13px] font-semibold text-white hover:brightness-95 disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-card'
+
+  return (
+    <section
+      className={cardCls}
+      aria-label="Onboarding link"
+      data-testid="onboarding-link-card"
+    >
+      <div className="p-5">
+        <div className="mb-3 font-mono text-[11px] font-medium uppercase tracking-[0.1em] text-muted-2">
+          Onboarding link
+        </div>
+
+        {loading ? (
+          <p className="text-[13px] text-muted">Loading…</p>
+        ) : (
+          <>
+            <p
+              className="text-[13px] font-medium text-text"
+              data-testid="onboarding-link-state"
+            >
+              {headline}
+            </p>
+            {detail && (
+              <p className="mt-1 text-[12px] leading-relaxed text-muted">
+                {detail}
+              </p>
+            )}
+
+            {/* in_progress → progress bar + percentage + last-saved (R13.2). */}
+            {status.state === 'in_progress' && (
+              <div className="mt-3" data-testid="onboarding-progress">
+                <div className="flex items-center justify-between">
+                  <span className="text-[12px] text-muted">Completion</span>
+                  <span className="mono text-[12px] font-medium text-text">
+                    {pct}%
+                  </span>
+                </div>
+                <div
+                  className="mt-1 h-2 w-full overflow-hidden rounded-full bg-canvas"
+                  role="progressbar"
+                  aria-valuenow={pct}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                >
+                  <div
+                    className="h-full rounded-full bg-accent transition-all"
+                    style={{ width: `${pct}%` }}
+                  />
+                </div>
+                <p className="mt-2 text-[12px] text-muted">
+                  Last saved {formatDateTime(status.last_saved_at)}
+                </p>
+              </div>
+            )}
+
+            {actionError && (
+              <p
+                role="alert"
+                data-testid="onboarding-link-error"
+                className="mt-3 rounded-ctl border border-danger/40 bg-danger-soft px-3 py-2 text-[12px] text-danger"
+              >
+                {actionError}
+              </p>
+            )}
+
+            <div className="mt-4 flex flex-wrap gap-2">
+              {showActions && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => void handleResend('resend')}
+                    disabled={busy !== null}
+                    className={btnSecondaryCls}
+                    data-testid="onboarding-resend-btn"
+                  >
+                    {busy === 'resend' ? 'Sending…' : 'Resend'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleRevoke()}
+                    disabled={busy !== null}
+                    className={btnSecondaryCls}
+                    data-testid="onboarding-revoke-btn"
+                  >
+                    {busy === 'revoke' ? 'Revoking…' : 'Revoke'}
+                  </button>
+                </>
+              )}
+              {(status.state === 'none' ||
+                status.state === 'revoked' ||
+                status.state === 'expired') && (
+                <button
+                  type="button"
+                  onClick={() => void handleResend('send')}
+                  disabled={busy !== null}
+                  className={btnPrimaryCls}
+                  data-testid="onboarding-send-btn"
+                >
+                  {busy === 'send' ? 'Sending…' : 'Send onboarding link'}
+                </button>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+    </section>
+  )
+}
+
 
 export default function OverviewTab({ staffId, onDirtyChange }: OverviewTabProps) {
   const [staff, setStaff] = useState<StaffMember | null>(null)
@@ -522,6 +883,53 @@ export default function OverviewTab({ staffId, onDirtyChange }: OverviewTabProps
   // an AbortController (R8.7).
   const [monthStats, setMonthStats] = useState<StaffMonthStats | null>(null)
   const [monthStatsFailed, setMonthStatsFailed] = useState(false)
+
+  // All staff (for the "Reports to" manager picker in edit mode). Best-effort;
+  // an empty list just yields a manager dropdown with only "— None —".
+  const [allStaff, setAllStaff] = useState<
+    { id: string; first_name: string; last_name: string | null; position: string | null }[]
+  >([])
+  useEffect(() => {
+    const controller = new AbortController()
+    apiClient
+      .get('/staff', { baseURL: '/api/v2', params: { page_size: '200' }, signal: controller.signal })
+      .then((res) => setAllStaff(((res.data as any)?.staff ?? []) as typeof allStaff))
+      .catch(() => { /* non-blocking */ })
+    return () => controller.abort()
+  }, [])
+
+  // Active pay cycles for the per-staff pay-cycle selector (per-staff-pay-cycle).
+  // The endpoint returns only active cycles wrapped in `{ items, total }`;
+  // consume defensively and default to an empty list so the selector simply
+  // hides (and the "configure under Timesheets → Settings" hint shows) when
+  // none exist (REQ 1.1, 1.5, 1.6). AbortController cancels on unmount.
+  const [payCycles, setPayCycles] = useState<PayCycle[]>([])
+  useEffect(() => {
+    const controller = new AbortController()
+    apiClient
+      .get<{ items: PayCycle[]; total: number }>('/api/v2/pay-cycles/', {
+        signal: controller.signal,
+      })
+      .then((res) => setPayCycles(res.data?.items ?? []))
+      .catch(() => setPayCycles([]))
+    return () => controller.abort()
+  }, [])
+
+  // Deep-link: open directly in edit mode when navigated with ?edit=1 (the
+  // Staff list "Edit" action routes here). One-shot, then the param is stripped
+  // so a refresh / back-navigation doesn't re-enter edit mode.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const autoEditAppliedRef = useRef(false)
+  useEffect(() => {
+    if (autoEditAppliedRef.current) return
+    if (staff && searchParams.get('edit') === '1') {
+      autoEditAppliedRef.current = true
+      setEditing(true)
+      const next = new URLSearchParams(searchParams)
+      next.delete('edit')
+      setSearchParams(next, { replace: true })
+    }
+  }, [staff, searchParams, setSearchParams])
 
   // Create-account modal (R9.5, R9.6) — opened from the Account panel when
   // the staff member has no linked user account.
@@ -604,10 +1012,20 @@ export default function OverviewTab({ staffId, onDirtyChange }: OverviewTabProps
   const submitSave = useCallback(
     async (overrideMinWage: boolean) => {
       if (!staff) return
+      // A Fixed working arrangement requires at least one configured work day.
+      if (
+        form.working_arrangement === 'fixed' &&
+        Object.keys(form.availability_schedule ?? {}).length === 0
+      ) {
+        setFormError(
+          'A Fixed working arrangement requires a schedule — enable at least one work day and set its hours.',
+        )
+        return
+      }
       setSaving(true)
       setFormError(null)
       try {
-        const payload = formToPayload(form, staff, overrideMinWage)
+        const payload = formToPayload(form, staff, overrideMinWage, payCycles.length > 0)
         const res = await apiClient.put<StaffMember>(
           `/api/v2/staff/${staffId}`,
           payload,
@@ -1049,6 +1467,98 @@ export default function OverviewTab({ staffId, onDirtyChange }: OverviewTabProps
             )}
           </div>
           <div>
+            <label className={labelCls}>Employee ID</label>
+            {editing ? (
+              <input
+                type="text"
+                value={form.employee_id}
+                onChange={(e) => updateForm('employee_id', e.target.value)}
+                className={inputCls}
+                aria-label="Employee ID"
+              />
+            ) : (
+              <div className={`${readonlyCls} mono`}>{staff.employee_id || '—'}</div>
+            )}
+          </div>
+          <div>
+            <label className={labelCls}>Reports to (manager)</label>
+            {editing ? (
+              <select
+                value={form.reporting_to}
+                onChange={(e) => updateForm('reporting_to', e.target.value)}
+                className={inputCls}
+                aria-label="Reports to"
+              >
+                <option value="">— None —</option>
+                {allStaff
+                  .filter((m) => m.id !== staffId)
+                  .map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {`${m.first_name} ${m.last_name ?? ''}`.trim()}
+                      {m.position ? ` (${m.position})` : ''}
+                    </option>
+                  ))}
+              </select>
+            ) : (
+              <div className={readonlyCls}>{staff.reporting_to_name || '—'}</div>
+            )}
+          </div>
+          <div>
+            <label className={labelCls}>Role type</label>
+            {editing ? (
+              <select
+                value={form.role_type}
+                onChange={(e) => updateForm('role_type', e.target.value)}
+                className={inputCls}
+                aria-label="Role type"
+              >
+                <option value="employee">Employee</option>
+                <option value="contractor">Contractor</option>
+              </select>
+            ) : (
+              <div className={`${readonlyCls} capitalize`}>{staff.role_type || '—'}</div>
+            )}
+          </div>
+          <div>
+            <label className={labelCls}>Employment basis</label>
+            {editing ? (
+              <select
+                value={form.employment_basis}
+                onChange={(e) => updateForm('employment_basis', e.target.value)}
+                className={inputCls}
+                aria-label="Employment basis"
+              >
+                <option value="full_time">Full-time</option>
+                <option value="part_time">Part-time</option>
+                <option value="casual">Casual</option>
+                <option value="contractor">Contractor</option>
+              </select>
+            ) : (
+              <div className={readonlyCls}>
+                {(staff.employment_basis ?? '').replace(/_/g, ' ') || '—'}
+              </div>
+            )}
+          </div>
+          <div>
+            <label className={labelCls}>Working arrangement</label>
+            {editing ? (
+              <select
+                value={form.working_arrangement}
+                onChange={(e) => updateForm('working_arrangement', e.target.value)}
+                className={inputCls}
+                aria-label="Working arrangement"
+              >
+                <option value="rostered">Rostered</option>
+                <option value="fixed">Fixed</option>
+                <option value="casual_on_demand">Casual / on-demand</option>
+              </select>
+            ) : (
+              <div className={readonlyCls}>
+                {(staff.working_arrangement ?? '').replace(/_/g, ' ') || '—'}
+              </div>
+            )}
+          </div>
+          <div>
             <label className={labelCls}>Start date</label>
             {editing ? (
               <input
@@ -1347,6 +1857,67 @@ export default function OverviewTab({ staffId, onDirtyChange }: OverviewTabProps
               </div>
             )}
           </div>
+
+          {/* Pay cycle (per-staff-pay-cycle). In edit mode: a selector when the
+              org has at least one active cycle, otherwise a hint to configure
+              one under Timesheets → Settings (REQ 1.3, 1.4, 1.5, 1.6). In view
+              mode: the staff member's resolved cycle, flagged when it comes from
+              the org default. */}
+          <div className="md:col-span-2" data-testid="pay-cycle-field">
+            <label className={labelCls}>Pay cycle</label>
+            {editing ? (
+              payCycles.length > 0 ? (
+                <>
+                  <select
+                    value={form.pay_cycle_id}
+                    onChange={(e) => updateForm('pay_cycle_id', e.target.value)}
+                    className={inputCls}
+                    aria-label="Pay cycle"
+                    data-testid="pay-cycle-select"
+                  >
+                    {/* "Use organisation default" — sends null so any existing
+                        staff-level assignment is cleared and the org
+                        Default_Cycle applies (REQ 1.4, 3.3). */}
+                    <option value="">
+                      Use organisation default
+                      {(() => {
+                        const def = payCycles.find((c) => c.is_default)
+                        return def ? ` (${def.name})` : ''
+                      })()}
+                    </option>
+                    {payCycles.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="mt-[7px] text-[12px] text-muted-2">
+                    Choose a pay cycle for this staff member, or leave as “Use
+                    organisation default” to pay them on your organisation’s
+                    default cycle.
+                  </p>
+                </>
+              ) : (
+                <div
+                  className="rounded-ctl border border-dashed border-border bg-canvas p-4"
+                  data-testid="pay-cycle-empty-hint"
+                >
+                  <p className="text-[12px] text-muted-2">
+                    No pay cycle configured — set one up under Timesheets →
+                    Settings to assign a pay cycle to this staff member.
+                  </p>
+                </div>
+              )
+            ) : (
+              <div className={readonlyCls}>
+                {staff.pay_cycle_name
+                  ? `${staff.pay_cycle_name}${
+                      staff.pay_cycle_is_default ? ' (organisation default)' : ''
+                    }`
+                  : '—'}
+              </div>
+            )}
+          </div>
         </div>
         <div className="px-6 pb-6">
           <PayRateHistoryPanel staffId={staffId} />
@@ -1368,11 +1939,43 @@ export default function OverviewTab({ staffId, onDirtyChange }: OverviewTabProps
       <section className={cardCls} aria-label="Schedule">
         <div className={sectionHeaderCls}>Schedule</div>
         <div className="px-6 py-4">
-          <WorkSchedule
-            schedule={form.availability_schedule}
-            onChange={(next) => updateForm('availability_schedule', next)}
-            readOnly={!editing}
-          />
+          {(() => {
+            const isFixed = form.working_arrangement === 'fixed'
+            const scheduleEditable = editing && isFixed
+            const dayCount = Object.keys(form.availability_schedule ?? {}).length
+            return (
+              <>
+                {editing && !isFixed && (
+                  <p
+                    className="mb-3 text-[12.5px] text-muted"
+                    data-testid="schedule-disabled-note"
+                  >
+                    A set work-days schedule applies only to a{' '}
+                    <span className="font-medium text-text">Fixed</span> working
+                    arrangement. For Rostered or Casual / on-demand staff, hours
+                    come from the roster, so this is disabled. Change Working
+                    arrangement to “Fixed” to configure work days.
+                  </p>
+                )}
+                {editing && isFixed && (
+                  <p
+                    className={`mb-3 text-[12.5px] ${
+                      dayCount === 0 ? 'text-danger' : 'text-muted'
+                    }`}
+                    data-testid="schedule-required-note"
+                  >
+                    Required for a Fixed working arrangement — enable at least one
+                    work day and set its hours.
+                  </p>
+                )}
+                <WorkSchedule
+                  schedule={form.availability_schedule}
+                  onChange={(next) => updateForm('availability_schedule', next)}
+                  readOnly={!scheduleEditable}
+                />
+              </>
+            )
+          })()}
         </div>
       </section>
 
@@ -1521,6 +2124,11 @@ export default function OverviewTab({ staffId, onDirtyChange }: OverviewTabProps
               )}
             </div>
           </section>
+
+          {/* Onboarding link lifecycle card (R10, R13) — sits below the
+              Account panel in the sidebar. Self-contained: fetches its own
+              status on mount and manages resend/revoke/send actions. */}
+          <OnboardingLinkCard staffId={staffId} />
         </div>
       </div>{/* end detail grid */}
 

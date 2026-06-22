@@ -2704,6 +2704,14 @@ class TestDeactivateStaffRevokesTokens:
         ), patch(
             "app.modules.staff.router.StaffService"
         ) as mock_service_cls, patch(
+            "app.modules.staff.router.onboarding_tokens.revoke_active",
+            new_callable=AsyncMock,
+            return_value=0,
+        ), patch(
+            "app.modules.staff.router.account_service.revoke_portal_access_for_staff",
+            new_callable=AsyncMock,
+            return_value=0,
+        ), patch(
             "app.modules.staff.router.write_audit_log",
             new_callable=AsyncMock,
         ) as mock_audit:
@@ -2758,6 +2766,14 @@ class TestDeactivateStaffRevokesTokens:
         ), patch(
             "app.modules.staff.router.StaffService"
         ) as mock_service_cls, patch(
+            "app.modules.staff.router.onboarding_tokens.revoke_active",
+            new_callable=AsyncMock,
+            return_value=0,
+        ), patch(
+            "app.modules.staff.router.account_service.revoke_portal_access_for_staff",
+            new_callable=AsyncMock,
+            return_value=0,
+        ), patch(
             "app.modules.staff.router.write_audit_log",
             new_callable=AsyncMock,
         ) as mock_audit:
@@ -2939,6 +2955,10 @@ class TestUpdateStaffTerminationRevokesTokens:
             "app.modules.staff.router._enrich_reporting_to",
             new_callable=AsyncMock,
         ) as mock_enrich, patch(
+            "app.modules.staff.router.account_service.revoke_portal_access_for_staff",
+            new_callable=AsyncMock,
+            return_value=0,
+        ), patch(
             "app.modules.staff.router.write_audit_log",
             new_callable=AsyncMock,
         ) as mock_audit:
@@ -3241,3 +3261,588 @@ class TestActivateDoesNotRestoreTokens:
                 "activate_staff should not touch the token table — "
                 f"saw statement: {stmt_text}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Task 6.1 — POST /api/v2/staff onboarding-link branch (R1.2/1.3/1.4/1.5,
+# R3.6/3.7)
+# ---------------------------------------------------------------------------
+
+
+def _valid_response_dict(*, staff_id: uuid.UUID, org_id: uuid.UUID) -> dict:
+    """A complete, schema-valid ``StaffMemberResponse`` payload dict.
+
+    Mirrors what ``_enrich_reporting_to`` returns for a freshly-created
+    staff member — only the required fields need real values; the rest
+    fall back to their schema defaults.
+    """
+    from datetime import datetime
+
+    now = datetime(2026, 1, 1, 12, 0, 0)
+    return {
+        "id": staff_id,
+        "org_id": org_id,
+        "name": "Jane Doe",
+        "first_name": "Jane",
+        "last_name": "Doe",
+        "email": "jane@example.co.nz",
+        "role_type": "employee",
+        "is_active": True,
+        "created_at": now,
+        "updated_at": now,
+    }
+
+
+class TestCreateStaffOnboardingLink:
+    """The ``send_onboarding_link`` branch of ``create_staff`` (task 6.1)."""
+
+    @pytest.mark.asyncio
+    async def test_flag_set_with_email_mints_token_and_sends_email(self):
+        """R1.3 — flag set + email present → mint a token, send the
+        invite email, and fold a successful send into the response
+        advisory fields. An ``onboarding.link_sent`` audit row is
+        written.
+        """
+        from app.modules.staff.onboarding_delivery import OnboardingDeliveryResult
+        from app.modules.staff.router import create_staff
+        from app.modules.staff.schemas import StaffMemberCreate, StaffMemberResponse
+
+        org_id = uuid.uuid4()
+        user_id = uuid.uuid4()
+        staff_id = uuid.uuid4()
+        request = _make_request_with_user(org_id, user_id)
+        db = AsyncMock()
+        payload = StaffMemberCreate(
+            first_name="Jane", email="jane@example.co.nz", send_onboarding_link=True,
+        )
+        staff_stub = _make_staff_stub(staff_id=staff_id, org_id=org_id)
+
+        with patch(
+            "app.core.modules.ModuleService.is_enabled",
+            new_callable=AsyncMock,
+            return_value=True,
+        ), patch(
+            "app.modules.staff.router.StaffService"
+        ) as mock_service_cls, patch(
+            "app.modules.staff.router._enrich_reporting_to",
+            new_callable=AsyncMock,
+            return_value=_valid_response_dict(staff_id=staff_id, org_id=org_id),
+        ), patch(
+            "app.modules.staff.router.onboarding_tokens.mint",
+            new_callable=AsyncMock,
+            return_value="raw-token-xyz",
+        ) as mock_mint, patch(
+            "app.modules.staff.router.send_onboarding_email",
+            new_callable=AsyncMock,
+            return_value=OnboardingDeliveryResult(ok=True, message_id="msg-1"),
+        ) as mock_send, patch(
+            "app.modules.staff.router.write_audit_log",
+            new_callable=AsyncMock,
+        ) as mock_audit:
+            mock_service = mock_service_cls.return_value
+            mock_service.create_staff = AsyncMock(return_value=staff_stub)
+
+            resp = await create_staff(payload=payload, request=request, db=db)
+
+        assert isinstance(resp, StaffMemberResponse)
+        assert resp.onboarding_email_sent is True
+        assert resp.onboarding_email_error is None
+
+        mock_mint.assert_awaited_once()
+        assert mock_mint.await_args.kwargs["org_id"] == org_id
+        assert mock_mint.await_args.kwargs["staff_id"] == staff_id
+
+        mock_send.assert_awaited_once()
+        assert mock_send.await_args.kwargs["token"] == "raw-token-xyz"
+
+        mock_audit.assert_awaited_once()
+        assert mock_audit.await_args.kwargs["action"] == "onboarding.link_sent"
+        assert mock_audit.await_args.kwargs["after_value"] == {
+            "onboarding_email_sent": True,
+            "onboarding_email_error": None,
+        }
+
+    @pytest.mark.asyncio
+    async def test_send_failure_preserves_record_and_does_not_raise(self):
+        """R3.6 — a provider failure must NOT raise; the created staff
+        record is preserved and the failure folds into
+        ``onboarding_email_error``.
+        """
+        from app.modules.staff.onboarding_delivery import OnboardingDeliveryResult
+        from app.modules.staff.router import create_staff
+        from app.modules.staff.schemas import StaffMemberCreate, StaffMemberResponse
+
+        org_id = uuid.uuid4()
+        user_id = uuid.uuid4()
+        staff_id = uuid.uuid4()
+        request = _make_request_with_user(org_id, user_id)
+        db = AsyncMock()
+        payload = StaffMemberCreate(
+            first_name="Jane", email="jane@example.co.nz", send_onboarding_link=True,
+        )
+        staff_stub = _make_staff_stub(staff_id=staff_id, org_id=org_id)
+
+        with patch(
+            "app.core.modules.ModuleService.is_enabled",
+            new_callable=AsyncMock,
+            return_value=True,
+        ), patch(
+            "app.modules.staff.router.StaffService"
+        ) as mock_service_cls, patch(
+            "app.modules.staff.router._enrich_reporting_to",
+            new_callable=AsyncMock,
+            return_value=_valid_response_dict(staff_id=staff_id, org_id=org_id),
+        ), patch(
+            "app.modules.staff.router.onboarding_tokens.mint",
+            new_callable=AsyncMock,
+            return_value="raw-token-xyz",
+        ), patch(
+            "app.modules.staff.router.send_onboarding_email",
+            new_callable=AsyncMock,
+            return_value=OnboardingDeliveryResult(ok=False, error_code="send_failed"),
+        ), patch(
+            "app.modules.staff.router.write_audit_log",
+            new_callable=AsyncMock,
+        ):
+            mock_service = mock_service_cls.return_value
+            mock_service.create_staff = AsyncMock(return_value=staff_stub)
+
+            resp = await create_staff(payload=payload, request=request, db=db)
+
+        assert isinstance(resp, StaffMemberResponse)
+        assert resp.id == staff_id  # record preserved
+        assert resp.onboarding_email_sent is False
+        assert resp.onboarding_email_error == "send_failed"
+
+    @pytest.mark.asyncio
+    async def test_flag_set_without_email_returns_422_and_no_mint(self):
+        """R1.2 belt-and-braces — flag set but no email → 422
+        ``onboarding_email_required`` and NO token minted.
+        """
+        from app.modules.staff.router import create_staff
+        from app.modules.staff.schemas import StaffMemberCreate
+
+        org_id = uuid.uuid4()
+        user_id = uuid.uuid4()
+        staff_id = uuid.uuid4()
+        request = _make_request_with_user(org_id, user_id)
+        db = AsyncMock()
+        payload = StaffMemberCreate(
+            first_name="Jane", email=None, send_onboarding_link=True,
+        )
+        staff_stub = _make_staff_stub(staff_id=staff_id, org_id=org_id, email=None)
+
+        with patch(
+            "app.core.modules.ModuleService.is_enabled",
+            new_callable=AsyncMock,
+            return_value=True,
+        ), patch(
+            "app.modules.staff.router.StaffService"
+        ) as mock_service_cls, patch(
+            "app.modules.staff.router._enrich_reporting_to",
+            new_callable=AsyncMock,
+            return_value=_valid_response_dict(staff_id=staff_id, org_id=org_id),
+        ), patch(
+            "app.modules.staff.router.onboarding_tokens.mint",
+            new_callable=AsyncMock,
+        ) as mock_mint, patch(
+            "app.modules.staff.router.send_onboarding_email",
+            new_callable=AsyncMock,
+        ) as mock_send:
+            mock_service = mock_service_cls.return_value
+            mock_service.create_staff = AsyncMock(return_value=staff_stub)
+
+            with pytest.raises(HTTPException) as excinfo:
+                await create_staff(payload=payload, request=request, db=db)
+
+        assert excinfo.value.status_code == 422
+        assert excinfo.value.detail == {"detail": "onboarding_email_required"}
+        mock_mint.assert_not_awaited()
+        mock_send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_flag_unset_does_not_mint_or_send(self):
+        """R1.4 — flag unset → no token, no email, advisory fields stay None."""
+        from app.modules.staff.router import create_staff
+        from app.modules.staff.schemas import StaffMemberCreate, StaffMemberResponse
+
+        org_id = uuid.uuid4()
+        user_id = uuid.uuid4()
+        staff_id = uuid.uuid4()
+        request = _make_request_with_user(org_id, user_id)
+        db = AsyncMock()
+        payload = StaffMemberCreate(first_name="Jane", email="jane@example.co.nz")
+        staff_stub = _make_staff_stub(staff_id=staff_id, org_id=org_id)
+
+        with patch(
+            "app.core.modules.ModuleService.is_enabled",
+            new_callable=AsyncMock,
+            return_value=True,
+        ), patch(
+            "app.modules.staff.router.StaffService"
+        ) as mock_service_cls, patch(
+            "app.modules.staff.router._enrich_reporting_to",
+            new_callable=AsyncMock,
+            return_value=_valid_response_dict(staff_id=staff_id, org_id=org_id),
+        ), patch(
+            "app.modules.staff.router.onboarding_tokens.mint",
+            new_callable=AsyncMock,
+        ) as mock_mint, patch(
+            "app.modules.staff.router.send_onboarding_email",
+            new_callable=AsyncMock,
+        ) as mock_send:
+            mock_service = mock_service_cls.return_value
+            mock_service.create_staff = AsyncMock(return_value=staff_stub)
+
+            resp = await create_staff(payload=payload, request=request, db=db)
+
+        assert isinstance(resp, StaffMemberResponse)
+        assert resp.onboarding_email_sent is None
+        assert resp.onboarding_email_error is None
+        mock_mint.assert_not_awaited()
+        mock_send.assert_not_awaited()
+
+
+def _make_portal_request(org_id, user_id, *, origin=None):
+    """A ``Request``-like stub with ``state`` set and a real ``headers`` dict.
+
+    The portal-access issue handler reads ``request.headers.get("origin")``;
+    a bare ``MagicMock`` would return a truthy mock there, so we give it a
+    plain dict (empty → falls back to the configured base url).
+    """
+    request = MagicMock()
+    request.state = SimpleNamespace(org_id=org_id, user_id=user_id, client_ip=None)
+    request.headers = {"origin": origin} if origin else {}
+    return request
+
+
+class TestIssuePortalAccess:
+    """``POST /api/v2/staff/{staff_id}/portal-access`` (task 9.5, R5.3/R15)."""
+
+    @pytest.mark.asyncio
+    async def test_issue_success_sends_email_and_audits(self):
+        """Happy path: issue access, build the branded set-password URL,
+        dispatch the credential-setup email, fold ``invite_sent=True`` into
+        the response, and write a ``staff.portal_access_issued`` audit row.
+        """
+        from app.modules.employee_portal.employee_portal_delivery import (
+            EmployeePortalDeliveryResult,
+        )
+        from app.modules.staff.router import issue_portal_access
+
+        org_id = uuid.uuid4()
+        staff_id = uuid.uuid4()
+        user_id = uuid.uuid4()
+        portal_user_id = uuid.uuid4()
+        request = _make_portal_request(org_id, user_id, origin="https://acme.example")
+
+        staff_stub = SimpleNamespace(id=staff_id, org_id=org_id, email="worker@acme.example")
+        portal_user_stub = SimpleNamespace(id=portal_user_id, email="worker@acme.example")
+
+        org_result = MagicMock()
+        org_result.first = MagicMock(return_value=("acme", "Acme Ltd"))
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=org_result)
+
+        with patch(
+            "app.core.modules.ModuleService.is_enabled",
+            new_callable=AsyncMock,
+            return_value=True,
+        ), patch(
+            "app.modules.staff.router.StaffService"
+        ) as mock_service_cls, patch(
+            "app.modules.staff.router.account_service.issue_access",
+            new_callable=AsyncMock,
+            return_value=(portal_user_stub, "raw-token-abc"),
+        ), patch(
+            "app.modules.staff.router.employee_portal_delivery.send_credential_setup_email",
+            new_callable=AsyncMock,
+            return_value=EmployeePortalDeliveryResult(ok=True, message_id="m1"),
+        ) as mock_send, patch(
+            "app.modules.staff.router.write_audit_log",
+            new_callable=AsyncMock,
+        ) as mock_audit:
+            mock_service = mock_service_cls.return_value
+            mock_service.get_staff = AsyncMock(return_value=staff_stub)
+
+            resp = await issue_portal_access(staff_id=staff_id, request=request, db=db)
+
+        assert resp.portal_user_id == portal_user_id
+        assert resp.email == "worker@acme.example"
+        assert resp.invite_sent is True
+        assert resp.invite_error is None
+
+        # The branded set-password URL was built from origin + slug + token.
+        send_kwargs = mock_send.await_args.kwargs
+        assert send_kwargs["set_password_url"] == (
+            "https://acme.example/e/acme/accept-invite/raw-token-abc"
+        )
+        assert send_kwargs["org_name"] == "Acme Ltd"
+
+        mock_audit.assert_awaited_once()
+        audit_kwargs = mock_audit.await_args.kwargs
+        assert audit_kwargs["action"] == "staff.portal_access_issued"
+        assert audit_kwargs["entity_id"] == staff_id
+        assert audit_kwargs["after_value"]["invite_sent"] is True
+
+    @pytest.mark.asyncio
+    async def test_issue_email_failure_still_returns_201_user_preserved(self):
+        """All providers failing folds ``invite_sent=False`` + ``invite_error``
+        into the response but the Portal_User is preserved (no rollback, R15.3).
+        """
+        from app.modules.employee_portal.employee_portal_delivery import (
+            EmployeePortalDeliveryResult,
+        )
+        from app.modules.staff.router import issue_portal_access
+
+        org_id = uuid.uuid4()
+        staff_id = uuid.uuid4()
+        user_id = uuid.uuid4()
+        portal_user_id = uuid.uuid4()
+        request = _make_portal_request(org_id, user_id)
+
+        staff_stub = SimpleNamespace(id=staff_id, org_id=org_id, email="w@acme.example")
+        portal_user_stub = SimpleNamespace(id=portal_user_id, email="w@acme.example")
+
+        org_result = MagicMock()
+        org_result.first = MagicMock(return_value=("acme", "Acme Ltd"))
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=org_result)
+
+        with patch(
+            "app.core.modules.ModuleService.is_enabled",
+            new_callable=AsyncMock,
+            return_value=True,
+        ), patch(
+            "app.modules.staff.router.StaffService"
+        ) as mock_service_cls, patch(
+            "app.modules.staff.router.account_service.issue_access",
+            new_callable=AsyncMock,
+            return_value=(portal_user_stub, "raw-token-abc"),
+        ), patch(
+            "app.modules.staff.router.employee_portal_delivery.send_credential_setup_email",
+            new_callable=AsyncMock,
+            return_value=EmployeePortalDeliveryResult(ok=False, error_code="send_failed"),
+        ), patch(
+            "app.modules.staff.router.write_audit_log",
+            new_callable=AsyncMock,
+        ):
+            mock_service = mock_service_cls.return_value
+            mock_service.get_staff = AsyncMock(return_value=staff_stub)
+
+            resp = await issue_portal_access(staff_id=staff_id, request=request, db=db)
+
+        assert resp.portal_user_id == portal_user_id  # user preserved
+        assert resp.invite_sent is False
+        assert resp.invite_error == "send_failed"
+
+    @pytest.mark.asyncio
+    async def test_issue_without_email_returns_422(self):
+        """A staff member with no email is rejected 422 ``email_required``
+        before issuing — no Portal_User is created (R15.6).
+        """
+        from app.modules.staff.router import issue_portal_access
+
+        org_id = uuid.uuid4()
+        staff_id = uuid.uuid4()
+        request = _make_portal_request(org_id, uuid.uuid4())
+        staff_stub = SimpleNamespace(id=staff_id, org_id=org_id, email="   ")
+        db = AsyncMock()
+
+        with patch(
+            "app.core.modules.ModuleService.is_enabled",
+            new_callable=AsyncMock,
+            return_value=True,
+        ), patch(
+            "app.modules.staff.router.StaffService"
+        ) as mock_service_cls, patch(
+            "app.modules.staff.router.account_service.issue_access",
+            new_callable=AsyncMock,
+        ) as mock_issue:
+            mock_service = mock_service_cls.return_value
+            mock_service.get_staff = AsyncMock(return_value=staff_stub)
+
+            with pytest.raises(HTTPException) as excinfo:
+                await issue_portal_access(staff_id=staff_id, request=request, db=db)
+
+        assert excinfo.value.status_code == 422
+        assert excinfo.value.detail["code"] == "email_required"
+        mock_issue.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_issue_duplicate_returns_409(self):
+        """An active Portal_User already holding the email → 409 ``duplicate``."""
+        from app.modules.staff.router import account_service, issue_portal_access
+
+        org_id = uuid.uuid4()
+        staff_id = uuid.uuid4()
+        request = _make_portal_request(org_id, uuid.uuid4())
+        staff_stub = SimpleNamespace(id=staff_id, org_id=org_id, email="dup@acme.example")
+        db = AsyncMock()
+
+        with patch(
+            "app.core.modules.ModuleService.is_enabled",
+            new_callable=AsyncMock,
+            return_value=True,
+        ), patch(
+            "app.modules.staff.router.StaffService"
+        ) as mock_service_cls, patch(
+            "app.modules.staff.router.account_service.issue_access",
+            new_callable=AsyncMock,
+            side_effect=account_service.DuplicatePortalUser("dup"),
+        ):
+            mock_service = mock_service_cls.return_value
+            mock_service.get_staff = AsyncMock(return_value=staff_stub)
+
+            with pytest.raises(HTTPException) as excinfo:
+                await issue_portal_access(staff_id=staff_id, request=request, db=db)
+
+        assert excinfo.value.status_code == 409
+        assert excinfo.value.detail["code"] == "duplicate"
+
+    @pytest.mark.asyncio
+    async def test_issue_unknown_staff_returns_404(self):
+        """A staff record outside the caller's org / missing → 404, no issue."""
+        from app.modules.staff.router import issue_portal_access
+
+        org_id = uuid.uuid4()
+        staff_id = uuid.uuid4()
+        request = _make_portal_request(org_id, uuid.uuid4())
+        db = AsyncMock()
+
+        with patch(
+            "app.core.modules.ModuleService.is_enabled",
+            new_callable=AsyncMock,
+            return_value=True,
+        ), patch(
+            "app.modules.staff.router.StaffService"
+        ) as mock_service_cls, patch(
+            "app.modules.staff.router.account_service.issue_access",
+            new_callable=AsyncMock,
+        ) as mock_issue:
+            mock_service = mock_service_cls.return_value
+            mock_service.get_staff = AsyncMock(return_value=None)
+
+            with pytest.raises(HTTPException) as excinfo:
+                await issue_portal_access(staff_id=staff_id, request=request, db=db)
+
+        assert excinfo.value.status_code == 404
+        mock_issue.assert_not_awaited()
+
+
+class TestRevokePortalAccess:
+    """``DELETE /api/v2/staff/{staff_id}/portal-access`` (task 9.5, R5.10)."""
+
+    @pytest.mark.asyncio
+    async def test_revoke_success_invalidates_sessions_and_audits(self):
+        from app.modules.staff.router import revoke_portal_access
+
+        org_id = uuid.uuid4()
+        staff_id = uuid.uuid4()
+        user_id = uuid.uuid4()
+        request = _make_portal_request(org_id, user_id)
+        staff_stub = SimpleNamespace(id=staff_id, org_id=org_id, email="w@acme.example")
+        db = AsyncMock()
+
+        with patch(
+            "app.core.modules.ModuleService.is_enabled",
+            new_callable=AsyncMock,
+            return_value=True,
+        ), patch(
+            "app.modules.staff.router.StaffService"
+        ) as mock_service_cls, patch(
+            "app.modules.staff.router.account_service.revoke_access",
+            new_callable=AsyncMock,
+            return_value=3,
+        ) as mock_revoke, patch(
+            "app.modules.staff.router.write_audit_log",
+            new_callable=AsyncMock,
+        ) as mock_audit:
+            mock_service = mock_service_cls.return_value
+            mock_service.get_staff = AsyncMock(return_value=staff_stub)
+
+            resp = await revoke_portal_access(staff_id=staff_id, request=request, db=db)
+
+        assert resp.revoked is True
+        assert resp.sessions_invalidated == 3
+        mock_revoke.assert_awaited_once()
+        audit_kwargs = mock_audit.await_args.kwargs
+        assert audit_kwargs["action"] == "staff.portal_access_revoked"
+        assert audit_kwargs["after_value"] == {"sessions_invalidated": 3}
+
+    @pytest.mark.asyncio
+    async def test_revoke_unknown_staff_returns_404(self):
+        from app.modules.staff.router import revoke_portal_access
+
+        org_id = uuid.uuid4()
+        staff_id = uuid.uuid4()
+        request = _make_portal_request(org_id, uuid.uuid4())
+        db = AsyncMock()
+
+        with patch(
+            "app.core.modules.ModuleService.is_enabled",
+            new_callable=AsyncMock,
+            return_value=True,
+        ), patch(
+            "app.modules.staff.router.StaffService"
+        ) as mock_service_cls, patch(
+            "app.modules.staff.router.account_service.revoke_access",
+            new_callable=AsyncMock,
+        ) as mock_revoke:
+            mock_service = mock_service_cls.return_value
+            mock_service.get_staff = AsyncMock(return_value=None)
+
+            with pytest.raises(HTTPException) as excinfo:
+                await revoke_portal_access(staff_id=staff_id, request=request, db=db)
+
+        assert excinfo.value.status_code == 404
+        mock_revoke.assert_not_awaited()
+
+
+class TestDeactivateAutoRevokesPortalAccess:
+    """R5.11 — staff deactivation / termination auto-revokes portal access."""
+
+    @pytest.mark.asyncio
+    async def test_deactivate_calls_revoke_portal_access_for_staff(self):
+        from app.modules.staff.router import deactivate_staff
+
+        org_id = uuid.uuid4()
+        staff_id = uuid.uuid4()
+        user_id = uuid.uuid4()
+        request = _make_request_with_user(org_id, user_id)
+
+        update_result = MagicMock()
+        update_result.fetchall = MagicMock(return_value=[])
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=update_result)
+        staff_stub = SimpleNamespace(id=staff_id, org_id=org_id, is_active=True)
+
+        with patch(
+            "app.core.modules.ModuleService.is_enabled",
+            new_callable=AsyncMock,
+            return_value=True,
+        ), patch(
+            "app.modules.staff.router.StaffService"
+        ) as mock_service_cls, patch(
+            "app.modules.staff.router.onboarding_tokens.revoke_active",
+            new_callable=AsyncMock,
+            return_value=0,
+        ), patch(
+            "app.modules.staff.router.account_service.revoke_portal_access_for_staff",
+            new_callable=AsyncMock,
+            return_value=0,
+        ) as mock_revoke, patch(
+            "app.modules.staff.router.write_audit_log",
+            new_callable=AsyncMock,
+        ):
+            mock_service = mock_service_cls.return_value
+            mock_service.get_staff = AsyncMock(return_value=staff_stub)
+
+            await deactivate_staff(staff_id=staff_id, request=request, db=db)
+
+        # Portal access auto-revoked in the same transaction as the flag flip.
+        assert staff_stub.is_active is False
+        mock_revoke.assert_awaited_once()
+        revoke_args = mock_revoke.await_args
+        assert revoke_args.args[1] == org_id
+        assert revoke_args.args[2] == staff_id

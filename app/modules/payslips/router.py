@@ -103,6 +103,7 @@ from app.modules.payslips.schemas import (
     TerminationRequest,
 )
 from app.modules.staff.models import StaffMember
+from app.modules.timesheets.pay_cycles import PayCycle
 
 logger = logging.getLogger(__name__)
 
@@ -362,6 +363,11 @@ async def _serialise_payslip_detail(
 
     base = PayslipResponse.model_validate(payslip).model_dump()
     base["pay_period"] = period_resp.model_dump() if period_resp else None
+    # Resolve the staff name (service-joined field, not a payslips column).
+    from app.modules.staff.models import StaffMember
+
+    staff = await db.get(StaffMember, payslip.staff_id)
+    base["staff_name"] = getattr(staff, "name", None) if staff else None
     # Populate the inherited subtotals from the already-loaded deduction
     # lines (no extra query) so detail stays consistent with the list.
     detail_subtotals: dict[str, Decimal] = {}
@@ -399,7 +405,9 @@ async def list_pay_periods(
     db: AsyncSession = Depends(get_db_session),
 ) -> PayPeriodListResponse:
     org_id = _get_org_id(request)
-    base = select(PayPeriod).where(PayPeriod.org_id == org_id)
+    base = select(PayPeriod, PayCycle.name).outerjoin(
+        PayCycle, PayCycle.id == PayPeriod.pay_cycle_id
+    ).where(PayPeriod.org_id == org_id)
     if status:
         base = base.where(PayPeriod.status == status)
     total = (
@@ -413,9 +421,14 @@ async def list_pay_periods(
         await db.execute(
             base.order_by(PayPeriod.start_date.desc()).offset(offset).limit(limit)
         )
-    ).scalars().all()
+    ).all()
     return PayPeriodListResponse(
-        items=[PayPeriodResponse.model_validate(r) for r in rows],
+        items=[
+            PayPeriodResponse.model_validate(period).model_copy(
+                update={"pay_cycle_name": cycle_name},
+            )
+            for period, cycle_name in rows
+        ],
         total=int(total),
     )
 
@@ -603,10 +616,24 @@ async def list_period_payslips(
     subtotals = await payslips_service.deduction_subtotals_for(
         db, [r.id for r in rows],
     )
+    # Resolve staff names in one batch (staff_name is a service-joined field
+    # that is NOT a column on the payslips table).
+    from app.modules.staff.models import StaffMember
+
+    staff_ids = {r.staff_id for r in rows}
+    staff_names: dict = {}
+    if staff_ids:
+        name_rows = await db.execute(
+            select(StaffMember.id, StaffMember.name).where(
+                StaffMember.id.in_(staff_ids)
+            )
+        )
+        staff_names = {sid: name for sid, name in name_rows.all()}
     return PayslipListResponse(
         items=[
             PayslipResponse.model_validate(r).model_copy(
                 update={
+                    "staff_name": staff_names.get(r.staff_id),
                     "deduction_subtotals": PayslipDeductionSubtotals(
                         **subtotals.get(r.id, {})
                     ),
@@ -648,10 +675,22 @@ async def generate_period_payslips(
     subtotals = await payslips_service.deduction_subtotals_for(
         db, [p.id for p in created],
     )
+    from app.modules.staff.models import StaffMember
+
+    gen_staff_ids = {p.staff_id for p in created}
+    gen_staff_names: dict = {}
+    if gen_staff_ids:
+        gname_rows = await db.execute(
+            select(StaffMember.id, StaffMember.name).where(
+                StaffMember.id.in_(gen_staff_ids)
+            )
+        )
+        gen_staff_names = {sid: name for sid, name in gname_rows.all()}
     return PayslipListResponse(
         items=[
             PayslipResponse.model_validate(p).model_copy(
                 update={
+                    "staff_name": gen_staff_names.get(p.staff_id),
                     "deduction_subtotals": PayslipDeductionSubtotals(
                         **subtotals.get(p.id, {})
                     ),

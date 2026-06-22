@@ -158,35 +158,64 @@ export default function VehicleList() {
 
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined)
   const bulkRefreshAbortRef = useRef<AbortController | null>(null)
+  // Tracks the search value the list was last fetched with. The debounced
+  // search effect only fetches when the value actually CHANGES — this is
+  // StrictMode-safe (a ref-based "didMount" flag is defeated by StrictMode's
+  // double-invoke of effects, which is what caused the data → spinner → data
+  // flash on every visit).
+  const lastSearchRef = useRef(search)
 
   /* --- Fetch vehicle list --- */
-  const fetchVehicles = useCallback(async (p: number, q: string) => {
-    setLoading(true)
-    try {
-      const params: Record<string, string | number> = { page: p, page_size: pageSize }
-      if (q.trim()) params.search = q.trim()
-      const res = await apiClient.get<VehicleListResponse>('/vehicles', { params })
-      setVehicles(res.data?.items ?? [])
-      setTotal(res.data?.total ?? 0)
-    } catch {
-      setVehicles([])
-      setTotal(0)
-    } finally {
-      setLoading(false)
-    }
-  }, [pageSize])
+  const fetchVehicles = useCallback(
+    async (p: number, q: string, signal?: AbortSignal) => {
+      setLoading(true)
+      try {
+        const params: Record<string, string | number> = { page: p, page_size: pageSize }
+        if (q.trim()) params.search = q.trim()
+        const res = await apiClient.get<VehicleListResponse>('/vehicles', { params, signal })
+        if (signal?.aborted) return
+        setVehicles(res.data?.items ?? [])
+        setTotal(res.data?.total ?? 0)
+      } catch (err) {
+        // A cancelled request (StrictMode re-invoke / fast navigation) must not
+        // wipe the list or toggle loading — the surviving fetch owns the state.
+        const code = (err as { code?: string; name?: string })?.code
+        const name = (err as { code?: string; name?: string })?.name
+        if (signal?.aborted || code === 'ERR_CANCELED' || name === 'CanceledError') return
+        setVehicles([])
+        setTotal(0)
+      } finally {
+        if (!signal?.aborted) setLoading(false)
+      }
+    },
+    [pageSize],
+  )
 
-  useEffect(() => { fetchVehicles(page, search) }, [page, pageSize, fetchVehicles]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  /* Debounced search */
+  /* Initial load + page / page-size changes. Aborts the in-flight request on
+     cleanup so StrictMode's double-mount doesn't run two visible fetches. */
   useEffect(() => {
+    const controller = new AbortController()
+    fetchVehicles(page, search, controller.signal)
+    return () => controller.abort()
+  }, [page, pageSize, fetchVehicles]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* Debounced search — fires ONLY when the search text actually changes
+     (skips the initial mount and StrictMode re-invokes), so the list is never
+     fetched a second time just from visiting the page. */
+  useEffect(() => {
+    if (search === lastSearchRef.current) return
     if (debounceRef.current) clearTimeout(debounceRef.current)
+    const controller = new AbortController()
     debounceRef.current = setTimeout(() => {
+      lastSearchRef.current = search
       setPage(1)
-      fetchVehicles(1, search)
+      fetchVehicles(1, search, controller.signal)
     }, 400)
-    return () => { if (debounceRef.current) clearTimeout(debounceRef.current) }
-  }, [search, fetchVehicles])
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current)
+      controller.abort()
+    }
+  }, [search, fetchVehicles]) // eslint-disable-line react-hooks/exhaustive-deps
 
   /* --- Manual entry --- */
   const openManualEntry = () => {

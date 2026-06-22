@@ -32,6 +32,9 @@ import type {
 } from '@/types/schedule'
 import RosterGrid from './components/RosterGrid'
 import TemplatePalette from './components/TemplatePalette'
+import LeaveTypePalette, { leaveSwatch } from './components/LeaveTypePalette'
+import { Modal } from '@/components/ui/Modal'
+import { markDayLeave, type LeaveType } from '@/api/leave'
 import CopyWeekConfirmModal from './components/CopyWeekConfirmModal'
 import ConflictBanner, {
   type ConflictBannerEntry,
@@ -63,6 +66,8 @@ import {
 } from './utils/clipboard'
 import { generateRosterGridCSV, downloadRosterGridCSV } from './utils/csv'
 import { genId } from './utils/genId'
+import { isFixedArrangement, fixedHoursEditMessage } from './utils/fixedHours'
+import type { StaffMember as RosterStaffMember } from './hooks/useRosterGridData'
 
 /* ------------------------------------------------------------------ */
 /*  Date helpers                                                       */
@@ -187,6 +192,7 @@ export default function RosterGridPage() {
     leaveByStaffDate,
     isLoading,
     error,
+    refetch,
     setEntries,
   } = useRosterGridData(visibleWindow)
 
@@ -215,6 +221,19 @@ export default function RosterGridPage() {
     [staff, branchFilter, positionFilter],
   )
 
+  /**
+   * IDs of staff whose hours are fixed (read-only on the grid). Used to
+   * exclude them from paint / apply-template bulk operations so a fixed
+   * staff member's roster is never mutated from here.
+   */
+  const fixedStaffIds = useMemo(() => {
+    const set = new Set<string>()
+    for (const s of filteredStaff) {
+      if (isFixedArrangement(s)) set.add(s.id)
+    }
+    return set
+  }, [filteredStaff])
+
   /* ------------------------------------------------------------ */
   /*  Template palette + paint mode (B8, B9)                       */
   /* ------------------------------------------------------------ */
@@ -222,6 +241,44 @@ export default function RosterGridPage() {
   const [selectedTemplate, setSelectedTemplate] =
     useState<ShiftTemplateResponse | null>(null)
   const paintMode = !!selectedTemplate
+
+  /* ------------------------------------------------------------ */
+  /*  Leave paint mode (mark leave by clicking a day)              */
+  /* ------------------------------------------------------------ */
+
+  const [selectedLeaveType, setSelectedLeaveType] = useState<LeaveType | null>(
+    null,
+  )
+  const leaveMode = !!selectedLeaveType
+  const [cursorPos, setCursorPos] = useState<{ x: number; y: number } | null>(
+    null,
+  )
+  const [leaveConfirm, setLeaveConfirm] = useState<{
+    staffId: string
+    date: Date
+  } | null>(null)
+  const [leaveSubmitting, setLeaveSubmitting] = useState(false)
+
+  // Leave paint and template paint are mutually exclusive.
+  const handleSelectLeaveType = useCallback((lt: LeaveType | null) => {
+    setSelectedLeaveType(lt)
+    if (lt) setSelectedTemplate(null)
+  }, [])
+  const handleSelectTemplate = useCallback((t: ShiftTemplateResponse | null) => {
+    setSelectedTemplate(t)
+    if (t) setSelectedLeaveType(null)
+  }, [])
+
+  // While in leave mode, keep the selected leave type "stuck" to the cursor.
+  useEffect(() => {
+    if (!leaveMode) {
+      setCursorPos(null)
+      return
+    }
+    const onMove = (e: MouseEvent) => setCursorPos({ x: e.clientX, y: e.clientY })
+    window.addEventListener('mousemove', onMove)
+    return () => window.removeEventListener('mousemove', onMove)
+  }, [leaveMode])
 
   /* ------------------------------------------------------------ */
   /*  Multi-select rows + columns (B10)                            */
@@ -366,6 +423,19 @@ export default function RosterGridPage() {
     setModalOpen(true)
   }, [])
 
+  /**
+   * Fixed-hours staff are read-only on the grid. When the admin tries to
+   * interact with such a row (click, keyboard create/delete, paint, apply),
+   * surface a clear message directing them to change the working arrangement
+   * under Staff — that's the only place fixed hours can be changed.
+   */
+  const notifyFixedLocked = useCallback(
+    (staffMember: RosterStaffMember) => {
+      addToast('info', fixedHoursEditMessage(staffMember), 7000)
+    },
+    [addToast],
+  )
+
   /* B6 — single-cell click router. */
   const handleCellClick = useCallback(
     (
@@ -377,6 +447,12 @@ export default function RosterGridPage() {
       // In paint mode, clicks are part of paint capture — the grid
       // suppresses onClick already; this is a defensive guard.
       if (paintMode) return
+      // In leave-paint mode, a click on any cell opens the mark-leave
+      // confirmation for that staff member + day.
+      if (leaveMode && selectedLeaveType) {
+        setLeaveConfirm({ staffId, date })
+        return
+      }
       if (cellEntries.length === 0) {
         openCreateModal(staffId, date)
       } else if (cellEntries.length === 1) {
@@ -385,23 +461,74 @@ export default function RosterGridPage() {
         setPopover({ entries: cellEntries, anchor, staffId, date })
       }
     },
-    [openCreateModal, openEditModal, paintMode],
+    [openCreateModal, openEditModal, paintMode, leaveMode, selectedLeaveType],
   )
+
+  /* Leave confirmation → mark-day-leave API call. */
+  const handleConfirmLeave = useCallback(async () => {
+    if (!leaveConfirm || !selectedLeaveType) return
+    setLeaveSubmitting(true)
+    try {
+      const res = await markDayLeave({
+        staff_id: leaveConfirm.staffId,
+        leave_type_id: selectedLeaveType.id,
+        date: toIsoDate(leaveConfirm.date),
+        publish_to_open_shifts: true,
+      })
+      const sm = filteredStaff.find((s) => s.id === leaveConfirm.staffId)
+      const name =
+        sm?.name ??
+        `${sm?.first_name ?? ''} ${sm?.last_name ?? ''}`.trim() ??
+        'Staff'
+      addToast(
+        'success',
+        res.displaced_shift_count > 0
+          ? `${name} marked ${selectedLeaveType.name} — ${res.displaced_shift_count} shift(s) sent to Open Shifts.`
+          : `${name} marked ${selectedLeaveType.name}.`,
+      )
+      // Optimistic: drop the displaced shift(s) from that staff member's
+      // day so the cell updates instantly, then refetch to pull in the
+      // approved-leave overlay (server-derived).
+      const dayKey = toIsoDate(leaveConfirm.date)
+      setEntries((prev) =>
+        prev.filter(
+          (e) =>
+            !(
+              e.staff_id === leaveConfirm.staffId &&
+              toIsoDate(new Date(e.start_time)) === dayKey
+            ),
+        ),
+      )
+      setLeaveConfirm(null)
+      // Re-fetch in place so the leave overlay appears (no page reload).
+      refetch()
+    } catch (err: unknown) {
+      const detail = (
+        err as { response?: { data?: { detail?: unknown } } }
+      )?.response?.data?.detail
+      addToast(
+        'error',
+        typeof detail === 'string'
+          ? detail
+          : 'Failed to mark leave. Please try again.',
+      )
+    } finally {
+      setLeaveSubmitting(false)
+    }
+  }, [leaveConfirm, selectedLeaveType, filteredStaff, addToast, refetch, setEntries])
 
   /* B6 — modal save / delete callbacks mutate the cache. */
   const handleModalSave = useCallback(() => {
     setModalOpen(false)
     setEditingEntry(null)
     setModalDefaults(null)
-    // Modal does its own POST/PUT — we refetch via mutating the cache
-    // by re-issuing a list call. Easiest path: trigger a window
-    // bump. We do NOT refetch the whole window because the modal
-    // returns the saved id; here we keep things simple and rely on
-    // the modal's existing onSave→fetchEntries upstream (calendar).
-    // For the grid, we just bump the visibleWindow which retriggers
-    // useRosterGridData.
-    setWindowStart((d) => new Date(d))
-  }, [])
+    // Re-fetch the window's data in place (create / edit / delete from the
+    // modal). This updates the grid cells reactively without a full page
+    // reload. NOTE: do NOT "bump" windowStart with a same-instant Date — the
+    // data hook keys its effect on the ISO strings, so an identical value
+    // would be a no-op and nothing would refresh.
+    refetch()
+  }, [refetch])
 
   /* ------------------------------------------------------------ */
   /*  Bulk create wrapper (B9, B10, B11, B12, B20)                 */
@@ -553,11 +680,22 @@ export default function RosterGridPage() {
       altKey: boolean
     }) => {
       if (!selectedTemplate || bulkInFlight) return
+      // Exclude fixed-hours staff — their roster is read-only here (they
+      // can only be changed via the staff working-arrangement edit).
+      const hadFixed = cells.some((c) => fixedStaffIds.has(c.staffId))
+      const editable = cells.filter((c) => !fixedStaffIds.has(c.staffId))
+      if (hadFixed) {
+        addToast(
+          'info',
+          "Fixed-hours staff were skipped — change their working arrangement under Staff to roster them here.",
+        )
+      }
+      if (editable.length === 0) return
       // Filter out leave-shaded cells (R3.6, R6.8). Alt → confirmation.
-      const leaveCount = cells.filter((c) =>
+      const leaveCount = editable.filter((c) =>
         leaveByStaffDate.get(c.staffId)?.has(toIsoDate(c.date)),
       ).length
-      const nonLeave = cells.filter(
+      const nonLeave = editable.filter(
         (c) => !leaveByStaffDate.get(c.staffId)?.has(toIsoDate(c.date)),
       )
       const resolvedNonLeave: ResolvedCell[] = nonLeave.map((c) => ({
@@ -565,7 +703,7 @@ export default function RosterGridPage() {
         date: c.date,
       }))
       if (altKey && leaveCount > 0) {
-        const allResolved: ResolvedCell[] = cells.map((c) => ({
+        const allResolved: ResolvedCell[] = editable.map((c) => ({
           staff_id: c.staffId,
           date: c.date,
         }))
@@ -574,7 +712,7 @@ export default function RosterGridPage() {
       }
       finalisePaint(resolvedNonLeave)
     },
-    [bulkInFlight, finalisePaint, leaveByStaffDate, selectedTemplate],
+    [addToast, bulkInFlight, fixedStaffIds, finalisePaint, leaveByStaffDate, selectedTemplate],
   )
 
   const handleLeaveOverlapConfirm = useCallback(() => {
@@ -595,8 +733,23 @@ export default function RosterGridPage() {
       const [y, m, d] = dateKey.split('-').map((p) => parseInt(p, 10))
       days.push(new Date(y, (m ?? 1) - 1, d ?? 1))
     }
+    // Exclude fixed-hours staff from the multi-select apply — read-only here.
+    const selectableStaff = [...selectedStaff].filter(
+      (id) => !fixedStaffIds.has(id),
+    )
+    if (selectableStaff.length < selectedStaff.size) {
+      addToast(
+        'info',
+        "Fixed-hours staff were skipped — change their working arrangement under Staff to roster them here.",
+      )
+    }
+    if (selectableStaff.length === 0) {
+      setSelectedStaff(new Set())
+      setSelectedDays(new Set())
+      return
+    }
     const matrix = computeApplyMatrix(
-      [...selectedStaff],
+      selectableStaff,
       days,
       selectedTemplate,
       entries,
@@ -615,6 +768,7 @@ export default function RosterGridPage() {
     addToast,
     bulkInFlight,
     entries,
+    fixedStaffIds,
     finalisePaint,
     selectedDays,
     selectedStaff,
@@ -788,12 +942,16 @@ export default function RosterGridPage() {
       if (e.key === 'Enter' && focusedCell) {
         e.preventDefault()
         const s = filteredStaff[focusedCell.row]
+        if (!s) return
+        if (isFixedArrangement(s)) {
+          notifyFixedLocked(s)
+          return
+        }
         const d = (() => {
           const out = new Date(visibleWindow.start)
           out.setDate(out.getDate() + focusedCell.col)
           return out
         })()
-        if (!s) return
         const dateKey = toIsoDate(d)
         const cellEntries = entries.filter((entry) => {
           if (entry.staff_id !== s.id) return false
@@ -806,12 +964,17 @@ export default function RosterGridPage() {
 
       if ((e.key === 'Delete' || e.key === 'Backspace') && focusedCell) {
         const s = filteredStaff[focusedCell.row]
+        if (!s) return
+        if (isFixedArrangement(s)) {
+          e.preventDefault()
+          notifyFixedLocked(s)
+          return
+        }
         const d = (() => {
           const out = new Date(visibleWindow.start)
           out.setDate(out.getDate() + focusedCell.col)
           return out
         })()
-        if (!s) return
         const dateKey = toIsoDate(d)
         const cellEntries = entries.filter((entry) => {
           if (entry.staff_id !== s.id) return false
@@ -871,12 +1034,16 @@ export default function RosterGridPage() {
       }
       if (isPaste && focusedCell && !bulkInFlight) {
         const s = filteredStaff[focusedCell.row]
+        if (!s) return
+        if (isFixedArrangement(s)) {
+          notifyFixedLocked(s)
+          return
+        }
         const d = (() => {
           const out = new Date(visibleWindow.start)
           out.setDate(out.getDate() + focusedCell.col)
           return out
         })()
-        if (!s) return
         const items = clipboardRef.current
         if (items.length === 0) return
         const payload = shiftClipboardToFocusCell(
@@ -913,6 +1080,7 @@ export default function RosterGridPage() {
       filteredStaff,
       focusedCell,
       handleCellClick,
+      notifyFixedLocked,
       rowsCount,
       selectionAnchor,
       setEntries,
@@ -933,10 +1101,11 @@ export default function RosterGridPage() {
       setSelectedStaff(new Set())
       setSelectedDays(new Set())
       if (selectedTemplate) setSelectedTemplate(null)
+      if (selectedLeaveType) setSelectedLeaveType(null)
     }
     document.addEventListener('keydown', onEsc)
     return () => document.removeEventListener('keydown', onEsc)
-  }, [selectedTemplate])
+  }, [selectedTemplate, selectedLeaveType])
 
   /* When focused cell becomes out of bounds (e.g. filter shrank
    * the staff list), clamp it to a safe coord. */
@@ -1174,11 +1343,21 @@ export default function RosterGridPage() {
 
         {/* Body: palette + grid */}
         <div className="flex flex-1 overflow-hidden">
-          <TemplatePalette
-            selectedTemplate={selectedTemplate}
-            onSelect={setSelectedTemplate}
-            disabled={bulkInFlight}
-          />
+          <div
+            className="flex w-60 shrink-0 flex-col gap-3 overflow-auto p-2"
+            data-no-print
+          >
+            <TemplatePalette
+              selectedTemplate={selectedTemplate}
+              onSelect={handleSelectTemplate}
+              disabled={bulkInFlight || leaveSubmitting}
+            />
+            <LeaveTypePalette
+              selectedLeaveType={selectedLeaveType}
+              onSelect={handleSelectLeaveType}
+              disabled={bulkInFlight || leaveSubmitting}
+            />
+          </div>
           <div className="flex-1 overflow-auto bg-canvas p-2">
             <RosterGrid
               staff={filteredStaff}
@@ -1187,7 +1366,9 @@ export default function RosterGridPage() {
               visibleWindow={visibleWindow}
               isLoading={isLoading}
               onCellClick={handleCellClick}
+              onLockedInteraction={notifyFixedLocked}
               paintMode={paintMode}
+              leaveMode={leaveMode}
               selectedTemplate={selectedTemplate}
               onPaintCommit={handlePaintCommit}
               onPaintCancel={() => setSelectedTemplate(null)}
@@ -1209,6 +1390,81 @@ export default function RosterGridPage() {
           </div>
         </div>
       </div>
+
+      {/* Leave type "stuck to cursor" indicator (leave paint mode) */}
+      {leaveMode && selectedLeaveType && cursorPos && !leaveConfirm && (
+        <div
+          className="pointer-events-none fixed z-[60]"
+          style={{ left: cursorPos.x + 14, top: cursorPos.y + 14 }}
+        >
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-accent bg-card px-2 py-1 text-[11px] font-medium text-text shadow-pop">
+            <span
+              className={`h-2.5 w-2.5 rounded-full ${leaveSwatch(
+                selectedLeaveType.code || selectedLeaveType.id,
+              )}`}
+            />
+            {selectedLeaveType.name}
+          </span>
+        </div>
+      )}
+
+      {/* Mark-leave confirmation */}
+      <Modal
+        open={!!leaveConfirm}
+        onClose={() => {
+          if (!leaveSubmitting) setLeaveConfirm(null)
+        }}
+        title="Mark leave"
+        className="max-w-md"
+      >
+        {leaveConfirm && selectedLeaveType && (
+          <div className="space-y-4">
+            <p className="text-sm text-text">
+              Mark{' '}
+              <span className="font-semibold">
+                {(() => {
+                  const sm = filteredStaff.find(
+                    (s) => s.id === leaveConfirm.staffId,
+                  )
+                  return (
+                    sm?.name ??
+                    `${sm?.first_name ?? ''} ${sm?.last_name ?? ''}`.trim() ??
+                    'this staff member'
+                  )
+                })()}
+              </span>{' '}
+              as{' '}
+              <span className="font-semibold">{selectedLeaveType.name}</span> on{' '}
+              <span className="font-semibold">
+                {formatShort(leaveConfirm.date)}
+              </span>
+              ?
+            </p>
+            <p className="text-xs text-muted">
+              Their shift that day will be published to Open Shifts so it can be
+              covered.
+            </p>
+            <div className="flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setLeaveConfirm(null)}
+                disabled={leaveSubmitting}
+                className="rounded-ctl border border-border bg-card px-4 py-2 text-sm font-medium text-text hover:bg-canvas disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmLeave}
+                disabled={leaveSubmitting}
+                className="rounded-ctl bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-press disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              >
+                {leaveSubmitting ? 'Marking…' : 'Confirm'}
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
 
       {popover && (
         <CellDisambiguationPopover

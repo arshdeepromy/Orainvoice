@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -28,6 +29,52 @@ from app.modules.staff.schemas import StaffMemberCreate, StaffMemberUpdate
 from app.modules.staff.security import is_masked_bank, is_masked_ird
 from app.modules.time_clock.models import TimeClockEntry
 from app.modules.time_tracking_v2.models import TimeEntry
+from app.modules.timesheets.pay_cycles import (
+    PayCycleValidationError,  # noqa: F401  (re-exported for callers/tests)
+    set_staff_pay_cycle,
+)
+
+logger = logging.getLogger(__name__)
+
+
+def _resolve_holiday_pay_method(
+    employment_type: str | None,
+    start: date | None,
+    end: date | None,
+) -> str:
+    """Resolve the annual-holiday pay method (R11.1/R11.4/R11.5).
+
+    Casual → ``casual_payg`` (R11.1). Fixed-term with an agreed term of 3 months
+    or less → ``casual_payg`` automatically (R11.5). Fixed-term >3 & <12 months
+    requires explicit agreement (R11.4) — no agreement field exists yet, so it
+    stays ``accrued``. Everything else accrues.
+    """
+    et = (employment_type or "").lower()
+    if et == "casual":
+        return "casual_payg"
+    if et == "fixed_term" and start is not None and end is not None:
+        term_months = (end.year - start.year) * 12 + (end.month - start.month)
+        if term_months <= 3:
+            return "casual_payg"
+    return "accrued"
+
+
+async def _vest_on_demand(db: AsyncSession, staff_id: uuid.UUID) -> None:
+    """Best-effort on-demand eligibility vesting (R7.4, R10.1, R10.4, R12.1).
+
+    Vests day-one entitlements and any already-passed milestones immediately so
+    the staff member doesn't wait for the nightly sweep. Never raises — a leave
+    engine failure must not break staff create/update.
+    """
+    try:
+        from app.modules.leave.rules.sweep import evaluate_one_staff
+
+        await evaluate_one_staff(db, staff_id, date.today())
+    except Exception:  # pragma: no cover - defensive, best-effort
+        logger.warning(
+            "on-demand leave vesting failed for staff=%s", staff_id, exc_info=True
+        )
+
 
 # ---------------------------------------------------------------------------
 # Service-layer exceptions (Phase 1 task B4)
@@ -50,6 +97,29 @@ class MinimumWageBelowThresholdError(Exception):
             f"hourly_rate is below the NZ minimum wage threshold of "
             f"NZD {threshold}",
         )
+
+
+class DuplicateStaffError(ValueError):
+    """Raised by ``StaffService._check_duplicates`` when a create/update would
+    collide with an existing **active** staff member in the same organisation
+    on a uniqueness-scoped field (email, phone, or employee_id).
+
+    Subclasses :class:`ValueError` so existing ``except ValueError`` handlers
+    keep working unchanged, while additionally exposing a machine-readable
+    ``code`` and a human-readable ``message`` for the ``{message, code}``
+    error contract the staff routers surface (R1.5).
+
+    ``code`` is derived from the first conflicting field, e.g.
+    ``duplicate_email`` / ``duplicate_phone`` / ``duplicate_employee_id``.
+
+    Validates: Requirements 1.5, 1.9.
+    """
+
+    def __init__(self, conflicts: list[str], *, code: str = "duplicate_staff") -> None:
+        self.conflicts = conflicts
+        self.code = code
+        self.message = "; ".join(conflicts)
+        super().__init__(self.message)
 
 
 # Default threshold applied when the org has not customised it via the
@@ -317,8 +387,19 @@ class StaffService:
             weekly_roster_email_enabled=payload.weekly_roster_email_enabled,
             weekly_roster_sms_enabled=payload.weekly_roster_sms_enabled,
         )
+        # Leave Balances & Eligibility: resolve casual/fixed-term annual-holiday
+        # pay method (R11.1/R11.5) before the first flush.
+        staff.holiday_pay_method = _resolve_holiday_pay_method(
+            payload.employment_type,
+            payload.employment_start_date,
+            payload.employment_end_date,
+        )
+
         self.db.add(staff)
         await self.db.flush()
+
+        # On-demand eligibility vest (day-one + already-passed milestones).
+        await _vest_on_demand(self.db, staff.id)
 
         # ------------------------------------------------------------------
         # Insert initial pay-rate row when a rate is supplied (R3.3).
@@ -337,6 +418,24 @@ class StaffService:
             )
             await self.db.flush()
 
+        # ------------------------------------------------------------------
+        # Per-staff pay-cycle selection (per-staff-pay-cycle feature, REQ
+        # 2.1, 2.4, 2.5). When a cycle was chosen, persist a staff-level
+        # ``pay_cycle_assignments`` row in the SAME transaction. A raised
+        # ``PayCycleValidationError`` (wrong-org or inactive cycle)
+        # propagates out of create_staff and aborts the whole create —
+        # ``get_db_session`` commits only on a clean return, so the staff
+        # insert above is rolled back too (REQ 2.4, 2.5: "reject the entire
+        # operation … SHALL NOT create the staff member").
+        # ------------------------------------------------------------------
+        if payload.pay_cycle_id is not None:
+            await set_staff_pay_cycle(
+                self.db,
+                org_id=org_id,
+                staff_id=staff.id,
+                pay_cycle_id=payload.pay_cycle_id,
+            )
+
         # P1-N15: refresh so lazily-loaded relationships
         # (``location_assignments``) are available when the router
         # serialises the response via ``StaffMemberResponse.from_attributes``.
@@ -351,25 +450,65 @@ class StaffService:
         employee_id: str | None,
         exclude_id: uuid.UUID | None = None,
     ) -> None:
-        """Raise ValueError if email, phone, or employee_id already exists for another active staff member."""
+        """Raise :class:`DuplicateStaffError` if email, phone, or employee_id
+        already exists for another **active** staff member in the same org.
+
+        The email and employee_id comparisons are deliberately identical to the
+        database partial unique indexes created by migration 0224
+        (``uq_staff_active_email_per_org`` and
+        ``uq_staff_active_employee_id_per_org``) so this application-level
+        pre-check and the DB constraint reach the *same* duplicate
+        determination (R1.9):
+
+        - **email** — normalised, case-insensitive, active-scoped:
+          ``func.lower(func.btrim(StaffMember.email)) == value.strip().lower()``
+          AND ``is_active``, matching the index key
+          ``(org_id, lower(btrim(email))) WHERE is_active AND email IS NOT NULL
+          AND btrim(email) <> ''``.
+        - **employee_id** — active-scoped exact match, matching the index key
+          ``(org_id, employee_id) WHERE is_active AND employee_id IS NOT NULL
+          AND btrim(employee_id) <> ''``.
+
+        ``phone`` has no database uniqueness constraint, so it keeps the
+        active-scoped trimmed-exact comparison purely as a friendly pre-check.
+
+        A duplicate create/update is rejected with a human-readable
+        ``{message, code}`` error (e.g. a "duplicate email") and the existing
+        staff member is left unchanged (R1.5).
+
+        Validates: Requirements 1.1, 1.5, 1.9.
+        """
         conflicts: list[str] = []
+        first_field: str | None = None
         for field_name, value in [("email", email), ("phone", phone), ("employee_id", employee_id)]:
             if not value or not value.strip():
                 continue
-            col = getattr(StaffMember, field_name)
+            normalised = value.strip()
+            if field_name == "email":
+                # Identical to uq_staff_active_email_per_org: trim + lowercase,
+                # case-insensitive, active-scoped.
+                match_expr = func.lower(func.btrim(StaffMember.email)) == normalised.lower()
+            else:
+                # phone (no DB constraint) and employee_id
+                # (uq_staff_active_employee_id_per_org keys on the raw value):
+                # active-scoped trimmed-exact comparison.
+                col = getattr(StaffMember, field_name)
+                match_expr = col == normalised
             stmt = select(StaffMember.id).where(
                 StaffMember.org_id == org_id,
-                col == value.strip(),
+                match_expr,
                 StaffMember.is_active.is_(True),
             )
             if exclude_id:
                 stmt = stmt.where(StaffMember.id != exclude_id)
             result = await self.db.execute(stmt.limit(1))
             if result.scalar_one_or_none() is not None:
+                if first_field is None:
+                    first_field = field_name
                 label = field_name.replace("_", " ").title()
-                conflicts.append(f"{label} '{value.strip()}' is already in use by another staff member")
+                conflicts.append(f"{label} '{normalised}' is already in use by another staff member")
         if conflicts:
-            raise ValueError("; ".join(conflicts))
+            raise DuplicateStaffError(conflicts, code=f"duplicate_{first_field}")
 
 
 
@@ -382,6 +521,57 @@ class StaffService:
         )
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
+
+    # ------------------------------------------------------------------
+    # Deletion preflight — which records block a PERMANENT delete?
+    # ------------------------------------------------------------------
+
+    # Tables whose FK to staff_members is ON DELETE NO ACTION/RESTRICT, i.e.
+    # they block a permanent (hard) delete while any row references the staff
+    # member. Each entry: (human label, SQL count expression). Kept in sync with
+    # the DB constraints (see pg_constraint confdeltype='a' on staff_members).
+    _DELETE_BLOCKERS: tuple[tuple[str, str], ...] = (
+        ("Payslips", "SELECT count(*) FROM payslips WHERE staff_id = :sid"),
+        ("Timesheets", "SELECT count(*) FROM timesheets WHERE staff_id = :sid"),
+        ("Timesheet approvals", "SELECT count(*) FROM timesheet_approvals WHERE staff_id = :sid"),
+        ("Clock entries", "SELECT count(*) FROM time_clock_entries WHERE staff_id = :sid"),
+        ("Leave requests", "SELECT count(*) FROM leave_requests WHERE staff_id = :sid"),
+        ("Overtime requests", "SELECT count(*) FROM overtime_requests WHERE staff_id = :sid"),
+        ("Schedule entries", "SELECT count(*) FROM schedule_entries WHERE staff_id = :sid"),
+        ("Bookings", "SELECT count(*) FROM bookings WHERE staff_id = :sid"),
+        (
+            "Shift swap requests",
+            "SELECT count(*) FROM shift_swap_requests "
+            "WHERE requester_staff_id = :sid OR target_staff_id = :sid",
+        ),
+        (
+            "Shift cover requests",
+            "SELECT count(*) FROM shift_cover_requests "
+            "WHERE requester_staff_id = :sid OR accepted_by = :sid",
+        ),
+    )
+
+    async def deletion_blockers(
+        self, staff_id: uuid.UUID,
+    ) -> list[dict[str, object]]:
+        """Return the dependent record groups that block a permanent delete.
+
+        Each item is ``{"label": str, "count": int}`` for a referencing table
+        that still has rows for this staff member (count > 0). An empty list
+        means the staff member can be permanently deleted. Such records (payroll,
+        timesheets, leave, etc.) are retained by design — the staff member should
+        be deactivated instead of hard-deleted.
+        """
+        blockers: list[dict[str, object]] = []
+        for label, sql in self._DELETE_BLOCKERS:
+            try:
+                result = await self.db.execute(text(sql), {"sid": str(staff_id)})
+                count = int(result.scalar() or 0)
+            except Exception:  # noqa: BLE001 — a missing table must not break the check
+                count = 0
+            if count > 0:
+                blockers.append({"label": label, "count": count})
+        return blockers
 
     # ------------------------------------------------------------------
     # Staff redesign — "this month" metrics (R11, R12, R9.2)
@@ -701,6 +891,16 @@ class StaffService:
         # column on ``staff_members``.
         update_data.pop("minimum_wage_override", None)
 
+        # ``pay_cycle_id`` is request-only (per-staff-pay-cycle feature) and
+        # NOT a ``staff_members`` column — it persists as a
+        # ``pay_cycle_assignments`` row via ``set_staff_pay_cycle``. Tri-state
+        # (REQ 2.2, 3.1, 3.3): the field's PRESENCE in the exclude_unset dump
+        # distinguishes "omitted" (leave unchanged) from "explicit value"
+        # (set/replace when a uuid, clear when null). Pop it here so the
+        # generic ``setattr`` loop below can't write it to a missing column.
+        pay_cycle_field_present = "pay_cycle_id" in update_data
+        pay_cycle_value = update_data.pop("pay_cycle_id", None)
+
         # ------------------------------------------------------------------
         # Minimum-wage gate (R4 / C10) — apply when the request actually
         # supplies an ``hourly_rate`` (changed or not — same threshold
@@ -745,8 +945,26 @@ class StaffService:
             exclude_id=staff_id,
         )
 
+        # Detect employment changes that affect leave eligibility / pay method.
+        _leave_relevant_change = any(
+            k in update_data
+            for k in ("employment_start_date", "employment_type", "employment_end_date")
+        )
+
         for field, value in update_data.items():
             setattr(staff, field, value)
+
+        # Re-resolve casual/fixed-term annual-holiday pay method when the
+        # employment fields changed (R11.1/R11.5). Only auto-switch INTO
+        # casual_payg or out when employment_type leaves casual — never clobber
+        # an explicit accrued↔casual choice for >3mo fixed-term (R11.4).
+        if _leave_relevant_change:
+            staff.holiday_pay_method = _resolve_holiday_pay_method(
+                staff.employment_type,
+                staff.employment_start_date,
+                staff.employment_end_date,
+            )
+
         # Keep legacy 'name' field in sync
         if "first_name" in update_data or "last_name" in update_data:
             first = staff.first_name or ""
@@ -769,7 +987,30 @@ class StaffService:
             )
             staff.last_pay_review_date = date.today()
 
+        # ------------------------------------------------------------------
+        # Per-staff pay-cycle selection (per-staff-pay-cycle feature, REQ
+        # 2.2, 3.1, 3.3). Only act when the field was present in the inbound
+        # payload (tri-state): a uuid sets/replaces the staff-level
+        # assignment, ``None`` clears it (→ resolves to the org default). A
+        # raised ``PayCycleValidationError`` (wrong-org or inactive cycle)
+        # propagates out and aborts the whole update — nothing is committed
+        # (REQ 2.4, 2.5).
+        # ------------------------------------------------------------------
+        if pay_cycle_field_present:
+            await set_staff_pay_cycle(
+                self.db,
+                org_id=org_id,
+                staff_id=staff.id,
+                pay_cycle_id=pay_cycle_value,
+            )
+
         await self.db.flush()
+
+        # On-demand eligibility vest when employment fields changed (so a newly
+        # set start date vests day-one + passed milestones immediately).
+        if _leave_relevant_change:
+            await _vest_on_demand(self.db, staff.id)
+
         # P1-N15: refresh after the final flush so lazy relationships
         # remain accessible to the Pydantic response serialiser.
         await self.db.refresh(staff)

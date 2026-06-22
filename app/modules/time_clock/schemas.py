@@ -652,3 +652,32 @@ class OvertimePolicyResponse(BaseModel):
     weekly_threshold_minutes: int = 2400
     daily_threshold_minutes: int = 480
     require_pre_approval: bool = False
+
+
+# ===========================================================================
+# Admin assign of an open cover request (Open Shifts page)
+# ===========================================================================
+
+
+class ShiftCoverAssignRequest(BaseModel):
+    """Admin/manager assigns an open cover request to a specific staff member.
+
+    The chosen staff member must be eligible (active, has employee_id or
+    user_id, is not the requester) and must have no conflicting shift in the
+    cover window — re-checked server-side at assign time.
+    """
+
+    staff_id: UUID
+
+
+class EligibleStaffItem(BaseModel):
+    """A staff member who can be assigned an open cover (no time conflict)."""
+
+    id: UUID
+    name: str
+    position: str | None = None
+
+
+class EligibleStaffListResponse(BaseModel):
+    items: list[EligibleStaffItem]
+    total: int

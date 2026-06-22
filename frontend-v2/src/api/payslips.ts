@@ -74,6 +74,14 @@ export interface PayPeriod {
   created_at: string
   finalised_at: string | null
   paid_at: string | null
+  /**
+   * Name of the pay cycle this period belongs to (per-staff-pay-cycle
+   * feature). Populated by `list_pay_periods` via a left-join on `PayCycle`;
+   * null/absent for legacy periods with no `pay_cycle_id`. Lets the period
+   * selector disambiguate periods that share a date range across cycles
+   * (REQ 8.2, 8.3).
+   */
+  pay_cycle_name?: string | null
 }
 
 export interface PayPeriodCreatePayload {

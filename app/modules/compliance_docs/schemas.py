@@ -37,6 +37,7 @@ class ComplianceDocumentResponse(BaseModel):
     expiry_date: date | None = None
     invoice_id: UUID | None = None
     job_id: UUID | None = None
+    staff_id: UUID | None = None
     uploaded_by: UUID | None = None
     created_at: datetime
     status: str = ""  # computed: 'valid', 'expiring_soon', 'expired', 'no_expiry'

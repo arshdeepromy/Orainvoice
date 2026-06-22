@@ -16,22 +16,37 @@ Endpoints:
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings as app_settings
 from app.core.audit import write_audit_log
 from app.core.database import get_db_session
 from app.core.encryption import envelope_decrypt_str
+from app.modules.admin.models import Organisation
+from app.modules.compliance_docs.file_storage import ComplianceFileStorage
+from app.modules.compliance_docs.service import ComplianceService
+from app.modules.employee_portal import employee_portal_delivery
+from app.modules.employee_portal.services import account_service
 from app.modules.organisations.service import get_org_settings
 from app.modules.staff.models import (
     StaffLocationAssignment,
     StaffMember,
+    StaffOnboardingToken,
     StaffRosterViewToken,
+)
+from app.modules.staff import onboarding_tokens
+from app.modules.staff.onboarding_delivery import send_onboarding_email
+from app.modules.staff.onboarding_validation import (
+    compute_completion_percentage,
+    humanize_onboarding_error,
+    onboarding_lifecycle_label,
 )
 from app.modules.staff.roster_delivery import (
     REASON_NO_EMAIL,
@@ -51,6 +66,8 @@ from app.modules.staff.schemas import (
     RosterEmailRequest,
     RosterSendResponse,
     RosterSmsRequest,
+    IssuePortalAccessResponse,
+    RevokePortalAccessResponse,
     StaffListKpisResponse,
     StaffMemberCreate,
     StaffMemberListResponse,
@@ -59,13 +76,20 @@ from app.modules.staff.schemas import (
     StaffMetricValue,
     StaffMonthStatsResponse,
     StaffPayRateListResponse,
+    StaffDocumentItem,
+    StaffDocumentListResponse,
     UtilisationReportResponse,
 )
-from app.modules.staff.security import mask_bank_account, mask_ird
+from app.modules.staff.schemas import OnboardingLinkStatusResponse
 from app.modules.staff.service import (
     _DEFAULT_MINIMUM_WAGE_THRESHOLD,
+    DuplicateStaffError,
     MinimumWageBelowThresholdError,
     StaffService,
+)
+from app.modules.timesheets.pay_cycles import (
+    PayCycleValidationError,
+    resolve_pay_cycles_for_staff_batch,
 )
 
 router = APIRouter()
@@ -122,11 +146,10 @@ async def _enrich_reporting_to(db: AsyncSession, staff: StaffMember) -> dict:
 
     Here we decrypt the ciphertext (best-effort — a missing encryption
     key or corrupt envelope yields ``None`` rather than raising) and
-    inject the plaintext into the response dict. The schema's
-    ``_mask_ird_field`` / ``_mask_bank_field`` ``mode='before'``
-    validators then mask the plaintext on outbound serialisation so
-    callers still receive ``"***1234"`` style display values, never
-    the raw plaintext.
+    inject the plaintext into the response dict. The values are returned
+    in FULL (unmasked): they are operationally required on the staff
+    details page, and this endpoint is restricted to staff-management
+    roles. The values remain envelope-encrypted at rest.
     """
     data = StaffMemberResponse.model_validate(staff).model_dump()
 
@@ -145,13 +168,11 @@ async def _enrich_reporting_to(db: AsyncSession, staff: StaffMember) -> dict:
         except Exception:  # noqa: BLE001 - best-effort PII decryption
             data["bank_account_number"] = None
 
-    # Re-mask through the response schema so the dict carries the
-    # masked display value (e.g. "***123") rather than plaintext, and
-    # to keep the wire shape identical to what callers got before.
-    if data.get("ird_number") is not None:
-        data["ird_number"] = mask_ird(data["ird_number"])
-    if data.get("bank_account_number") is not None:
-        data["bank_account_number"] = mask_bank_account(data["bank_account_number"])
+    # Re-inject the decrypted plaintext so the staff details page shows the
+    # FULL IRD + bank account (operationally required; this endpoint is
+    # RBAC-gated to staff-management roles). The values remain
+    # envelope-encrypted at rest — only this trusted serialisation path
+    # decrypts them.
 
     if staff.reporting_to:
         result = await db.execute(
@@ -161,6 +182,24 @@ async def _enrich_reporting_to(db: AsyncSession, staff: StaffMember) -> dict:
         row = result.first()
         if row:
             data["reporting_to_name"] = f"{row[0] or ''} {row[1] or ''}".strip()
+
+    # Resolved pay cycle (per-staff-pay-cycle feature, REQ 5.1-5.3). A
+    # one-element batch keeps a single resolution path shared with the list
+    # endpoint. All three fields stay None/False when the staff member has no
+    # resolved cycle (no match and no default — REQ 5.3).
+    resolved_map = await resolve_pay_cycles_for_staff_batch(
+        db, org_id=staff.org_id, staff_members=[staff],
+    )
+    resolved = resolved_map.get(staff.id)
+    if resolved is not None:
+        data["pay_cycle_id"] = resolved.cycle.id
+        data["pay_cycle_name"] = resolved.cycle.name
+        data["pay_cycle_is_default"] = resolved.is_default
+    else:
+        data["pay_cycle_id"] = None
+        data["pay_cycle_name"] = None
+        data["pay_cycle_is_default"] = False
+
     return data
 
 
@@ -217,6 +256,51 @@ async def _revoke_active_roster_tokens(
             ip_address=ip_address,
         )
     return revoked_count
+
+
+async def _revoke_active_onboarding_tokens(
+    db: AsyncSession,
+    *,
+    org_id: UUID,
+    staff_id: UUID,
+    user_id: UUID | None,
+    ip_address: str | None = None,
+) -> int:
+    """Revoke any active onboarding tokens for ``staff_id`` (R10.4).
+
+    Delegates to ``onboarding_tokens.revoke_active`` which bulk-sets
+    ``status='revoked'`` and NULLs both draft columns
+    (``draft_data_encrypted`` / ``draft_updated_at``) in the same UPDATE,
+    purging any in-flight draft on auto-revoke (R12.9).
+
+    Designed to run inside the same DB transaction as the staff state
+    change that triggered the revocation (deactivation, or
+    ``employment_end_date`` being set for the first time) so a failure in
+    either step rolls both back. Writes a single ``audit_log`` row with
+    ``action='onboarding.tokens_revoked'`` only when at least one token
+    was actually revoked — staff who never had an onboarding link sent
+    generate no audit noise.
+
+    Returns the number of tokens revoked.
+
+    **Validates: Requirements 10.4, 12.9.**
+    """
+    revoked_count = await onboarding_tokens.revoke_active(
+        db, org_id=org_id, staff_id=staff_id
+    )
+    if revoked_count > 0:
+        await write_audit_log(
+            session=db,
+            org_id=org_id,
+            user_id=user_id,
+            action="onboarding.tokens_revoked",
+            entity_type="staff_member",
+            entity_id=staff_id,
+            after_value={"tokens_revoked_count": revoked_count},
+            ip_address=ip_address,
+        )
+    return revoked_count
+
 
 @router.get("/check-duplicate")
 async def check_staff_duplicate(
@@ -463,26 +547,38 @@ async def list_staff(
             manager_names[row[0]] = f"{row[1] or ''} {row[2] or ''}".strip()
 
     resp_staff = []
+    # Resolve the whole page's pay cycles in one batch (no N+1) — REQ 5.1-5.3.
+    pay_cycle_map = await resolve_pay_cycles_for_staff_batch(
+        db, org_id=org_id, staff_members=staff_list,
+    )
     for s in staff_list:
         data = StaffMemberResponse.model_validate(s).model_dump()
         if s.reporting_to and s.reporting_to in manager_names:
             data["reporting_to_name"] = manager_names[s.reporting_to]
-        # Decrypt + mask PII fields so the masked display value
-        # ("***1234") shows in the list, not blank — same logic as
-        # _enrich_reporting_to. Best-effort: a missing key or corrupt
-        # envelope leaves the field as None.
+        # Resolved pay cycle for this staff member (from the batch above).
+        resolved = pay_cycle_map.get(s.id)
+        if resolved is not None:
+            data["pay_cycle_id"] = resolved.cycle.id
+            data["pay_cycle_name"] = resolved.cycle.name
+            data["pay_cycle_is_default"] = resolved.is_default
+        else:
+            data["pay_cycle_id"] = None
+            data["pay_cycle_name"] = None
+            data["pay_cycle_is_default"] = False
+        # Decrypt PII fields so the FULL IRD + bank account show in the
+        # list (operationally required; same RBAC-gated access as the
+        # details page). Best-effort: a missing key or corrupt envelope
+        # leaves the field as None.
         ird_ct = getattr(s, "ird_number_encrypted", None)
         if ird_ct:
             try:
-                data["ird_number"] = mask_ird(envelope_decrypt_str(ird_ct))
+                data["ird_number"] = envelope_decrypt_str(ird_ct)
             except Exception:  # noqa: BLE001
                 data["ird_number"] = None
         bank_ct = getattr(s, "bank_account_number_encrypted", None)
         if bank_ct:
             try:
-                data["bank_account_number"] = mask_bank_account(
-                    envelope_decrypt_str(bank_ct)
-                )
+                data["bank_account_number"] = envelope_decrypt_str(bank_ct)
             except Exception:  # noqa: BLE001
                 data["bank_account_number"] = None
         resp_staff.append(StaffMemberResponse(**data))
@@ -539,6 +635,19 @@ async def create_staff(
                 "threshold": float(exc.threshold),
             },
         )
+    except PayCycleValidationError as exc:
+        # per-staff-pay-cycle REQ 2.4, 2.5 — wrong-org or inactive cycle id.
+        # The service raised before returning, so get_db_session rolled the
+        # staff insert back: nothing was created.
+        raise HTTPException(status_code=422, detail={"detail": exc.code})
+    except DuplicateStaffError as exc:
+        # R1.5 — duplicate active staff member in this org. Surface the
+        # humanized {message, code} contract so the client can map the
+        # machine code (e.g. "duplicate_email") to inline field feedback.
+        raise HTTPException(
+            status_code=409,
+            detail={"message": exc.message, "code": exc.code},
+        )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     await db.flush()
@@ -570,6 +679,66 @@ async def create_staff(
             )
 
     enriched = await _enrich_reporting_to(db, staff)
+
+    # R1.3 / R3 — when the admin opted to send an onboarding link, mint a
+    # single-use token now (in the same transaction as the staff insert, so
+    # staff + token commit atomically on a clean return — R3.7) and then
+    # dispatch the invite email. The token mint happens BEFORE the fallible
+    # email side-effect; the email send NEVER raises (it returns a result
+    # object), so a provider failure folds into the advisory response fields
+    # and the created staff record is preserved (R3.6).
+    #
+    # ``send_onboarding_link`` is fully independent of the frontend-only
+    # 'Also create as a user' invite (which is a separate
+    # ``POST /api/v2/org/users/invite`` call from StaffList.tsx, not a field
+    # on this schema) — both may be active for the same create with no special
+    # backend handling here (R1.5).
+    if payload.send_onboarding_link:
+        # R1.2 belt-and-braces — an onboarding link is useless without a
+        # destination address. Block before minting so we never create a
+        # dangling token that can never be delivered.
+        if not staff.email or not staff.email.strip():
+            raise HTTPException(
+                status_code=422,
+                detail={"detail": "onboarding_email_required"},
+            )
+
+        token_raw = await onboarding_tokens.mint(
+            db,
+            org_id=org_id,
+            staff_id=staff.id,
+        )
+
+        # Prefer the request Origin so the emailed link points at the same
+        # domain the admin is on; the delivery helper falls back to
+        # ``settings.frontend_base_url`` then localhost.
+        base_url = request.headers.get("origin")
+
+        delivery = await send_onboarding_email(
+            db,
+            org_id=org_id,
+            staff=staff,
+            token=token_raw,
+            base_url=base_url,
+        )
+
+        enriched["onboarding_email_sent"] = delivery.ok
+        enriched["onboarding_email_error"] = delivery.error_code
+
+        await write_audit_log(
+            session=db,
+            org_id=org_id,
+            user_id=user_id,
+            action="onboarding.link_sent",
+            entity_type="staff_member",
+            entity_id=staff.id,
+            after_value={
+                "onboarding_email_sent": delivery.ok,
+                "onboarding_email_error": delivery.error_code,
+            },
+            ip_address=ip_address,
+        )
+
     return StaffMemberResponse(**enriched)
 
 
@@ -632,6 +801,19 @@ async def update_staff(
                 "threshold": float(exc.threshold),
             },
         )
+    except PayCycleValidationError as exc:
+        # per-staff-pay-cycle REQ 2.4, 2.5 — wrong-org or inactive cycle id.
+        # The service raised before returning, so the staff update is rolled
+        # back: the staff member is left unchanged and no assignment persists.
+        raise HTTPException(status_code=422, detail={"detail": exc.code})
+    except DuplicateStaffError as exc:
+        # R1.5 — duplicate active staff member in this org. Same humanized
+        # {message, code} envelope as the create path; the existing staff
+        # member is left unchanged (no mutation has been flushed yet).
+        raise HTTPException(
+            status_code=409,
+            detail={"message": exc.message, "code": exc.code},
+        )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     if staff is None:
@@ -649,6 +831,25 @@ async def update_staff(
             org_id=org_id,
             staff_id=staff_id,
             user_id=user_id,
+            ip_address=ip_address,
+        )
+        await _revoke_active_onboarding_tokens(
+            db,
+            org_id=org_id,
+            staff_id=staff_id,
+            user_id=user_id,
+            ip_address=ip_address,
+        )
+        # R5.11 — auto-revoke Employee Portal access on termination. Runs in
+        # the same transaction as the staff mutation (the employment_end_date
+        # set above) so the portal-user deactivation + session tear-down
+        # commit or roll back atomically with it. Mirrors the roster/onboarding
+        # token revocation wired immediately above.
+        await account_service.revoke_portal_access_for_staff(
+            db,
+            org_id,
+            staff_id,
+            actor_user_id=user_id,
             ip_address=ip_address,
         )
 
@@ -709,7 +910,233 @@ async def deactivate_staff(
         user_id=user_id,
         ip_address=ip_address,
     )
+    await _revoke_active_onboarding_tokens(
+        db,
+        org_id=org_id,
+        staff_id=staff_id,
+        user_id=user_id,
+        ip_address=ip_address,
+    )
+    # R5.11 — auto-revoke Employee Portal access on staff deactivation. Runs in
+    # the same DB transaction as the ``is_active = False`` flip above so the
+    # portal-user deactivation + session deletions commit or roll back
+    # atomically. Mirrors the roster/onboarding token auto-revoke.
+    await account_service.revoke_portal_access_for_staff(
+        db,
+        org_id,
+        staff_id,
+        actor_user_id=user_id,
+        ip_address=ip_address,
+    )
     return {"message": "Staff member deactivated", "id": str(staff_id)}
+
+
+@router.post(
+    "/{staff_id}/portal-access",
+    response_model=IssuePortalAccessResponse,
+    status_code=201,
+    summary="Issue Employee Portal access for a staff member",
+)
+async def issue_portal_access(
+    staff_id: UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+) -> IssuePortalAccessResponse:
+    """Provision Employee Portal credentials for a staff member (R5.3, R5.5, R5.7, R5.8).
+
+    Flow (mirrors the onboarding-link create path):
+      1. Module-gated (404 ``not_enabled`` when ``staff_management`` is off) and
+         org-scoped — the staff record is loaded via ``svc.get_staff`` so a
+         record in another org surfaces as 404.
+      2. Require ``staff.email`` — 422 ``email_required`` otherwise (R15.6).
+      3. ``account_service.issue_access`` runs the app-level dup check
+         (409 ``duplicate``, R5.7) and INSERTs the Portal_User with a hashed,
+         single-use invite token, returning the raw token exactly once.
+      4. **After** the row is flushed, build the branded
+         ``/e/{slug}/accept-invite/{token}`` set-password URL and dispatch
+         ``send_credential_setup_email``; the result is folded into
+         ``{invite_sent, invite_error}``. The email helper never raises, so a
+         provider failure still returns ``201`` with the Portal_User preserved
+         (R15.3).
+      5. Write a ``staff.portal_access_issued`` audit row.
+
+    **Validates: Requirements 5.3, 5.5, 5.7, 5.8, 15.1, 15.3, 15.6.**
+    """
+    await _require_staff_management_module(request, db)
+    org_id = _get_org_id(request)
+    user_id = getattr(request.state, "user_id", None)
+    ip_address = getattr(request.state, "client_ip", None)
+    svc = StaffService(db)
+
+    staff = await svc.get_staff(org_id, staff_id)
+    if staff is None:
+        raise HTTPException(status_code=404, detail="Staff member not found")
+
+    # R15.6 — a credential-setup invite is useless without a destination
+    # address. Gate before issuing so we never create a Portal_User that can
+    # never receive its set-password link.
+    if not staff.email or not staff.email.strip():
+        raise HTTPException(
+            status_code=422,
+            detail={"detail": "email_required", "code": "email_required"},
+        )
+
+    try:
+        portal_user, raw_token = await account_service.issue_access(
+            db,
+            org_id,
+            staff,
+            actor_user_id=user_id,
+            ip_address=ip_address,
+        )
+    except account_service.EmailRequired as exc:
+        # Belt-and-braces — the service re-checks the email too (R15.6).
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={"message": exc.message, "code": exc.code},
+        )
+    except account_service.DuplicatePortalUser as exc:
+        # R5.7 — an active Portal_User already holds this email; leave it
+        # unchanged and surface the humanized {message, code} envelope.
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={"message": exc.message, "code": exc.code},
+        )
+
+    # Resolve the org slug + display name so the emailed link is branded
+    # (``/e/{slug}/accept-invite/{token}``) and the copy names the org.
+    org_row = (
+        await db.execute(
+            select(Organisation.slug, Organisation.name).where(
+                Organisation.id == org_id
+            )
+        )
+    ).first()
+    org_slug = (org_row[0] if org_row else None) or ""
+    org_name = (org_row[1] if org_row else None) or "Your organisation"
+
+    # Prefer the request Origin so the link points at the domain the admin is
+    # on; fall back to the configured frontend base url, then localhost — the
+    # same precedence the onboarding/portal email links use.
+    base = (
+        request.headers.get("origin")
+        or app_settings.frontend_base_url
+        or "http://localhost"
+    ).rstrip("/")
+    set_password_url = f"{base}/e/{org_slug}/accept-invite/{raw_token}"
+
+    # AFTER the credential row is flushed: dispatch the credential-setup email
+    # and fold the result into the advisory response fields. The helper never
+    # raises on a provider failure (R15.3), so the created Portal_User is
+    # preserved and the endpoint still returns 201.
+    delivery = await employee_portal_delivery.send_credential_setup_email(
+        db,
+        staff_email=staff.email,
+        org_name=org_name,
+        set_password_url=set_password_url,
+        org_id=org_id,
+    )
+
+    await write_audit_log(
+        session=db,
+        org_id=org_id,
+        user_id=user_id,
+        action="staff.portal_access_issued",
+        entity_type="staff_member",
+        entity_id=staff_id,
+        after_value={
+            "portal_user_id": str(portal_user.id),
+            "invite_sent": delivery.ok,
+            "invite_error": delivery.error_code,
+        },
+        ip_address=ip_address,
+    )
+
+    return IssuePortalAccessResponse(
+        portal_user_id=portal_user.id,
+        email=portal_user.email,
+        invite_sent=delivery.ok,
+        invite_error=delivery.error_code,
+    )
+
+
+@router.delete(
+    "/{staff_id}/portal-access",
+    response_model=RevokePortalAccessResponse,
+    status_code=200,
+    summary="Revoke Employee Portal access for a staff member",
+)
+async def revoke_portal_access(
+    staff_id: UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+) -> RevokePortalAccessResponse:
+    """Revoke Employee Portal access for a staff member (R5.10).
+
+    Module-gated, org-scoped, audit-logged. Delegates to
+    ``account_service.revoke_access`` which deactivates every active
+    Portal_User for the staff member and deletes their sessions in the same
+    transaction, so no prior session survives the revoke. The ``access_revoked``
+    audit row is written inside the service against ``employee_portal_audit_log``;
+    a mirror ``staff.portal_access_revoked`` row is written here.
+
+    **Validates: Requirement 5.10.**
+    """
+    await _require_staff_management_module(request, db)
+    org_id = _get_org_id(request)
+    user_id = getattr(request.state, "user_id", None)
+    ip_address = getattr(request.state, "client_ip", None)
+    svc = StaffService(db)
+
+    staff = await svc.get_staff(org_id, staff_id)
+    if staff is None:
+        raise HTTPException(status_code=404, detail="Staff member not found")
+
+    sessions_invalidated = await account_service.revoke_access(
+        db,
+        org_id,
+        staff_id,
+        actor_user_id=user_id,
+        ip_address=ip_address,
+    )
+
+    await write_audit_log(
+        session=db,
+        org_id=org_id,
+        user_id=user_id,
+        action="staff.portal_access_revoked",
+        entity_type="staff_member",
+        entity_id=staff_id,
+        after_value={"sessions_invalidated": sessions_invalidated},
+        ip_address=ip_address,
+    )
+
+    return RevokePortalAccessResponse(
+        revoked=True,
+        sessions_invalidated=sessions_invalidated,
+    )
+
+
+@router.get("/{staff_id}/deletion-check", status_code=200, summary="Check whether a staff member can be permanently deleted")
+async def staff_deletion_check(
+    staff_id: UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Preflight for a permanent delete.
+
+    Returns ``{can_delete, blockers: [{label, count}]}`` so the UI can show
+    exactly what (and how many) records prevent a hard delete and steer the
+    admin to deactivate instead. Records like payslips/timesheets are retained
+    by design (financial/legal history).
+    """
+    org_id = _get_org_id(request)
+    svc = StaffService(db)
+    staff = await svc.get_staff(org_id, staff_id)
+    if staff is None:
+        raise HTTPException(status_code=404, detail="Staff member not found")
+    blockers = await svc.deletion_blockers(staff_id)
+    return {"can_delete": len(blockers) == 0, "blockers": blockers}
 
 
 @router.delete("/{staff_id}/permanent", status_code=200, summary="Permanently delete staff member")
@@ -718,12 +1145,34 @@ async def delete_staff_permanent(
     request: Request,
     db: AsyncSession = Depends(get_db_session),
 ):
-    """Permanently delete a staff member record."""
+    """Permanently delete a staff member record.
+
+    Refuses (409) with a clear, structured message naming the dependent records
+    (payroll, timesheets, leave, etc.) when any exist — those are retained by
+    design and the staff member should be deactivated instead.
+    """
     org_id = _get_org_id(request)
     svc = StaffService(db)
     staff = await svc.get_staff(org_id, staff_id)
     if staff is None:
         raise HTTPException(status_code=404, detail="Staff member not found")
+
+    blockers = await svc.deletion_blockers(staff_id)
+    if blockers:
+        summary = ", ".join(f"{b['count']} {b['label'].lower()}" for b in blockers)
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "staff_has_dependents",
+                "message": (
+                    f"{staff.first_name or 'This staff member'} can't be permanently "
+                    f"deleted because they still have {summary}. These records are "
+                    f"kept for your history — deactivate the staff member instead."
+                ),
+                "blockers": blockers,
+            },
+        )
+
     await db.delete(staff)
     await db.flush()
     return {"message": "Staff member permanently deleted", "id": str(staff_id)}
@@ -809,6 +1258,227 @@ async def create_staff_account(
 
 
 # ---------------------------------------------------------------------------
+# Onboarding link management (R10)
+# ---------------------------------------------------------------------------
+
+
+async def _get_latest_onboarding_token(
+    db: AsyncSession,
+    *,
+    org_id: UUID,
+    staff_id: UUID,
+) -> StaffOnboardingToken | None:
+    """Return the most-recently-created onboarding token row for a staff member.
+
+    Org-scoped (RLS plus the explicit ``org_id`` filter) and ordered by
+    ``created_at DESC`` so the admin status / lifecycle reflects the live
+    link, not a superseded one. Returns ``None`` when the staff member has
+    never had an onboarding link minted.
+    """
+    result = await db.execute(
+        select(StaffOnboardingToken)
+        .where(
+            StaffOnboardingToken.org_id == org_id,
+            StaffOnboardingToken.staff_id == staff_id,
+        )
+        .order_by(StaffOnboardingToken.created_at.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+@router.get(
+    "/{staff_id}/onboarding-link",
+    response_model=OnboardingLinkStatusResponse,
+    summary="Get onboarding link lifecycle status",
+)
+async def get_onboarding_link_status(
+    staff_id: UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+) -> OnboardingLinkStatusResponse:
+    """Return the admin lifecycle status of a staff member's onboarding link.
+
+    Resolves the latest token row and derives ``state`` from the pure
+    helper ``onboarding_lifecycle_label(row, now)``: ``none`` (no row),
+    ``revoked``, ``completed`` (consumed), ``expired`` (pending past
+    expiry), ``in_progress`` (pending with a saved draft), or
+    ``not_started`` (pending, no draft). When ``state == "in_progress"``
+    the body additionally carries the server-computed
+    ``completion_percentage`` and ``last_saved_at`` (= ``draft_updated_at``).
+
+    Module-gated (404 ``not_enabled`` when ``staff_management`` is off) and
+    org-scoped — a missing or cross-org staff member surfaces as 404.
+
+    **Validates: Requirements 10.1, 13.1, 13.2, 13.5.**
+    """
+    await _require_staff_management_module(request, db)
+    org_id = _get_org_id(request)
+    svc = StaffService(db)
+    staff = await svc.get_staff(org_id, staff_id)
+    if staff is None:
+        raise HTTPException(status_code=404, detail="Staff member not found")
+
+    now = datetime.now(timezone.utc)
+    row = await _get_latest_onboarding_token(db, org_id=org_id, staff_id=staff_id)
+    state = onboarding_lifecycle_label(row, now)
+
+    completion_percentage: int | None = None
+    last_saved_at: datetime | None = None
+    if state == "in_progress" and row is not None:
+        # Decrypt the saved draft and score it (R13.2). Best-effort: a
+        # decryption hiccup must not 500 the admin status card — fall back
+        # to a 0% / last-saved-timestamp view rather than raising raw
+        # exception text (R14.5).
+        try:
+            draft = onboarding_tokens.load_draft(row)
+            completion_percentage = compute_completion_percentage(draft)
+        except Exception:  # noqa: BLE001 - best-effort draft scoring
+            completion_percentage = compute_completion_percentage(None)
+        last_saved_at = row.draft_updated_at
+
+    return OnboardingLinkStatusResponse(
+        state=state,
+        expires_at=getattr(row, "expires_at", None),
+        created_at=getattr(row, "created_at", None),
+        consumed_at=getattr(row, "consumed_at", None),
+        completion_percentage=completion_percentage,
+        last_saved_at=last_saved_at,
+    )
+
+
+@router.post(
+    "/{staff_id}/onboarding-link/resend",
+    summary="Resend (revoke + mint + email) a staff onboarding link",
+)
+async def resend_onboarding_link(
+    staff_id: UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Revoke any active onboarding link, mint a fresh one, and email it.
+
+    ``onboarding_tokens.revoke_active`` invalidates the prior pending token
+    and purges its draft in the same write (R12.9), ``mint`` issues a new
+    7-day link, and ``send_onboarding_email`` dispatches the invite — its
+    failure is folded into the response (``onboarding_email_sent`` /
+    ``onboarding_email_error``) and never raises, so a provider outage does
+    not roll back the freshly minted link (R10.2).
+
+    Returns ``422 onboarding_email_required`` (humanized ``{message, code}``)
+    when the staff member has no email — no token is minted in that case.
+
+    Module-gated, org-scoped, and audit-logged
+    (``onboarding.link_resent``).
+
+    **Validates: Requirements 10.2, 12.9, 14.2, 14.3, 14.5.**
+    """
+    await _require_staff_management_module(request, db)
+    org_id = _get_org_id(request)
+    user_id = getattr(request.state, "user_id", None)
+    ip_address = getattr(request.state, "client_ip", None)
+    svc = StaffService(db)
+    staff = await svc.get_staff(org_id, staff_id)
+    if staff is None:
+        raise HTTPException(status_code=404, detail="Staff member not found")
+
+    # R10.2 — a link is useless without a destination. Block before any
+    # revoke/mint so we neither purge the existing draft nor mint a
+    # dangling token that can never be delivered.
+    if not staff.email or not staff.email.strip():
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": humanize_onboarding_error("onboarding_email_required"),
+                "code": "onboarding_email_required",
+            },
+        )
+
+    # Supersede the prior link (purging its draft, R12.9) and mint fresh.
+    await onboarding_tokens.revoke_active(db, org_id=org_id, staff_id=staff_id)
+    token_raw = await onboarding_tokens.mint(db, org_id=org_id, staff_id=staff_id)
+    row = await _get_latest_onboarding_token(db, org_id=org_id, staff_id=staff_id)
+
+    base_url = request.headers.get("origin")
+    delivery = await send_onboarding_email(
+        db,
+        org_id=org_id,
+        staff=staff,
+        token=token_raw,
+        base_url=base_url,
+    )
+
+    await write_audit_log(
+        session=db,
+        org_id=org_id,
+        user_id=user_id,
+        action="onboarding.link_resent",
+        entity_type="staff_member",
+        entity_id=staff_id,
+        after_value={
+            "onboarding_email_sent": delivery.ok,
+            "onboarding_email_error": delivery.error_code,
+        },
+        ip_address=ip_address,
+    )
+
+    return {
+        "onboarding_email_sent": delivery.ok,
+        "onboarding_email_error": delivery.error_code,
+        "expires_at": getattr(row, "expires_at", None),
+    }
+
+
+@router.post(
+    "/{staff_id}/onboarding-link/revoke",
+    summary="Revoke a staff member's active onboarding link",
+)
+async def revoke_onboarding_link(
+    staff_id: UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Revoke the active onboarding link and purge its draft (R10.3).
+
+    Delegates to ``onboarding_tokens.revoke_active`` which sets
+    ``status='revoked'`` and NULLs both draft columns in the same UPDATE
+    (R12.9). Idempotent — when no pending token exists it is a 200 no-op.
+    A single ``onboarding.link_revoked`` audit row is written only when at
+    least one token was actually revoked (no audit noise for the no-op
+    case).
+
+    Module-gated, org-scoped, audit-logged.
+
+    **Validates: Requirements 10.3, 12.9, 14.2, 14.3, 14.5.**
+    """
+    await _require_staff_management_module(request, db)
+    org_id = _get_org_id(request)
+    user_id = getattr(request.state, "user_id", None)
+    ip_address = getattr(request.state, "client_ip", None)
+    svc = StaffService(db)
+    staff = await svc.get_staff(org_id, staff_id)
+    if staff is None:
+        raise HTTPException(status_code=404, detail="Staff member not found")
+
+    revoked_count = await onboarding_tokens.revoke_active(
+        db, org_id=org_id, staff_id=staff_id
+    )
+    if revoked_count > 0:
+        await write_audit_log(
+            session=db,
+            org_id=org_id,
+            user_id=user_id,
+            action="onboarding.link_revoked",
+            entity_type="staff_member",
+            entity_id=staff_id,
+            after_value={"tokens_revoked_count": revoked_count},
+            ip_address=ip_address,
+        )
+
+    return {"status": "revoked"}
+
+
+# ---------------------------------------------------------------------------
 # Pay rate history (R3.5)
 # ---------------------------------------------------------------------------
 
@@ -851,6 +1521,191 @@ async def get_pay_rate_history(
         org_id, staff_id, offset=offset, limit=limit,
     )
     return StaffPayRateListResponse(items=items, total=total)
+
+
+# ---------------------------------------------------------------------------
+# Staff documents — onboarding / working-rights uploads (compliance docs
+# linked to this staff member). Served through the staff router (gated by the
+# staff-management module the org already has) rather than the compliance-docs
+# module, which most orgs do NOT have enabled — so a staff member's submitted
+# documents are always visible on their profile.
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/{staff_id}/documents",
+    response_model=StaffDocumentListResponse,
+    summary="List documents uploaded for a staff member (onboarding / working-rights)",
+)
+async def list_staff_documents(
+    staff_id: UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return the documents linked to ``staff_id`` (onboarding working-rights
+    uploads + any manually-attached files), wrapped as ``{ items, total }``.
+    Each item carries the on-disk ``file_size`` (compliance files are stored
+    unencrypted, so the stored size equals the original).
+
+    Module-gated on ``staff_management`` (NOT ``compliance_docs``) and 404
+    when the staff member doesn't exist or belongs to another org.
+    """
+    await _require_staff_management_module(request, db)
+    org_id = _get_org_id(request)
+    svc = StaffService(db)
+    staff = await svc.get_staff(org_id, staff_id)
+    if staff is None:
+        raise HTTPException(status_code=404, detail="Staff member not found")
+    compliance = ComplianceService(db)
+    documents, total = await compliance.list_documents_filtered(
+        org_id=org_id, staff_id=staff_id, sort_by="created_at", sort_dir="desc",
+    )
+    storage = ComplianceFileStorage()
+    items: list[StaffDocumentItem] = []
+    for d in documents:
+        items.append(
+            StaffDocumentItem(
+                id=d.id,
+                document_type=d.document_type,
+                description=d.description,
+                file_name=d.file_name,
+                file_size=await storage.file_size(d.file_key),
+                created_at=d.created_at,
+                expiry_date=d.expiry_date,
+            )
+        )
+    return StaffDocumentListResponse(items=items, total=total)
+
+
+@router.post(
+    "/{staff_id}/documents",
+    response_model=StaffDocumentItem,
+    status_code=201,
+    summary="Upload a document for a staff member",
+)
+async def upload_staff_document(
+    staff_id: UUID,
+    request: Request,
+    file: UploadFile = File(...),
+    document_type: str = Form("staff_document"),
+    description: str | None = Form(None),
+    expiry_date: date | None = Form(None),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Attach a document (PDF / image / Word) to a staff member's profile.
+
+    Stored as a compliance document linked to ``staff_id`` so it appears in the
+    same Documents table as onboarding uploads. ``description`` carries the
+    type-specific detail (e.g. "Passport", "First Aid"). Module-gated on
+    ``staff_management``.
+    """
+    await _require_staff_management_module(request, db)
+    org_id = _get_org_id(request)
+    raw_user_id = getattr(request.state, "user_id", None)
+    uploaded_by: UUID | None = None
+    if raw_user_id is not None:
+        try:
+            uploaded_by = UUID(str(raw_user_id))
+        except (ValueError, TypeError):
+            uploaded_by = None
+    svc = StaffService(db)
+    staff = await svc.get_staff(org_id, staff_id)
+    if staff is None:
+        raise HTTPException(status_code=404, detail="Staff member not found")
+
+    compliance = ComplianceService(db)
+    doc = await compliance.upload_document_with_file(
+        org_id=org_id,
+        file=file,
+        metadata={
+            "document_type": (document_type or "staff_document").strip()[:50] or "staff_document",
+            "description": (description or "").strip()[:1000] or None,
+            "staff_id": staff_id,
+            "expiry_date": expiry_date,
+        },
+        uploaded_by=uploaded_by,
+    )
+    storage = ComplianceFileStorage()
+    return StaffDocumentItem(
+        id=doc.id,
+        document_type=doc.document_type,
+        description=doc.description,
+        file_name=doc.file_name,
+        file_size=await storage.file_size(doc.file_key),
+        created_at=doc.created_at,
+        expiry_date=doc.expiry_date,
+    )
+
+
+@router.delete(
+    "/{staff_id}/documents/{doc_id}",
+    status_code=204,
+    summary="Delete a document attached to a staff member",
+)
+async def delete_staff_document(
+    staff_id: UUID,
+    doc_id: UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Delete a staff member's document (record + stored file). Validates the
+    document belongs to this org AND this staff member. Module-gated on
+    ``staff_management``.
+    """
+    await _require_staff_management_module(request, db)
+    org_id = _get_org_id(request)
+    svc = StaffService(db)
+    staff = await svc.get_staff(org_id, staff_id)
+    if staff is None:
+        raise HTTPException(status_code=404, detail="Staff member not found")
+
+    compliance = ComplianceService(db)
+    # Validates org ownership (403) + existence (404).
+    doc = await compliance.get_document_for_download(org_id, doc_id)
+    if doc.staff_id != staff_id:
+        raise HTTPException(status_code=404, detail="Document not found")
+    await compliance.delete_document(org_id, doc_id)
+    return None
+
+
+@router.get(
+    "/{staff_id}/documents/{doc_id}/download",
+    summary="Download a document uploaded for a staff member",
+)
+async def download_staff_document(
+    staff_id: UUID,
+    doc_id: UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Stream a staff member's uploaded document.
+
+    Validates the document belongs to this org AND this staff member before
+    streaming. Module-gated on ``staff_management`` so it works for orgs
+    without the compliance-docs module.
+    """
+    await _require_staff_management_module(request, db)
+    org_id = _get_org_id(request)
+    svc = StaffService(db)
+    staff = await svc.get_staff(org_id, staff_id)
+    if staff is None:
+        raise HTTPException(status_code=404, detail="Staff member not found")
+
+    compliance = ComplianceService(db)
+    # Validates org ownership (403) + existence (404).
+    doc = await compliance.get_document_for_download(org_id, doc_id)
+    if doc.staff_id != staff_id:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    storage = ComplianceFileStorage()
+    stream, content_type = await storage.read_file(doc.file_key)
+    return StreamingResponse(
+        stream,
+        media_type=content_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{doc.file_name}"',
+        },
+    )
 
 
 # ---------------------------------------------------------------------------

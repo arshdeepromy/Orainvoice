@@ -8,6 +8,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
@@ -283,7 +284,9 @@ def compute_fixed_rostered_minutes(
 
     Overnight shifts (end <= start) are treated as wrapping past midnight.
     """
-    if not availability_schedule:
+    if not isinstance(availability_schedule, dict) or not availability_schedule:
+        # Guard against NULL/empty and against legacy rows where the JSONB value
+        # is a scalar (e.g. a JSON string) rather than the expected weekday map.
         return 0
 
     from datetime import timedelta
@@ -307,15 +310,209 @@ def compute_fixed_rostered_minutes(
     return total
 
 
+def _build_week_buckets(start_date, end_date):
+    """Split ``[start_date, end_date]`` into ISO-week (Mon–Sun) buckets.
+
+    Each bucket is clamped to the period bounds, so the first and last buckets
+    may be partial weeks. Returns a list of
+    ``(week_index, iso_week, bucket_start, bucket_end)`` tuples where
+    ``week_index`` is 1-based and ``iso_week`` is the ISO 8601 week number
+    (matching the frontend ``isoWeek`` helper / Python ``date.isocalendar()``).
+    """
+    from datetime import timedelta
+
+    buckets: list[tuple[int, int, "object", "object"]] = []
+    if start_date is None or end_date is None or start_date > end_date:
+        return buckets
+
+    week_index = 0
+    cursor = start_date
+    while cursor <= end_date:
+        # Monday of the week containing ``cursor``; Sunday is +6 days.
+        monday = cursor - timedelta(days=cursor.weekday())
+        sunday = monday + timedelta(days=6)
+        bucket_start = max(monday, start_date)
+        bucket_end = min(sunday, end_date)
+        week_index += 1
+        iso_week = bucket_start.isocalendar()[1]
+        buckets.append((week_index, iso_week, bucket_start, bucket_end))
+        cursor = sunday + timedelta(days=1)
+
+    return buckets
+
+
+async def compute_weekly_breakdown(
+    db: AsyncSession,
+    *,
+    org_id: UUID,
+    pay_period_id: UUID,
+    branch_ids: list[UUID] | None = None,
+):
+    """Split a pay period into per-week per-staff worked-minute subtotals.
+
+    READ-ONLY review aid ("weekly lens"). Lets managers see weekly granularity
+    inside a multi-week (fortnightly / monthly) period without a separate period
+    system. This never reads or writes pay-run / materialisation / payslip state.
+
+    Steps:
+      1. Load the ``PayPeriod``; return an empty result if missing.
+      2. Build ISO-week (Mon–Sun) buckets clamped to the period bounds.
+      3. The period's staff = staff with a ``Timesheet`` row for this period.
+         When ``branch_ids`` is provided (branch-scoped caller) the timesheet
+         set is filtered to those branches — an empty list yields no staff.
+      4. Per staff per bucket, the worked minutes are:
+         - the sum of ``TimeClockEntry.worked_minutes`` (NULL treated as 0) for
+           clock-ins whose date falls in the clamped bucket; OR
+         - for ``fixed`` working-arrangement staff with NO clock entries in the
+           bucket, their schedule-derived rostered minutes
+           (``compute_fixed_rostered_minutes``) — mirroring how materialisation
+           seeds fixed staff. When a fixed staff member HAS clock entries in the
+           bucket, the clock sum is preferred.
+      5. Each bucket carries ``total_minutes`` (sum across staff) and a ``staff``
+         list; zero-minute staff are omitted from a week to keep it tidy, but the
+         week bucket is always kept (even when its total is 0).
+    """
+    from datetime import timedelta
+
+    from app.modules.payslips.models import PayPeriod
+    from app.modules.staff.models import StaffMember
+    from app.modules.time_clock.models import TimeClockEntry
+    from app.modules.timesheets.schemas import (
+        WeeklyBreakdownResponse,
+        WeeklyBreakdownStaffEntry,
+        WeeklyBreakdownWeek,
+    )
+
+    # 1. Load the period.
+    period = await db.get(PayPeriod, pay_period_id)
+    if period is None or period.org_id != org_id:
+        return WeeklyBreakdownResponse(
+            pay_period_id=pay_period_id, multi_week=False, weeks=[],
+        )
+
+    # 2. ISO-week buckets clamped to the period.
+    buckets = _build_week_buckets(period.start_date, period.end_date)
+
+    # 3. The period's staff = staff with a Timesheet row (branch-scoped).
+    ts_query = select(Timesheet.staff_id).where(
+        Timesheet.org_id == org_id,
+        Timesheet.pay_period_id == pay_period_id,
+    )
+    if branch_ids is not None:
+        # A scoped caller restricts to their branches. An empty list yields no
+        # rows (in_([]) is always-false) — the secure "show nothing" default.
+        ts_query = ts_query.where(Timesheet.branch_id.in_(branch_ids))
+    staff_rows = await db.execute(ts_query.distinct())
+    staff_ids = {row[0] for row in staff_rows.all()}
+
+    if not staff_ids:
+        return WeeklyBreakdownResponse(
+            pay_period_id=pay_period_id,
+            multi_week=len(buckets) > 1,
+            weeks=[
+                WeeklyBreakdownWeek(
+                    week_index=wi,
+                    iso_week=iso,
+                    start_date=bs,
+                    end_date=be,
+                    total_minutes=0,
+                    staff=[],
+                )
+                for (wi, iso, bs, be) in buckets
+            ],
+        )
+
+    # Resolve staff names + working arrangement + schedule.
+    staff_result = await db.execute(
+        select(StaffMember).where(StaffMember.id.in_(staff_ids))
+    )
+    staff_map = {s.id: s for s in staff_result.scalars().all()}
+
+    # Fetch every clock entry for these staff across the whole period range
+    # once, then bucket in Python by the clock-in date. The period range is
+    # inclusive of end_date, so the upper bound is the day AFTER end_date.
+    entries_by_staff: dict[UUID, list] = {sid: [] for sid in staff_ids}
+    if period.start_date is not None and period.end_date is not None:
+        clock_result = await db.execute(
+            select(TimeClockEntry).where(
+                TimeClockEntry.org_id == org_id,
+                TimeClockEntry.staff_id.in_(staff_ids),
+                TimeClockEntry.clock_in_at >= period.start_date,
+                TimeClockEntry.clock_in_at < period.end_date + timedelta(days=1),
+            )
+        )
+        for ce in clock_result.scalars().all():
+            entries_by_staff.setdefault(ce.staff_id, []).append(ce)
+
+    # 4 + 5. Build each week bucket.
+    weeks: list[WeeklyBreakdownWeek] = []
+    for (week_index, iso_week, bucket_start, bucket_end) in buckets:
+        staff_entries: list[WeeklyBreakdownStaffEntry] = []
+        week_total = 0
+        for staff_id in staff_ids:
+            staff = staff_map.get(staff_id)
+            entries = entries_by_staff.get(staff_id, [])
+
+            in_bucket = [
+                e for e in entries
+                if e.clock_in_at is not None
+                and bucket_start <= e.clock_in_at.date() <= bucket_end
+            ]
+            has_clock = len(in_bucket) > 0
+            minutes = sum((e.worked_minutes or 0) for e in in_bucket)
+
+            # Fixed-arrangement staff with NO clock entries in the bucket fall
+            # back to their schedule-derived rostered minutes for the week.
+            if (
+                not has_clock
+                and staff is not None
+                and staff.working_arrangement == "fixed"
+            ):
+                minutes = compute_fixed_rostered_minutes(
+                    staff.availability_schedule, bucket_start, bucket_end,
+                )
+
+            if minutes > 0:
+                staff_entries.append(
+                    WeeklyBreakdownStaffEntry(
+                        staff_id=staff_id,
+                        staff_name=(getattr(staff, "name", None) or "Unknown"),
+                        minutes=minutes,
+                    )
+                )
+                week_total += minutes
+
+        # Stable, readable ordering by staff name.
+        staff_entries.sort(key=lambda e: e.staff_name.lower())
+
+        weeks.append(
+            WeeklyBreakdownWeek(
+                week_index=week_index,
+                iso_week=iso_week,
+                start_date=bucket_start,
+                end_date=bucket_end,
+                total_minutes=week_total,
+                staff=staff_entries,
+            )
+        )
+
+    return WeeklyBreakdownResponse(
+        pay_period_id=pay_period_id,
+        multi_week=len(weeks) > 1,
+        weeks=weeks,
+    )
+
+
 async def materialise_missing_timesheets(
     db: AsyncSession,
     *,
     org_id: UUID,
     pay_period_id: UUID,
+    include_all_active: bool = False,
 ) -> MaterialisationResult:
     """Sweep to create missing timesheets before pay-run cutoff.
 
-    Two sources feed materialisation:
+    Two sources feed materialisation by default:
       1. Staff with clock entries in the period but no timesheet row.
       2. Staff whose ``working_arrangement`` is ``fixed`` — their
          configured work days + hours (``availability_schedule``) are
@@ -323,12 +520,37 @@ async def materialise_missing_timesheets(
          ``rostered_minutes`` seeded from the schedule) even without any
          clock punch or roster entry.
 
+    When ``include_all_active`` is True (the "Generate Timesheets"
+    manual action), a third source is added: EVERY active staff member
+    without a timesheet for the period, regardless of working
+    arrangement. Rostered / casual staff get a zero-hours timesheet the
+    admin can fill in via the Adjust flow; fixed staff still seed from
+    their schedule. This lets payroll be run for staff who never clock
+    in.
+
     Staff with NO clock, NO fixed arrangement, NO activity are left as
-    no_activity (no row created).
+    no_activity (no row created) unless ``include_all_active`` is set.
+
+    **Cycle scoping (per-staff-pay-cycle, REQ 6.1-6.4, 9.2).** When the
+    ``PayPeriod`` carries a ``pay_cycle_id``, materialisation is scoped to
+    that cycle: every candidate active staff member is gathered exactly as
+    before (clock / fixed sources, and all active when ``include_all_active``),
+    their applicable cycle is batch-resolved once via
+    :func:`resolve_pay_cycles_for_staff_batch`, and a timesheet row is created
+    **only** for staff whose resolved cycle id equals the period's
+    ``pay_cycle_id``. Staff with no resolved cycle, or a cycle that differs from
+    the period's, are simply out of scope for this cycle — they are skipped and
+    are NOT reported as ``no_activity``. When ``pay_cycle_id`` is ``NULL``
+    (a legacy period that predates multi-cycle support), the original
+    single-cycle behaviour is preserved exactly so old periods are unaffected
+    (REQ 9.2).
     """
     from app.modules.time_clock.models import TimeClockEntry
     from app.modules.payslips.models import PayPeriod
     from app.modules.staff.models import StaffMember
+    from app.modules.timesheets.pay_cycles import (
+        resolve_pay_cycles_for_staff_batch,
+    )
 
     # Get the pay period boundaries
     period_result = await db.execute(
@@ -344,12 +566,16 @@ async def materialise_missing_timesheets(
         Timesheet.org_id == org_id,
     )
 
-    # Source 1: staff IDs with clock entries in this period (no timesheet yet)
+    # Source 1: staff IDs with clock entries in this period (no timesheet yet).
+    # The period range is inclusive of end_date, so the upper bound is the day
+    # AFTER end_date — otherwise clock-ins on the final day are missed.
+    from datetime import timedelta
+
     staff_with_clocks = await db.execute(
         select(TimeClockEntry.staff_id).where(
             TimeClockEntry.org_id == org_id,
             TimeClockEntry.clock_in_at >= period.start_date,
-            TimeClockEntry.clock_in_at < period.end_date,
+            TimeClockEntry.clock_in_at < period.end_date + timedelta(days=1),
             TimeClockEntry.staff_id.not_in(has_timesheet),
         ).distinct()
     )
@@ -364,26 +590,63 @@ async def materialise_missing_timesheets(
             StaffMember.id.not_in(has_timesheet),
         )
     )
-    fixed_staff = {s.id: s for s in fixed_staff_result.scalars().all()}
+    staff_map: dict = {s.id: s for s in fixed_staff_result.scalars().all()}
 
     result = MaterialisationResult()
 
     # Need StaffMember rows for any clock-only staff to read their arrangement
-    clock_only_ids = clock_staff_ids - set(fixed_staff.keys())
-    clock_staff_map: dict = {}
+    clock_only_ids = clock_staff_ids - set(staff_map.keys())
     if clock_only_ids:
         rows = await db.execute(
             select(StaffMember).where(StaffMember.id.in_(clock_only_ids))
         )
-        clock_staff_map = {s.id: s for s in rows.scalars().all()}
+        staff_map.update({s.id: s for s in rows.scalars().all()})
 
-    all_staff_ids = clock_staff_ids | set(fixed_staff.keys())
+    # Source 3 (manual "Generate Timesheets"): every active staff member
+    # without a timesheet, regardless of working arrangement. Rostered /
+    # casual staff get a zero-hours row to fill in via Adjust; fixed staff
+    # still seed from their schedule in the loop below.
+    if include_all_active:
+        all_active = await db.execute(
+            select(StaffMember).where(
+                StaffMember.org_id == org_id,
+                StaffMember.is_active == True,  # noqa: E712
+                StaffMember.id.not_in(has_timesheet),
+            )
+        )
+        staff_map.update({s.id: s for s in all_active.scalars().all()})
+
+    all_staff_ids = clock_staff_ids | set(staff_map.keys())
+
+    # Cycle-scoped membership (per-staff-pay-cycle). When the period belongs to
+    # a specific pay cycle, batch-resolve every candidate's applicable cycle once
+    # and keep only those whose resolved cycle id matches the period's
+    # pay_cycle_id (REQ 6.1-6.4). A NULL pay_cycle_id is a legacy period whose
+    # behaviour must be preserved exactly (REQ 9.2), so resolved_cycle_by_staff
+    # is left None and no filtering is applied.
+    resolved_cycle_by_staff = None
+    if period.pay_cycle_id is not None:
+        candidates = [
+            staff_map[sid] for sid in all_staff_ids if sid in staff_map
+        ]
+        resolved_cycle_by_staff = await resolve_pay_cycles_for_staff_batch(
+            db, org_id=org_id, staff_members=candidates
+        )
 
     for staff_id in all_staff_ids:
-        staff = fixed_staff.get(staff_id) or clock_staff_map.get(staff_id)
+        # Cycle-scope filter: skip staff whose resolved cycle differs from (or is
+        # absent for) the period's cycle. Excluded staff are out of scope for
+        # this cycle and are deliberately NOT recorded as no_activity.
+        if resolved_cycle_by_staff is not None:
+            resolved = resolved_cycle_by_staff.get(staff_id)
+            if resolved is None or resolved.cycle.id != period.pay_cycle_id:
+                continue
+
+        staff = staff_map.get(staff_id)
         rostered = 0
+        is_fixed = staff is not None and staff.working_arrangement == "fixed"
         # Seed rostered minutes from the fixed schedule (source of truth).
-        if staff is not None and staff.working_arrangement == "fixed":
+        if is_fixed:
             rostered = compute_fixed_rostered_minutes(
                 staff.availability_schedule,
                 period.start_date,
@@ -394,6 +657,14 @@ async def materialise_missing_timesheets(
             staff_id=staff_id,
             pay_period_id=pay_period_id,
             rostered_minutes=rostered,
+            # Fixed-arrangement staff are paid their configured hours even
+            # without clock punches. Seed actual + ordinary from the roster
+            # so the timesheet (a) approves cleanly with zero clock variance
+            # and (b) flows a non-zero payslip through the pay run. Clock-
+            # only staff keep 0 here — the aggregation engine fills their
+            # actual/ordinary minutes from the matched clock entries.
+            actual_minutes=rostered if is_fixed else 0,
+            ordinary_minutes=rostered if is_fixed else 0,
             status="open",
         )
         db.add(timesheet)
@@ -436,3 +707,233 @@ async def get_settings_for_branch(
         )
     )
     return result.scalar_one_or_none()
+
+
+def _minutes_to_hours(minutes: int) -> Decimal:
+    """Convert integer minutes to a 2dp Decimal of hours."""
+    return Decimal(str(round((minutes or 0) / 60, 2)))
+
+
+async def compute_attendance(
+    db: AsyncSession,
+    *,
+    org_id: UUID,
+    start_date=None,
+    end_date=None,
+    branch_ids: list[UUID] | None = None,
+):
+    """Per-staff worked-hours-vs-expected attendance over [start_date, end_date].
+
+    READ-ONLY review aid for the Timesheets page "Attendance" tab. The row set is
+    every staff member with clock activity (worked or currently clocked in) in
+    the inclusive date range, branch-scoped via ``branch_ids`` (None = all
+    branches; ``[]`` = scoped caller with no branches → empty result).
+
+    ``start_date``/``end_date`` are interpreted in the **organisation's local
+    timezone** (``organisations.timezone``, default ``Pacific/Auckland``) — NOT
+    UTC — so "today" for an NZ org maps to the correct UTC window even though
+    ``time_clock_entries`` are stored in UTC. When omitted, both default to the
+    org-local "today".
+
+    For each staff member:
+      * ``worked`` = sum of ``TimeClockEntry.worked_minutes`` for COMPLETED
+        (clocked-out) entries whose ``clock_in_at`` falls in the range.
+      * ``expected`` = scheduled minutes (``schedule_entries`` clamped to the
+        range) when any exist; else the fixed/rostered minutes derived from the
+        staff member's ``availability_schedule`` (``compute_fixed_rostered_minutes``).
+      * ``variance`` = worked − expected (null when there is no expectation).
+      * ``is_clocked_in`` = the staff member has an OPEN entry in the range.
+
+    Never reads or writes pay-run / materialisation / payslip / timesheet state.
+    """
+    from datetime import datetime, time, timedelta, timezone
+    from zoneinfo import ZoneInfo
+
+    from sqlalchemy import text as _sql_text
+
+    from app.modules.organisations.models import Branch
+    from app.modules.scheduling_v2.models import ScheduleEntry
+    from app.modules.staff.models import StaffMember
+    from app.modules.time_clock.models import TimeClockEntry
+    from app.modules.timesheets.schemas import (
+        AttendanceResponse,
+        AttendanceRow,
+        AttendanceSummary,
+    )
+
+    # Resolve the organisation's local timezone (clock entries are stored in
+    # UTC, but "today"/ranges are meaningful in the org's local calendar day).
+    tz_row = (
+        await db.execute(
+            _sql_text("SELECT timezone FROM organisations WHERE id = :oid"),
+            {"oid": str(org_id)},
+        )
+    ).first()
+    tz_name = (tz_row[0] if tz_row else None) or "Pacific/Auckland"
+    try:
+        org_tz = ZoneInfo(tz_name)
+    except Exception:
+        org_tz = ZoneInfo("UTC")
+
+    today_local = datetime.now(org_tz).date()
+    start_date = start_date or today_local
+    end_date = end_date or start_date
+
+    # Convert the org-local inclusive date range to a UTC [start, end) window.
+    start_dt = datetime.combine(start_date, time.min, tzinfo=org_tz).astimezone(timezone.utc)
+    end_dt = datetime.combine(
+        end_date + timedelta(days=1), time.min, tzinfo=org_tz
+    ).astimezone(timezone.utc)
+
+    def _empty() -> AttendanceResponse:
+        return AttendanceResponse(
+            items=[],
+            total=0,
+            summary=AttendanceSummary(
+                total_staff=0,
+                total_worked_hours=Decimal("0"),
+                total_expected_hours=Decimal("0"),
+                clocked_in_count=0,
+            ),
+            date_from=start_date.isoformat(),
+            date_to=end_date.isoformat(),
+        )
+
+    # A scoped caller with no assigned branches sees nothing (secure default).
+    if branch_ids is not None and not branch_ids:
+        return _empty()
+
+    # 1. Clock entries in range (branch-scoped).
+    entry_q = select(TimeClockEntry).where(
+        TimeClockEntry.org_id == org_id,
+        TimeClockEntry.clock_in_at >= start_dt,
+        TimeClockEntry.clock_in_at < end_dt,
+    )
+    if branch_ids is not None:
+        entry_q = entry_q.where(TimeClockEntry.branch_id.in_(branch_ids))
+    entries = (await db.execute(entry_q)).scalars().all()
+
+    by_staff: dict[UUID, list] = {}
+    for e in entries:
+        by_staff.setdefault(e.staff_id, []).append(e)
+    if not by_staff:
+        return _empty()
+
+    staff_ids = set(by_staff)
+
+    # Resolve staff (name / position / arrangement / schedule).
+    staff_map = {
+        s.id: s
+        for s in (
+            await db.execute(select(StaffMember).where(StaffMember.id.in_(staff_ids)))
+        ).scalars().all()
+    }
+
+    # Resolve branch names for any branch referenced by an entry.
+    branch_id_set = {
+        e.branch_id for ents in by_staff.values() for e in ents if e.branch_id
+    }
+    branch_map: dict[UUID, str] = {}
+    if branch_id_set:
+        branch_map = {
+            b.id: b.name
+            for b in (
+                await db.execute(select(Branch).where(Branch.id.in_(branch_id_set)))
+            ).scalars().all()
+        }
+
+    # 2. Scheduled minutes per staff (work shifts overlapping the range, clamped).
+    scheduled_minutes: dict[UUID, int] = {}
+    sched_rows = (
+        await db.execute(
+            select(ScheduleEntry).where(
+                ScheduleEntry.org_id == org_id,
+                ScheduleEntry.staff_id.in_(staff_ids),
+                ScheduleEntry.status != "cancelled",
+                ScheduleEntry.entry_type.notin_(["leave", "break"]),
+                ScheduleEntry.start_time < end_dt,
+                ScheduleEntry.end_time > start_dt,
+            )
+        )
+    ).scalars().all()
+    for se in sched_rows:
+        clamped_start = max(se.start_time, start_dt)
+        clamped_end = min(se.end_time, end_dt)
+        mins = int((clamped_end - clamped_start).total_seconds() // 60)
+        if mins > 0 and se.staff_id is not None:
+            scheduled_minutes[se.staff_id] = scheduled_minutes.get(se.staff_id, 0) + mins
+
+    # 3. Build rows.
+    rows: list[AttendanceRow] = []
+    total_worked = 0
+    total_expected = 0
+    clocked_in_count = 0
+
+    for staff_id, ents in by_staff.items():
+        staff = staff_map.get(staff_id)
+        completed = [e for e in ents if e.clock_out_at is not None]
+        open_entries = [e for e in ents if e.clock_out_at is None]
+        worked = sum((e.worked_minutes or 0) for e in completed)
+        is_in = len(open_entries) > 0
+        last_out = max((e.clock_out_at for e in completed), default=None)
+
+        sched = scheduled_minutes.get(staff_id, 0)
+        if sched > 0:
+            expected = sched
+            source = "scheduled"
+        else:
+            roster = compute_fixed_rostered_minutes(
+                getattr(staff, "availability_schedule", None), start_date, end_date,
+            )
+            if roster > 0:
+                expected = roster
+                source = (
+                    "fixed"
+                    if getattr(staff, "working_arrangement", None) == "fixed"
+                    else "roster"
+                )
+            else:
+                expected = 0
+                source = "none"
+
+        # Branch name = the most recent entry's branch (best-effort).
+        branch_name = None
+        for e in sorted(ents, key=lambda x: (x.clock_in_at or start_dt), reverse=True):
+            if e.branch_id and e.branch_id in branch_map:
+                branch_name = branch_map[e.branch_id]
+                break
+
+        rows.append(
+            AttendanceRow(
+                staff_id=staff_id,
+                staff_name=(getattr(staff, "name", None) or "Unknown"),
+                position=getattr(staff, "position", None),
+                branch_name=branch_name,
+                worked_hours=_minutes_to_hours(worked),
+                expected_hours=_minutes_to_hours(expected) if source != "none" else None,
+                expected_source=source,
+                variance_hours=_minutes_to_hours(worked - expected) if source != "none" else None,
+                shift_count=len(ents),
+                is_clocked_in=is_in,
+                last_clock_out_at=last_out,
+            )
+        )
+        total_worked += worked
+        total_expected += expected
+        if is_in:
+            clocked_in_count += 1
+
+    rows.sort(key=lambda r: r.staff_name.lower())
+
+    return AttendanceResponse(
+        items=rows,
+        total=len(rows),
+        summary=AttendanceSummary(
+            total_staff=len(rows),
+            total_worked_hours=_minutes_to_hours(total_worked),
+            total_expected_hours=_minutes_to_hours(total_expected),
+            clocked_in_count=clocked_in_count,
+        ),
+        date_from=start_date.isoformat(),
+        date_to=end_date.isoformat(),
+    )

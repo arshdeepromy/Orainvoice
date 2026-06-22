@@ -30,8 +30,6 @@ from pydantic import BaseModel, Field, field_validator
 from app.modules.staff.security import (
     is_masked_bank,
     is_masked_ird,
-    mask_bank_account,
-    mask_ird,
 )
 
 
@@ -116,6 +114,21 @@ class StaffMemberCreate(BaseModel):
     # Request-only flag for the minimum-wage gate (R4). Not persisted.
     minimum_wage_override: bool = False
 
+    # Request-only per-staff pay-cycle selection (per-staff-pay-cycle feature).
+    # NOT a ``staff_members`` column — the service persists it as a
+    # ``pay_cycle_assignments`` row (target_type='staff') via
+    # ``set_staff_pay_cycle``. ``None`` / omitted means "no staff-level
+    # assignment", so the staff member resolves to the org Default_Cycle
+    # (REQ 2.1, 2.3).
+    pay_cycle_id: UUID | None = None
+
+    # Request-only flag for self-service onboarding (R1.3, R1.4). When
+    # set, the create handler mints an onboarding token and emails the
+    # staff member a ``/onboard/{token}`` link. Requires a non-empty
+    # ``email`` (enforced client-side and belt-and-braces server-side).
+    # Not persisted.
+    send_onboarding_link: bool = False
+
     @field_validator("kiwisaver_employee_rate")
     @classmethod
     def _validate_kiwisaver_employee_rate(
@@ -185,6 +198,14 @@ class StaffMemberUpdate(BaseModel):
 
     # Request-only flag for the minimum-wage gate (R4). Not persisted.
     minimum_wage_override: bool = False
+
+    # Request-only per-staff pay-cycle selection (per-staff-pay-cycle feature).
+    # Tri-state via ``model_dump(exclude_unset=True)`` in ``update_staff``:
+    #   - omitted        → leave the existing assignment unchanged
+    #   - ``<uuid>``     → set/replace the staff-level assignment (REQ 2.2, 3.1)
+    #   - ``null``       → clear the assignment → resolves to default (REQ 3.3)
+    # NOT a ``staff_members`` column — persisted via ``set_staff_pay_cycle``.
+    pay_cycle_id: UUID | None = None
 
     @field_validator("ird_number")
     @classmethod
@@ -298,27 +319,36 @@ class StaffMemberResponse(BaseModel):
     last_pay_review_date: date | None = None
     employment_agreement_upload_id: UUID | None = None
 
-    @field_validator("ird_number", mode="before")
-    @classmethod
-    def _mask_ird_field(cls, v: str | None) -> str | None:
-        # If the value is already masked (i.e. round-tripped through the
-        # service or stored that way somewhere), pass it through. If
-        # plaintext somehow leaked into this serialisation path, mask
-        # it now as a defence-in-depth.
-        if v is None:
-            return None
-        if is_masked_ird(v):
-            return v
-        return mask_ird(v)
+    # ------------------------------------------------------------------
+    # Onboarding link send result (R3.6). Advisory, request-driven —
+    # populated only when ``send_onboarding_link`` was set on create /
+    # resend. ``onboarding_email_sent`` reports whether the invite email
+    # was dispatched; ``onboarding_email_error`` carries a machine code
+    # (e.g. ``"send_failed"`` / ``"no_email"``) when the send failed.
+    # Both stay ``None`` for ordinary reads that did not trigger a send.
+    # ------------------------------------------------------------------
+    onboarding_email_sent: bool | None = None
+    onboarding_email_error: str | None = None
 
-    @field_validator("bank_account_number", mode="before")
-    @classmethod
-    def _mask_bank_field(cls, v: str | None) -> str | None:
-        if v is None:
-            return None
-        if is_masked_bank(v):
-            return v
-        return mask_bank_account(v)
+    # ------------------------------------------------------------------
+    # Resolved pay cycle (per-staff-pay-cycle feature, REQ 5.1-5.3).
+    # Read-only. Populated in the router from
+    # ``resolve_pay_cycles_for_staff_batch``: ``pay_cycle_id`` /
+    # ``pay_cycle_name`` are the resolved cycle's id and name, and
+    # ``pay_cycle_is_default`` is true when the staff member resolved via
+    # the org Default_Cycle (REQ 5.2). All three are ``None`` / ``False``
+    # when the staff member has no resolved cycle (REQ 5.3).
+    # ------------------------------------------------------------------
+    pay_cycle_id: UUID | None = None
+    pay_cycle_name: str | None = None
+    pay_cycle_is_default: bool = False
+
+    # NOTE: ``ird_number`` and ``bank_account_number`` are returned in FULL
+    # (unmasked) here. These are operationally required on the staff details
+    # page and the payslip, and this endpoint family is already restricted to
+    # staff-management roles (org_admin / branch_admin / location_manager). The
+    # service layer still stores both values envelope-encrypted at rest; the
+    # router decrypts them for this trusted, RBAC-gated serialisation path.
 
     model_config = {"from_attributes": True}
 
@@ -418,6 +448,30 @@ class StaffPayRateListResponse(BaseModel):
     """Wrapper per project-overview rule: arrays go in ``{ items, total }``."""
 
     items: list[StaffPayRateResponse]
+    total: int
+
+
+# ---------------------------------------------------------------------------
+# Staff documents (onboarding / working-rights / manually-uploaded files)
+# ---------------------------------------------------------------------------
+
+
+class StaffDocumentItem(BaseModel):
+    """A document linked to a staff member, for the Staff → Documents table."""
+
+    id: UUID
+    document_type: str
+    description: str | None = None
+    file_name: str
+    file_size: int | None = None
+    created_at: datetime
+    expiry_date: date | None = None
+
+
+class StaffDocumentListResponse(BaseModel):
+    """Wrapper per project-overview rule: arrays go in ``{ items, total }``."""
+
+    items: list[StaffDocumentItem]
     total: int
 
 
@@ -522,3 +576,212 @@ class StaffListKpisResponse(BaseModel):
     employee_count: int
     with_login_count: int
     avg_hourly_rate: Decimal | None = None  # null → '—'
+
+
+# ---------------------------------------------------------------------------
+# Self-service onboarding — public prefill / draft / submit + admin status
+# (R4, R6, R8, R9, R11, R12, R13)
+#
+# These schemas back the public, token-gated onboarding endpoints
+# (``/api/v2/public/staff-onboarding/...``) and the authenticated admin
+# status endpoint (``GET /api/v2/staff/{id}/onboarding-link``).
+#
+# Option lists reuse the module-level ``TaxCode`` / ``ResidencyType``
+# Literals and ``_KIWISAVER_EMPLOYEE_RATES`` so the public form's allowed
+# values never drift from the authoritative Create/Update schemas.
+# ---------------------------------------------------------------------------
+
+# Static option lists derived from the existing Literals / rate tuple so the
+# public form renders exactly the values the rest of the module accepts. Built
+# once at import so every prefill response shares the same constant lists.
+_TAX_CODE_OPTIONS: tuple[str, ...] = (
+    "M", "ME", "S", "SH", "ST", "SB", "CAE", "NSW", "ND",
+)
+_RESIDENCY_OPTIONS: tuple[str, ...] = (
+    "citizen", "permanent_resident", "work_visa", "student_visa", "other",
+)
+# KiwiSaver employee-rate options as plain ints for the form dropdown,
+# derived from the authoritative ``_KIWISAVER_EMPLOYEE_RATES`` Decimal tuple.
+_KIWISAVER_RATE_OPTIONS: tuple[int, ...] = tuple(
+    int(r) for r in _KIWISAVER_EMPLOYEE_RATES
+)
+
+
+class OnboardingDraftFields(BaseModel):
+    """The saved draft as returned on resume (R12.3, R11.6).
+
+    Non-sensitive fields are returned in full. ``ird_number`` and
+    ``bank_account_number`` are returned **masked** (never the decrypted
+    plaintext) alongside ``has_ird`` / ``has_bank`` presence flags so the
+    client can render the masked placeholder and, via the existing
+    ``isMaskedIrd`` / ``isMaskedBank`` heuristic, avoid re-sending it
+    unless the staff member retypes the value. ``documents_staged_count``
+    carries the number of files staged locally (the files themselves are
+    never stored in the draft — they upload only on final submit).
+    """
+
+    # Personal / tax / residency — returned in full (not sensitive).
+    last_name: str | None = None
+    phone: str | None = None
+    emergency_contact_name: str | None = None
+    emergency_contact_phone: str | None = None
+    tax_code: str | None = None
+    student_loan: bool | None = None
+    kiwisaver_enrolled: bool | None = None
+    kiwisaver_employee_rate: Decimal | None = None
+    residency_type: str | None = None
+    visa_expiry_date: date | None = None
+
+    # Sensitive PII — masked placeholder + presence flag (R11.6).
+    ird_number: str | None = None
+    has_ird: bool = False
+    bank_account_number: str | None = None
+    has_bank: bool = False
+
+    # Documents staged locally (files not stored in the draft).
+    documents_staged_count: int = 0
+
+
+class OnboardingPrefillResponse(BaseModel):
+    """``GET /api/v2/public/staff-onboarding/{token}`` 200 body.
+
+    Exposes only ``first_name`` + ``email`` of the staff member (R11.6) —
+    these are pre-filled read-only (R4.2) — plus the org display name for
+    page chrome (R12.4), the static option lists, and a
+    ``bank_account_required`` flag from org config (R5.4).
+
+    For resume (R12.3), a nullable ``draft`` object carries the saved
+    partial form (with IRD/bank masked), and the top-level
+    ``completion_percentage`` / ``last_saved_at`` reflect the server-side
+    draft state. All three are ``None`` when no draft has been saved yet.
+    """
+
+    first_name: str
+    email: str
+    org_name: str
+    tax_code_options: list[str] = Field(
+        default_factory=lambda: list(_TAX_CODE_OPTIONS),
+    )
+    residency_options: list[str] = Field(
+        default_factory=lambda: list(_RESIDENCY_OPTIONS),
+    )
+    kiwisaver_rate_options: list[int] = Field(
+        default_factory=lambda: list(_KIWISAVER_RATE_OPTIONS),
+    )
+    bank_account_required: bool = False
+
+    # Resume payload (R12.3) — null when no draft saved yet.
+    draft: OnboardingDraftFields | None = None
+    completion_percentage: int | None = None
+    last_saved_at: datetime | None = None
+
+
+class OnboardingDraftRequest(BaseModel):
+    """``PUT /api/v2/public/staff-onboarding/{token}/draft`` body (R12.1).
+
+    Every field is optional (``| None = None``) — partial data is the whole
+    point of a draft (R12.5). No submit-time field validation runs here;
+    only the basic shape/size guards in the handler apply. The handler
+    serializes this payload to JSON and envelope-encrypts the whole blob
+    before storing it on the token row (R12.6).
+    """
+
+    last_name: str | None = None
+    phone: str | None = None
+    emergency_contact_name: str | None = None
+    emergency_contact_phone: str | None = None
+    bank_account_number: str | None = None
+    ird_number: str | None = None
+    tax_code: str | None = None
+    student_loan: bool | None = None
+    kiwisaver_enrolled: bool | None = None
+    kiwisaver_employee_rate: Decimal | None = None
+    residency_type: str | None = None
+    visa_expiry_date: date | None = None
+    documents_staged_count: int | None = None
+
+
+class OnboardingDraftResponse(BaseModel):
+    """``PUT /api/v2/public/staff-onboarding/{token}/draft`` 200 body (R12.1).
+
+    ``completion_percentage`` is the server-computed, section-weighted score
+    in ``[0, 100]`` (R13.3, R13.4); ``last_saved_at`` is the draft's
+    ``draft_updated_at`` timestamp the client renders as "Saved {time}".
+    """
+
+    ok: bool = True
+    completion_percentage: int
+    last_saved_at: datetime
+
+
+class OnboardingFieldError(BaseModel):
+    """One inline field error in a submit rejection (R9.2, R14).
+
+    ``message`` is the human-readable text; ``code`` is the machine code
+    for client-side mapping. Carries no raw DB/exception text (R14).
+    """
+
+    message: str
+    code: str
+
+
+class OnboardingSubmitResponse(BaseModel):
+    """``POST /api/v2/public/staff-onboarding/{token}`` response body (R9).
+
+    On success: ``ok=true`` + a friendly ``message`` (R9.5). On validation
+    failure (returned with HTTP 422): ``ok=false``, a top-level ``message``,
+    and an ``errors`` map of ``field -> {message, code}`` (R9.2, R14).
+    ``warnings`` carries any non-blocking advisories.
+    """
+
+    ok: bool
+    message: str | None = None
+    errors: dict[str, OnboardingFieldError] | None = None
+    warnings: list[str] | None = None
+
+
+class OnboardingLinkStatusResponse(BaseModel):
+    """``GET /api/v2/staff/{staff_id}/onboarding-link`` 200 body (R10.1, R13).
+
+    ``state`` is the admin lifecycle label from
+    ``onboarding_lifecycle_label(row, now)``:
+    ``not_started`` (pending, no draft saved), ``in_progress`` (pending,
+    draft saved), ``completed`` (consumed), ``expired`` (pending past
+    expiry), ``revoked``, or ``none`` (no token row).
+
+    ``completion_percentage`` and ``last_saved_at`` are populated only when
+    ``state == "in_progress"`` (R13.1, R13.2); they are ``None`` otherwise.
+    The timestamp fields describe the resolved token row.
+    """
+
+    state: Literal[
+        "not_started", "in_progress", "completed", "expired", "revoked", "none",
+    ]
+    expires_at: datetime | None = None
+    created_at: datetime | None = None
+    consumed_at: datetime | None = None
+    completion_percentage: int | None = None
+    last_saved_at: datetime | None = None
+
+
+class IssuePortalAccessResponse(BaseModel):
+    """``POST /api/v2/staff/{staff_id}/portal-access`` 201 body (R5.3, R15.1, R15.3).
+
+    ``invite_sent`` reflects whether the credential-setup email was accepted
+    by a provider; ``invite_error`` carries the machine error code
+    (``portal_email_required`` / ``send_failed``) when delivery failed. The
+    Portal_User row is always created and preserved — a failed email never
+    rolls it back (R15.3), so the endpoint still returns ``201``.
+    """
+
+    portal_user_id: UUID
+    email: str
+    invite_sent: bool
+    invite_error: str | None = None
+
+
+class RevokePortalAccessResponse(BaseModel):
+    """``DELETE /api/v2/staff/{staff_id}/portal-access`` 200 body (R5.10)."""
+
+    revoked: bool = True
+    sessions_invalidated: int = 0

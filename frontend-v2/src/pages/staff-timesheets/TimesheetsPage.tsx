@@ -1,21 +1,52 @@
 import { useCallback, useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import apiClient from '@/api/client'
 import ClockedInTab from './ClockedInTab'
+import AttendanceTab from './AttendanceTab'
 import TimesheetsTab from './TimesheetsTab'
 import PayRunsTab from './PayRunsTab'
 import type { PeriodSummary } from './types'
 
-const TABS = ['Clocked In', 'Timesheets', 'Pay Runs'] as const
+const TABS = ['Attendance', 'Clocked In', 'Timesheets', 'Pay Runs'] as const
+
+// URL <-> tab mapping so the active tab persists across reloads and can be
+// deep-linked (e.g. /timesheets?tab=pay-runs from the Payroll console).
+const TAB_TO_SLUG: Record<(typeof TABS)[number], string> = {
+  Attendance: 'attendance',
+  'Clocked In': 'clocked-in',
+  Timesheets: 'timesheets',
+  'Pay Runs': 'pay-runs',
+}
+const SLUG_TO_TAB: Record<string, (typeof TABS)[number]> = {
+  attendance: 'Attendance',
+  'clocked-in': 'Clocked In',
+  timesheets: 'Timesheets',
+  'pay-runs': 'Pay Runs',
+}
 
 export default function TimesheetsPage() {
-  const [activeTab, setActiveTab] = useState<(typeof TABS)[number]>('Clocked In')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const activeTab: (typeof TABS)[number] = SLUG_TO_TAB[searchParams.get('tab') ?? ''] ?? 'Attendance'
+  const setActiveTab = useCallback(
+    (tab: (typeof TABS)[number]) => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev)
+          next.set('tab', TAB_TO_SLUG[tab])
+          return next
+        },
+        { replace: true },
+      )
+    },
+    [setSearchParams],
+  )
   const navigate = useNavigate()
 
   // Summary stats from API
   const [clockedInCount, setClockedInCount] = useState(0)
   const [pendingCount, setPendingCount] = useState(0)
   const [approvedCount, setApprovedCount] = useState(0)
+  const [lockedCount, setLockedCount] = useState(0)
   const [totalHours, setTotalHours] = useState(0)
 
   useEffect(() => {
@@ -32,6 +63,7 @@ export default function TimesheetsPage() {
   const handlePeriodSummary = useCallback((summary: PeriodSummary) => {
     setPendingCount(summary?.pending_count ?? 0)
     setApprovedCount(summary?.approved_count ?? 0)
+    setLockedCount(summary?.locked_count ?? 0)
     const ordinary = Number(summary?.total_ordinary_hours) || 0
     const overtime = Number(summary?.total_overtime_hours) || 0
     const publicHoliday = Number(summary?.total_public_holiday_hours) || 0
@@ -65,7 +97,7 @@ export default function TimesheetsPage() {
       </div>
 
       {/* Summary cards */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
         <div className="rounded-card border border-border bg-card p-4 shadow-card">
           <div className="flex items-center justify-between">
             <p className="text-xs font-medium uppercase tracking-wide text-muted">Clocked In</p>
@@ -101,6 +133,18 @@ export default function TimesheetsPage() {
           </div>
           <p className="mt-2 text-2xl font-bold text-success">{approvedCount}</p>
           <p className="mt-0.5 text-xs text-muted">ready to lock</p>
+        </div>
+        <div className="rounded-card border border-border bg-card p-4 shadow-card">
+          <div className="flex items-center justify-between">
+            <p className="text-xs font-medium uppercase tracking-wide text-muted">Locked</p>
+            <div className="rounded-full bg-accent/10 p-1.5">
+              <svg className="h-3.5 w-3.5 text-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
+              </svg>
+            </div>
+          </div>
+          <p className="mt-2 text-2xl font-bold text-text">{lockedCount}</p>
+          <p className="mt-0.5 text-xs text-muted">approved &amp; ready for pay run</p>
         </div>
         <div className="rounded-card border border-border bg-card p-4 shadow-card">
           <div className="flex items-center justify-between">
@@ -143,6 +187,7 @@ export default function TimesheetsPage() {
 
         {/* Tab content */}
         <div className="p-4">
+          {activeTab === 'Attendance' && <AttendanceTab />}
           {activeTab === 'Clocked In' && <ClockedInTab />}
           {activeTab === 'Timesheets' && <TimesheetsTab onPeriodSummary={handlePeriodSummary} />}
           {activeTab === 'Pay Runs' && <PayRunsTab />}

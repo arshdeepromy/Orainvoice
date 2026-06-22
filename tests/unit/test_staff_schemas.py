@@ -288,35 +288,27 @@ def _response_kwargs(**overrides):
 
 
 class TestStaffMemberResponseMasking:
-    """Plaintext IRD + bank are masked on the outbound model."""
+    """IRD + bank are returned in FULL on the outbound model.
 
-    def test_plaintext_ird_is_masked(self) -> None:
+    Masking was removed (operationally required full visibility on the
+    staff details page, which is RBAC-gated to staff-management roles).
+    The values remain envelope-encrypted at rest; the router decrypts
+    them only for this trusted serialisation path.
+    """
+
+    def test_plaintext_ird_is_returned_in_full(self) -> None:
         r = StaffMemberResponse(**_response_kwargs(ird_number="123456789"))
-        assert r.ird_number == "***789"
-
-    def test_already_masked_ird_passes_through(self) -> None:
-        # Service may have already masked before constructing the model;
-        # the validator must not double-mask or trip up.
-        r = StaffMemberResponse(**_response_kwargs(ird_number="***789"))
-        assert r.ird_number == "***789"
+        assert r.ird_number == "123456789"
 
     def test_none_ird_stays_none(self) -> None:
         r = StaffMemberResponse(**_response_kwargs(ird_number=None))
         assert r.ird_number is None
 
-    def test_plaintext_bank_is_masked(self) -> None:
+    def test_plaintext_bank_is_returned_in_full(self) -> None:
         r = StaffMemberResponse(
             **_response_kwargs(bank_account_number="02-1234-56789012-23"),
         )
-        # ``mask_bank_account`` returns ``**-****-****12-**`` for the
-        # canonical 16-digit format (per ``test_staff_phase1_mask.py``).
-        assert r.bank_account_number == "**-****-****12-**"
-
-    def test_already_masked_bank_passes_through(self) -> None:
-        r = StaffMemberResponse(
-            **_response_kwargs(bank_account_number="**-****-****12-**"),
-        )
-        assert r.bank_account_number == "**-****-****12-**"
+        assert r.bank_account_number == "02-1234-56789012-23"
 
     def test_none_bank_stays_none(self) -> None:
         r = StaffMemberResponse(**_response_kwargs(bank_account_number=None))
@@ -324,20 +316,19 @@ class TestStaffMemberResponseMasking:
 
 
 class TestMaskRoundTrip:
-    """Service-emulation round-trip: input plaintext → response masked."""
+    """Service-emulation round-trip: input plaintext → response full value."""
 
-    def test_create_then_response_masks_ird(self) -> None:
+    def test_create_then_response_returns_full_ird(self) -> None:
         # Caller submits plaintext (CREATE).
         c = StaffMemberCreate(first_name="Jane", ird_number="123456789")
         assert c.ird_number == "123456789"
 
         # Service stores the ciphertext, then on read constructs a
-        # response model with the plaintext (decrypted) — the schema
-        # validator masks it before serialisation.
+        # response model with the plaintext (decrypted) — returned in full.
         r = StaffMemberResponse(**_response_kwargs(ird_number=c.ird_number))
-        assert r.ird_number == "***789"
+        assert r.ird_number == "123456789"
 
-    def test_create_then_response_masks_bank(self) -> None:
+    def test_create_then_response_returns_full_bank(self) -> None:
         c = StaffMemberCreate(
             first_name="Jane", bank_account_number="02-1234-56789012-23",
         )
@@ -346,7 +337,7 @@ class TestMaskRoundTrip:
         r = StaffMemberResponse(
             **_response_kwargs(bank_account_number=c.bank_account_number),
         )
-        assert r.bank_account_number == "**-****-****12-**"
+        assert r.bank_account_number == "02-1234-56789012-23"
 
 
 class TestStaffMemberResponseDefaults:

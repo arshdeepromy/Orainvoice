@@ -62,7 +62,6 @@ from app.modules.payslips.models import (
     PayslipReimbursement,
 )
 from app.modules.staff.models import StaffMember
-from app.modules.staff.security import mask_bank_account, mask_ird
 
 logger = logging.getLogger(__name__)
 
@@ -312,10 +311,13 @@ async def _load_remaining_leave_balances(
 
 
 def _mask_staff_pii(staff: StaffMember) -> tuple[str | None, str, bool]:
-    """Return ``(ird_number_masked, bank_account_masked, cash_fallback)``.
+    """Return ``(ird_number, bank_account, cash_fallback)`` for the payslip.
 
-    Decrypts the IRD + bank-account ciphertext columns and runs them
-    through the masking helpers from :mod:`app.modules.staff.security`.
+    Decrypts the IRD + bank-account ciphertext columns and returns them in
+    FULL. A payslip is the employee's own statutory document, so it must show
+    the complete IRD number and the bank account the pay is deposited into —
+    masked stars are not acceptable for payroll/operations.
+
     Per N18, when ``staff.bank_account_number_encrypted IS NULL`` the
     bank-line text is the literal cash-fallback string and
     ``cash_fallback=True`` so the template can render it in italics.
@@ -325,41 +327,38 @@ def _mask_staff_pii(staff: StaffMember) -> tuple[str | None, str, bool]:
     rotated key doesn't block payroll. Admin sees the warning in the
     logs and can rotate via the encryption-rotate flow.
     """
-    ird_masked: str | None = None
+    ird_value: str | None = None
     if staff.ird_number_encrypted:
         try:
-            ird_plain = envelope_decrypt_str(bytes(staff.ird_number_encrypted))
-            ird_masked = mask_ird(ird_plain)
-        except Exception:  # noqa: BLE001 — best-effort; mask on failure.
+            ird_value = envelope_decrypt_str(bytes(staff.ird_number_encrypted))
+        except Exception:  # noqa: BLE001 — best-effort; placeholder on failure.
             logger.warning(
                 "render_pdf: failed to decrypt IRD for staff=%s",
                 staff.id,
                 exc_info=True,
             )
-            ird_masked = "***"
+            ird_value = "***"
 
     cash_fallback = False
-    bank_masked: str
+    bank_value: str
     if staff.bank_account_number_encrypted:
         try:
-            bank_plain = envelope_decrypt_str(
+            bank_value = envelope_decrypt_str(
                 bytes(staff.bank_account_number_encrypted),
-            )
-            masked = mask_bank_account(bank_plain)
-            bank_masked = masked or "**-****-****-**"
+            ) or "**-****-****-**"
         except Exception:  # noqa: BLE001 — best-effort.
             logger.warning(
                 "render_pdf: failed to decrypt bank account for staff=%s",
                 staff.id,
                 exc_info=True,
             )
-            bank_masked = "**-****-****-**"
+            bank_value = "**-****-****-**"
     else:
         # N18 — no bank account on file.
-        bank_masked = _CASH_FALLBACK_TEXT
+        bank_value = _CASH_FALLBACK_TEXT
         cash_fallback = True
 
-    return ird_masked, bank_masked, cash_fallback
+    return ird_value, bank_value, cash_fallback
 
 
 # ---------------------------------------------------------------------------

@@ -4,6 +4,43 @@ All notable changes to OraInvoice are documented in this file.
 
 ---
 
+## [1.26.0] - 2026-06-22
+
+### Added — Leave Balances & Eligibility
+
+- **Org-wide Leave Balances view.** A new "Leave Balances" page (People sidebar, module-gated on `staff_management`) lists every staff member with their vested leave balances, filterable and groupable by employment type (a display convenience that never changes statutory eligibility). Clicking a staff member drills into their per-type balances and ledger history, with a manual balance adjustment available to authorised users.
+- **Versioned, effective-dated eligibility/accrual rules engine.** A new pure rules core encodes the NZ Holidays Act 2003 as a named, `effective_from`-dated rule-set (`holidays_act_2003`), keyed only on continuous service (day-1 / 6-month / 12-month milestones) and a minimum-hours test — never on employment type. A future law change (e.g. the Employment Leave Bill) plugs in additively without rewriting the engine.
+- **Eligibility onset: vesting, notes & notifications.** A daily sweep (plus on-demand evaluation when a staff start date is set) vests entitlements idempotently — annual holidays (4 weeks) at 12 months; sick/bereavement/family-violence at 6 months subject to the hours test — appending `leave_ledger` accrual rows, writing an append-only explanatory eligibility note, and raising a de-duped in-app notification (at most one per staff × leave type).
+- **Casual 8% pay-as-you-go.** Casual staff (and fixed-term ≤3 months) resolve to `casual_payg` and never accrue an annual-holidays balance; the view shows the pay-as-you-go indicator. A termination-payout calculator applies the pre/post 12-month rule (8% of gross vs greater of ordinary weekly pay / average weekly earnings).
+- **In-app NZ Holidays Act 2003 reference guide** covering the eligibility rules, the hours test, the service milestones, and the parental-leave-out-of-scope note.
+- **RBAC & isolation.** New `leave.balance_view` / `leave.balance_adjust` permissions (org_admin holds both); every endpoint is org-scoped via row-level security with `leave_eligibility_notes` carrying its own `tenant_isolation` policy.
+
+## [1.25.0] - 2026-06-20
+
+### Added — Organisation Employee Portal
+
+- **Branded per-org employee login at `/e/{slug}`.** Each organisation gets a unique URL slug and a dedicated, branded employee login page served at `/e/{slug}` — employees sign in against their own organisation's portal rather than a generic shared login. The slug resolves the org's branding (name, logo, colours) so the login surface is recognisably theirs.
+- **Credential issuance, invitations, and resets.** Admins can issue employee portal credentials, send invitations, and trigger password resets from the org admin surface. Invitations and resets are token-gated and delivered via the unified multi-provider email sender, mirroring the existing invitation/lockout/reset email flows.
+- **Enable/disable portal toggle per organisation.** The employee portal can be turned on or off per org via an admin toggle, controlling whether the `/e/{slug}` login is active and whether employees can authenticate against it.
+- **Mobile Portal_Type_Selector.** The mobile app gains a Portal_Type_Selector so users can choose the appropriate portal/login context on the mobile companion app, aligned with the new organisation employee portal.
+
+---
+
+## [1.24.0]
+
+### Added — Self-service staff onboarding link
+
+- **"Send onboarding link" checkbox in Add Staff.** Admins (`org_admin` / `branch_admin`) get a new checkbox alongside "Also create as a user". When ticked it requires an email address (inline validation blocks submission until one is provided), and on submit it creates the staff record, mints a secure onboarding token, and emails the staff member a link — all as a single atomic transaction (record-creation failure rolls back; email-send failure preserves the record but surfaces an error to the admin). The two checkboxes are independent and may be ticked together.
+- **Secure, token-gated public onboarding form.** A cryptographically random, 7-day, single-use token grants access to a logged-out self-service form at `/onboard/:token` (`frontend-v2/src/pages/public/OnboardingFormPage.tsx`) — no authentication required. The staff member fills in personal details, NZ bank account, IRD / tax code (with KiwiSaver employee rate), residency / working-rights status (with visa-expiry capture and warnings), and uploads working-rights compliance documents. Client-side validators mirror the server's side-effect-free validators for parity. The token is marked consumed only on successful final submission.
+- **Save-draft and resume from any device.** Partial form data is persisted server-side against the token (save-draft button plus debounced autosave-on-blur via `PUT`), so a staff member can leave and resume later on any device. Already-saved sensitive fields (IRD, bank account) are returned masked and are not re-sent unless retyped. Server-computed `completion_percentage` (five equally-weighted sections) and `last_saved_at` drive a progress indicator.
+- **Admin resend / revoke controls and lifecycle visibility.** The staff Overview tab shows the onboarding lifecycle state (`not_started` / `in_progress` / `completed` / `expired` / `revoked` / `none`), a progress bar with completion percentage and "last saved" line while in progress, and Resend (revokes the prior token + draft, mints and sends a fresh link) and Revoke (idempotent) actions. Deactivating or terminating a staff member auto-revokes any active onboarding token and purges its draft in the same transaction.
+- **Completion notifications.** On successful submission, the staff member receives a best-effort confirmation email, and the organisation's onboarding-link senders (`org_admin` / `branch_admin`) receive best-effort in-app and email notifications that onboarding is complete.
+- **Humanized errors throughout.** Every token-state rejection (not-found / expired / revoked / consumed / staff-inactive), validation failure, encryption failure, and email-send failure maps to a non-empty human-readable message — never raw DB or exception text.
+
+Backed by a new `staff_onboarding_tokens` table (Alembic `0223`) with tenant RLS, an additive `compliance_documents.staff_id` column, and reuse of the unified multi-provider email sender and existing in-app notification system.
+
+---
+
 ## [1.23.0]
 
 ### Added — Customer reminder consent

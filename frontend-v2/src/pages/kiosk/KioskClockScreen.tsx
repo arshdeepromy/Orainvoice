@@ -33,6 +33,7 @@ export type ClockStep =
   | 'confirm-identity'
   | 'camera'
   | 'confirmation'
+  | 'needs-manager'
 
 type ClockAction = 'in' | 'out'
 
@@ -96,6 +97,15 @@ function getErrorMessage(err: unknown, context: 'lookup' | 'upload' | 'action'):
     if (detail === 'photo_required') {
       return 'A photo is required. Please try the camera again.'
     }
+    // Refined 409 messages — the recovery flow in `handleCapture` normally
+    // intercepts `already_clocked_in` before this fallback is reached; these
+    // only surface when recovery itself could not resolve the conflict.
+    if (detail === 'already_clocked_in') {
+      return 'You still have an open shift. A manager can close it for you here.'
+    }
+    if (detail === 'not_clocked_in') {
+      return "You don't appear to be clocked in. Tap Clock In to start a shift."
+    }
     if (detail === 'invalid_action' || status === 409) {
       return 'Looks like your clock-in/out state is out of sync. Please see your manager.'
     }
@@ -113,6 +123,75 @@ function getErrorMessage(err: unknown, context: 'lookup' | 'upload' | 'action'):
   }
 
   return "Something went wrong. Please try again or see your manager."
+}
+
+/* ──────────────────────────────────────────── 409-recovery helpers ── */
+
+/**
+ * Detect the backend's `409 already_clocked_in` conflict.
+ *
+ * The kiosk action endpoint returns `{ detail: "already_clocked_in" }` with a
+ * 409 status when a clock-IN is attempted while an open entry already exists
+ * (a forgotten clock-out, or this session's own double-submit).
+ */
+function is409AlreadyClockedIn(err: unknown): boolean {
+  const ax = err as AxiosError<ApiError>
+  return (
+    ax?.response?.status === 409 &&
+    (ax?.response?.data?.detail ?? '') === 'already_clocked_in'
+  )
+}
+
+/**
+ * How recently a clock-in submit must have happened for an `already_clocked_in`
+ * conflict to plausibly be our own (retried / double-submitted) write rather
+ * than a genuinely stale open entry. Kept short — the kiosk only ever submits
+ * once per capture, so a real double-submit lands within seconds.
+ */
+const JUST_NOW_WINDOW_MS = 2 * 60 * 1000
+
+/**
+ * Decide whether a live open entry looks like it was created by *this* capture
+ * (an idempotent double-submit) versus a genuine forgotten clock-out.
+ *
+ * It is "just now" only when BOTH hold:
+ *   - the staff member was NOT already clocked in when this kiosk session began
+ *     (so the open entry cannot pre-date this capture), and
+ *   - our clock-in submit was only moments ago.
+ *
+ * Otherwise the open entry pre-dates this capture and must be routed to a
+ * manager — never silently treated as a fresh clock-in.
+ */
+function looksLikeJustNow(
+  fresh: LookupResult | null,
+  ctx: { wasClockedInAtSessionStart: boolean; attemptStartedAt: number | null },
+): boolean {
+  if (!fresh?.currently_clocked_in) return false
+  if (ctx.wasClockedInAtSessionStart) return false
+  if (ctx.attemptStartedAt == null) return false
+  return Date.now() - ctx.attemptStartedAt <= JUST_NOW_WINDOW_MS
+}
+
+/**
+ * Build an optimistic clock-in confirmation result for the idempotent
+ * double-submit case. The server already holds the real open entry; we only
+ * need enough to render the success screen, so `clock_in_at` is set to now and
+ * the on-file photo is reused from the lookup.
+ */
+function synthesiseInResult(
+  fresh: LookupResult | null,
+  fallback: { on_file_photo_url: string | null },
+): ClockActionResult {
+  return {
+    time_clock_entry_id: '',
+    action: 'in',
+    clock_in_at: new Date().toISOString(),
+    clock_out_at: null,
+    worked_minutes: null,
+    on_file_photo_url:
+      fresh?.on_file_photo_url ?? fallback.on_file_photo_url ?? null,
+    just_taken_photo_url: null,
+  }
 }
 
 /* ────────────────────────────────────────────── On-screen keyboard ── */
@@ -469,8 +548,8 @@ function IdentityConfirmStep({ lookup, intendedAction, onTakePhoto, onBack }: Id
         {stateMismatch && (
           <p className="rounded-ctl bg-warn-soft px-3 py-2 text-sm font-medium text-warn">
             {action === 'in'
-              ? 'You appear to be already clocked in. Please see your manager.'
-              : "You don't appear to be clocked in yet."}
+              ? "You may already be clocked in — continue and we'll sort it out."
+              : "You don't appear to be clocked in — continue and we'll check."}
           </p>
         )}
       </div>
@@ -486,7 +565,6 @@ function IdentityConfirmStep({ lookup, intendedAction, onTakePhoto, onBack }: Id
         <button
           type="button"
           onClick={onTakePhoto}
-          disabled={stateMismatch}
           className={[
             'inline-flex min-h-[56px] items-center justify-center rounded-ctl px-6 py-3 text-lg font-medium text-white shadow-card focus:outline-none focus:ring-2 focus:ring-offset-2',
             action === 'out'
@@ -811,6 +889,300 @@ function ConfirmationStep({
   )
 }
 
+/* ─────────────────────────────────────────── Needs-manager screen ── */
+
+interface NeedsManagerProps {
+  firstName: string
+  /** Staff id whose stale open entry should be force-closed by a manager. */
+  staffId: string
+  /** Called after the open shift is successfully closed so the kiosk can drop
+   *  the staff member back to a clean clock-in. */
+  onResolved: () => void
+  onBack: () => void
+  onExit?: () => void
+}
+
+/** One open row from `GET /api/v2/time-clock/clocked-in`. */
+interface ClockedInRow {
+  time_clock_entry_id: string
+  staff_id: string
+}
+
+/**
+ * Map the admin clock-out failure to an inline, kiosk-friendly message.
+ * The backend wraps the code as `{ detail: { detail: "..." } }`, matching the
+ * other time-clock endpoints.
+ */
+function getAdminClockOutError(err: unknown): string {
+  const ax = err as AxiosError<{ detail?: { detail?: string } | string }>
+  const status = ax?.response?.status
+  const rawDetail = ax?.response?.data?.detail
+  const detail = typeof rawDetail === 'string' ? rawDetail : rawDetail?.detail ?? ''
+
+  if (status === 403 && detail === 'forbidden_scope') {
+    return 'This staff member is outside your branch scope. Please ask an org admin to close the shift.'
+  }
+  if (status === 403 || status === 401) {
+    return 'A manager needs to be signed in on this device to close the shift.'
+  }
+  if (status === 409 && detail === 'already_clocked_out') {
+    return 'That shift is already closed — you can clock in now.'
+  }
+  if (status === 409 && detail === 'timesheet_locked') {
+    return "That shift's week is already approved. Reopen the timesheet first."
+  }
+  if (status === 404 || detail === 'time_clock_entry_not_found') {
+    return 'That open shift could not be found — you can clock in now.'
+  }
+  return "Couldn't close the shift. Please see your manager."
+}
+
+/**
+ * NeedsManagerStep — shown when a clock-IN hits `already_clocked_in` and the
+ * re-checked live state reveals a *genuine* forgotten clock-out from an earlier
+ * shift (not this session's own double-submit).
+ *
+ * Per REQ 7.3 the kiosk must NOT silently clock the staff member out or fabricate
+ * a clock-in — it routes them to a manager. This screen wires the existing
+ * manager admin clock-out (`POST /api/v2/time-clock/admin-clock-out/{entry_id}`,
+ * task 8.1 / design §D): a manager enters a required reason, the stale open
+ * `entry_id` is resolved from the clocked-in list, the endpoint is called, and
+ * on success the staff member is dropped back to a clean clock-in. RBAC + scope
+ * are enforced server-side (403 `forbidden_scope`); 409 `already_clocked_out`
+ * and 404 `time_clock_entry_not_found` are surfaced as inline messages.
+ */
+function NeedsManagerStep({
+  firstName,
+  staffId,
+  onResolved,
+  onBack,
+  onExit,
+}: NeedsManagerProps) {
+  const [showReason, setShowReason] = useState(false)
+  const [reasonNote, setReasonNote] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [submitError, setSubmitError] = useState<string | null>(null)
+  const [resolved, setResolved] = useState(false)
+  const abortRef = useRef<AbortController | null>(null)
+
+  useEffect(() => {
+    return () => abortRef.current?.abort()
+  }, [])
+
+  const handleConfirm = useCallback(async () => {
+    const trimmed = reasonNote.trim()
+    if (trimmed.length < 3) {
+      setSubmitError('Please enter a reason (at least 3 characters).')
+      return
+    }
+    setSubmitting(true)
+    setSubmitError(null)
+
+    abortRef.current?.abort()
+    const controller = new AbortController()
+    abortRef.current = controller
+
+    try {
+      // Resolve the stale open entry_id for this staff member — the kiosk
+      // lookup does not expose it, so read it from the clocked-in list.
+      const listRes = await apiClient.get<{ items: ClockedInRow[]; total: number }>(
+        '/time-clock/clocked-in',
+        { baseURL: '/api/v2', signal: controller.signal },
+      )
+      if (controller.signal.aborted) return
+
+      const entryId =
+        (listRes.data?.items ?? []).find((row) => row?.staff_id === staffId)
+          ?.time_clock_entry_id ?? ''
+
+      if (!entryId) {
+        // No open row anymore — it was already closed in the meantime.
+        setResolved(true)
+        return
+      }
+
+      await apiClient.post(
+        `/time-clock/admin-clock-out/${entryId}`,
+        { reason_note: trimmed },
+        { baseURL: '/api/v2', signal: controller.signal },
+      )
+      if (controller.signal.aborted) return
+      setResolved(true)
+    } catch (err: unknown) {
+      if (controller.signal.aborted) return
+      const ax = err as AxiosError<{ detail?: { detail?: string } | string }>
+      const status = ax?.response?.status
+      const rawDetail = ax?.response?.data?.detail
+      const detail =
+        typeof rawDetail === 'string' ? rawDetail : rawDetail?.detail ?? ''
+      // An already-closed / missing entry means the staff member can simply
+      // clock in now — treat as resolved rather than an error dead-end.
+      if (
+        (status === 409 && detail === 'already_clocked_out') ||
+        status === 404 ||
+        detail === 'time_clock_entry_not_found'
+      ) {
+        setResolved(true)
+        return
+      }
+      setSubmitError(getAdminClockOutError(err))
+    } finally {
+      if (!controller.signal.aborted) setSubmitting(false)
+    }
+  }, [reasonNote, staffId])
+
+  // Success state — the open shift was closed; invite a fresh clock-in.
+  if (resolved) {
+    return (
+      <div className="w-full max-w-md space-y-6 rounded-card bg-card p-8 text-center shadow-pop">
+        <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-ok-soft">
+          <svg
+            className="h-8 w-8 text-ok"
+            fill="none"
+            viewBox="0 0 24 24"
+            strokeWidth={2}
+            stroke="currentColor"
+            aria-hidden="true"
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+          </svg>
+        </div>
+        <div className="space-y-2">
+          <h2 className="text-2xl font-bold text-text">Shift closed</h2>
+          <p className="text-base text-text">
+            The open shift has been closed
+            {firstName ? `, ${firstName}` : ''}. You can clock in now.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onResolved}
+          className="inline-flex min-h-[56px] w-full items-center justify-center rounded-ctl bg-accent px-6 py-3 text-lg font-medium text-white shadow-card hover:bg-accent-press focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2"
+        >
+          Clock in now
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="w-full max-w-md space-y-6 rounded-card bg-card p-8 text-center shadow-pop">
+      <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-warn-soft">
+        <svg
+          className="h-8 w-8 text-warn"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={2}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M12 9v4" />
+          <path d="M12 17h.01" />
+          <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+        </svg>
+      </div>
+
+      <div className="space-y-2">
+        <h2 className="text-2xl font-bold text-text">You still have an open shift</h2>
+        <p className="text-base text-text">
+          {firstName ? `${firstName}, it ` : 'It '}
+          looks like an earlier shift was never clocked out. A manager can close
+          it for you here so you can start fresh.
+        </p>
+      </div>
+
+      {showReason ? (
+        <div className="space-y-3 text-left">
+          <label
+            htmlFor="manager-reason-note"
+            className="block text-sm font-medium text-text"
+          >
+            Manager reason note <span className="text-danger">*</span>
+          </label>
+          <textarea
+            id="manager-reason-note"
+            value={reasonNote}
+            onChange={(e) => setReasonNote(e.target.value)}
+            rows={3}
+            maxLength={500}
+            placeholder="e.g. Forgot to tap out at end of shift"
+            className="w-full rounded-ctl border border-border bg-canvas px-3 py-2 text-base text-text focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent"
+            autoFocus
+          />
+          <p className="text-xs text-muted-2">
+            {reasonNote.trim().length}/500 — minimum 3 characters
+          </p>
+
+          {submitError && (
+            <p
+              role="alert"
+              className="rounded-ctl bg-danger-soft px-3 py-2 text-sm font-medium text-danger"
+            >
+              {submitError}
+            </p>
+          )}
+
+          <div className="grid grid-cols-1 gap-3 pt-1 sm:grid-cols-2">
+            <button
+              type="button"
+              onClick={() => {
+                setShowReason(false)
+                setSubmitError(null)
+              }}
+              disabled={submitting}
+              className="inline-flex min-h-[56px] items-center justify-center rounded-ctl border border-border-strong bg-card px-6 py-3 text-lg font-medium text-text shadow-card hover:bg-canvas focus:outline-none focus:ring-2 focus:ring-accent disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleConfirm}
+              disabled={submitting || reasonNote.trim().length < 3}
+              className="inline-flex min-h-[56px] items-center justify-center rounded-ctl bg-accent px-6 py-3 text-lg font-medium text-white shadow-card hover:bg-accent-press focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {submitting ? 'Closing…' : 'Close shift'}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <button
+            type="button"
+            onClick={() => {
+              setShowReason(true)
+              setSubmitError(null)
+            }}
+            className="inline-flex min-h-[56px] w-full items-center justify-center rounded-ctl bg-accent px-6 py-3 text-lg font-medium text-white shadow-card hover:bg-accent-press focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2"
+          >
+            Manager: close this shift
+          </button>
+
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <button
+              type="button"
+              onClick={onBack}
+              className="inline-flex min-h-[56px] items-center justify-center rounded-ctl border border-border-strong bg-card px-6 py-3 text-lg font-medium text-text shadow-card hover:bg-canvas focus:outline-none focus:ring-2 focus:ring-accent"
+            >
+              Start over
+            </button>
+            {onExit && (
+              <button
+                type="button"
+                onClick={onExit}
+                className="inline-flex min-h-[56px] items-center justify-center rounded-ctl border border-border-strong bg-card px-6 py-3 text-lg font-medium text-text shadow-card hover:bg-canvas focus:outline-none focus:ring-2 focus:ring-accent"
+              >
+                Back to home
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 /* ───────────────────────────────────────────── KioskClockScreen ── */
 
 export function KioskClockScreen({ onExit }: KioskClockScreenProps = {}) {
@@ -828,6 +1200,8 @@ export function KioskClockScreen({ onExit }: KioskClockScreenProps = {}) {
 
   const lookupAbortRef = useRef<AbortController | null>(null)
   const actionAbortRef = useRef<AbortController | null>(null)
+  /** When the most recent clock-in action was submitted (for `looksLikeJustNow`). */
+  const actionAttemptAtRef = useRef<number | null>(null)
 
   /** Reset the entire flow back to the choice screen. */
   const resetFlow = useCallback(() => {
@@ -939,6 +1313,32 @@ export function KioskClockScreen({ onExit }: KioskClockScreenProps = {}) {
     }
   }, [])
 
+  /* ── 409-recovery: re-check live clock state ──────────────── */
+
+  /**
+   * Re-run the lookup to read fresh `currently_clocked_in` state after an
+   * `already_clocked_in` conflict. Cheap (no photo needed) and reuses the same
+   * endpoint as the initial lookup. Returns the safe lookup or `null`.
+   */
+  const reLookup = useCallback(
+    async (id: string, signal: AbortSignal): Promise<LookupResult | null> => {
+      const res = await apiClient.post<LookupResult>(
+        '/kiosk/clock/lookup',
+        { employee_id: id },
+        { signal },
+      )
+      const data = res.data
+      if (!data?.staff_id) return null
+      return {
+        staff_id: data.staff_id ?? '',
+        first_name: data.first_name ?? '',
+        on_file_photo_url: data.on_file_photo_url ?? null,
+        currently_clocked_in: data.currently_clocked_in ?? false,
+      }
+    },
+    [],
+  )
+
   /* ── Step 4 → 5: upload + clock action ────────────────────── */
 
   const handleCapture = useCallback(
@@ -979,6 +1379,7 @@ export function KioskClockScreen({ onExit }: KioskClockScreenProps = {}) {
         //    from `currently_clocked_in`. This honours the user's intent
         //    even when the server-side state is briefly out of sync.
         const action: ClockAction = intendedAction
+        actionAttemptAtRef.current = Date.now()
         const actionRes = await apiClient.post<ClockActionResult>(
           '/kiosk/clock/action',
           {
@@ -1005,6 +1406,45 @@ export function KioskClockScreen({ onExit }: KioskClockScreenProps = {}) {
         setStep('confirmation')
       } catch (err: unknown) {
         if (controller.signal.aborted) return
+
+        // RECOVERY: a clock-IN that returns `already_clocked_in` is re-checked
+        // against live state rather than dead-ending (REQ 7.1–7.3).
+        if (intendedAction === 'in' && is409AlreadyClockedIn(err)) {
+          let fresh: LookupResult | null = null
+          try {
+            fresh = await reLookup(employeeId, controller.signal)
+          } catch {
+            fresh = null
+          }
+          if (controller.signal.aborted) return
+
+          if (fresh?.currently_clocked_in) {
+            if (
+              looksLikeJustNow(fresh, {
+                wasClockedInAtSessionStart: lookup.currently_clocked_in,
+                attemptStartedAt: actionAttemptAtRef.current,
+              })
+            ) {
+              // Idempotent double-submit/retry — our own write landed, so the
+              // staff member IS clocked in. Treat as success (REQ 7.2).
+              setActionResult(
+                synthesiseInResult(fresh, {
+                  on_file_photo_url: lookup.on_file_photo_url ?? null,
+                }),
+              )
+              setSecondsLeft(CONFIRMATION_AUTO_RETURN_SECONDS)
+              setStep('confirmation')
+            } else {
+              // Genuine forgotten clock-out from an earlier shift — route to a
+              // manager; never fabricate a clock-in (REQ 7.3).
+              setStep('needs-manager')
+            }
+            return
+          }
+          // Live state disagrees (no longer clocked in) → fall through to a
+          // recoverable inline message.
+        }
+
         const axiosErr = err as AxiosError<ApiError>
         const url = axiosErr?.config?.url ?? ''
         const ctx: 'upload' | 'action' = url.includes('/uploads/') ? 'upload' : 'action'
@@ -1015,7 +1455,7 @@ export function KioskClockScreen({ onExit }: KioskClockScreenProps = {}) {
         }
       }
     },
-    [intendedAction, lookup],
+    [intendedAction, lookup, employeeId, reLookup],
   )
 
   /* ── Render ──────────────────────────────────────────────── */
@@ -1084,6 +1524,18 @@ export function KioskClockScreen({ onExit }: KioskClockScreenProps = {}) {
         capturedDataUrl={capturedDataUrl}
         secondsLeft={secondsLeft}
         onDone={exitClockSurface}
+      />
+    )
+  }
+
+  if (step === 'needs-manager') {
+    return (
+      <NeedsManagerStep
+        firstName={lookup?.first_name ?? ''}
+        staffId={lookup?.staff_id ?? ''}
+        onResolved={resetFlow}
+        onBack={resetFlow}
+        onExit={onExit}
       />
     )
   }

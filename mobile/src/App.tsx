@@ -1,6 +1,7 @@
 import { App as KonstaApp } from 'konsta/react'
 import { Capacitor } from '@capacitor/core'
 import { AuthProvider } from '@/contexts/AuthContext'
+import { PortalSelectionProvider } from '@/contexts/PortalSelectionContext'
 import { TenantProvider } from '@/contexts/TenantContext'
 import { ModuleProvider } from '@/contexts/ModuleContext'
 import { BranchProvider } from '@/contexts/BranchContext'
@@ -38,24 +39,26 @@ const konstaTheme = platform === 'ios' ? 'ios' : 'material'
 export default function App() {
   return (
     <KonstaApp theme={konstaTheme} safeAreas dark>
-      <AuthProvider>
-        <TenantProvider>
-          <ModuleProvider>
-            <BranchProvider>
-              <ThemeProvider>
-                <OfflineProvider>
-                  <BiometricProvider>
-                    <KonstaShell>
-                      <DeepLinkHandler />
-                      <AppRoutes />
-                    </KonstaShell>
-                  </BiometricProvider>
-                </OfflineProvider>
-              </ThemeProvider>
-            </BranchProvider>
-          </ModuleProvider>
-        </TenantProvider>
-      </AuthProvider>
+      <PortalSelectionProvider>
+        <AuthProvider>
+          <TenantProvider>
+            <ModuleProvider>
+              <BranchProvider>
+                <ThemeProvider>
+                  <OfflineProvider>
+                    <BiometricProvider>
+                      <KonstaShell>
+                        <DeepLinkHandler />
+                        <AppRoutes />
+                      </KonstaShell>
+                    </BiometricProvider>
+                  </OfflineProvider>
+                </ThemeProvider>
+              </BranchProvider>
+            </ModuleProvider>
+          </TenantProvider>
+        </AuthProvider>
+      </PortalSelectionProvider>
     </KonstaApp>
   )
 }

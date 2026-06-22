@@ -249,6 +249,17 @@ class OrgSettingsResponse(BaseModel):
     payment_terms_enabled: Optional[bool] = Field(None, description="Show payment terms on invoices")
     terms_and_conditions_enabled: Optional[bool] = Field(None, description="Show T&C on invoices")
 
+    # Organisation Employee Portal (R2, R4.1) — the org-branded /e/{slug} portal.
+    # ``slug`` is the dedicated organisations.slug column (read-only here; writes
+    # go through PUT /api/v2/organisations/slug). ``employee_portal_enabled`` is
+    # the enablement flag (default False so existing orgs read as disabled).
+    slug: Optional[str] = Field(
+        None, description="Organisation Employee Portal slug (organisations.slug column)"
+    )
+    employee_portal_enabled: Optional[bool] = Field(
+        None, description="Whether the Employee Portal is enabled for this org (default: false)"
+    )
+
 
 class OrgSettingsUpdateRequest(BaseModel):
     """PUT /api/v1/org/settings request body.
@@ -409,6 +420,80 @@ class OrgSettingsUpdateResponse(BaseModel):
         default_factory=list,
         description="List of settings fields that were updated",
     )
+
+
+# ---------------------------------------------------------------------------
+# Employee Portal — slug availability (Task 9.2)
+# Requirements: 3.2, 3.3, 3.4, 3.5, 3.6
+# ---------------------------------------------------------------------------
+
+
+class SlugAvailabilityResponse(BaseModel):
+    """Response for GET /api/v2/organisations/slug-availability.
+
+    ``result`` is exactly one of ``available`` / ``unavailable`` / ``invalid``
+    (R3.2). ``reason`` carries a human-readable explanation for the
+    non-available cases and is ``null`` when the slug is available.
+    """
+
+    result: Literal["available", "unavailable", "invalid"]
+    reason: Optional[str] = Field(
+        None,
+        description="Human-readable reason for unavailable/invalid results; null when available.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Employee Portal — slug update (Task 9.3)
+# Requirements: 2.1, 2.6, 2.7, 2.9, 2.11, 3.9, 4.2, 4.3, 4.7
+# ---------------------------------------------------------------------------
+
+
+class SlugUpdateRequest(BaseModel):
+    """Request body for PUT /api/v2/organisations/slug.
+
+    Carries the candidate Org_Slug. Normalisation, format validation,
+    reserved-list and save-time uniqueness checks all happen server-side
+    (R2.2–R2.8) so the raw candidate is accepted here as-is.
+    """
+
+    slug: str = Field(..., description="Candidate organisation slug (normalised server-side).")
+
+
+class SlugUpdateResponse(BaseModel):
+    """Response for a successful PUT /api/v2/organisations/slug.
+
+    ``slug`` is the stored, normalised value (R2.7).
+    """
+
+    slug: str = Field(..., description="The stored, normalised organisation slug.")
+
+
+# ---------------------------------------------------------------------------
+# Employee Portal — enablement toggle (Task 9.4)
+# Requirements: 4.2, 4.3, 4.4, 4.5, 4.6, 4.7, 4.8
+# ---------------------------------------------------------------------------
+
+
+class EmployeePortalToggleRequest(BaseModel):
+    """Request body for PUT /api/v2/organisations/employee-portal.
+
+    ``enabled`` is the desired Employee_Portal enablement state. Enabling
+    while the organisation has no slug set is rejected ``422 slug_required``
+    server-side (R4.4); disabling additionally invalidates all active portal
+    sessions (R4.6).
+    """
+
+    enabled: bool = Field(..., description="Desired Employee Portal enablement state.")
+
+
+class EmployeePortalToggleResponse(BaseModel):
+    """Response for a successful PUT /api/v2/organisations/employee-portal.
+
+    ``enabled`` echoes the persisted enablement flag.
+    """
+
+    enabled: bool = Field(..., description="The persisted Employee Portal enablement flag.")
 
 
 # ---------------------------------------------------------------------------
@@ -1016,6 +1101,20 @@ class ClockInPolicyBlock(BaseModel):
     allow_late_clock_out_edits: bool = True
     kiosk_employee_id_rate_limit: int = Field(default=10, ge=1, le=100)
     shift_swap_requires_manager_approval: bool = False
+    # Attendance alerts (sent to the staff member's manager / org owner).
+    # Defaults preserve the prior always-on, SMS-only behaviour.
+    late_clock_in_alert_enabled: bool = True
+    late_clock_in_alert_channels: list[Literal["sms", "email"]] = Field(
+        default_factory=lambda: ["sms"],
+    )
+    missed_clock_out_alert_enabled: bool = True
+    missed_clock_out_alert_channels: list[Literal["sms", "email"]] = Field(
+        default_factory=lambda: ["sms"],
+    )
+    # Auto clock-out (opt-in, OFF by default — closing a stale entry affects pay).
+    auto_clock_out_enabled: bool = False
+    auto_clock_out_after_hours: int = Field(default=14, ge=1, le=48)
+    auto_clock_out_grace_minutes: int = Field(default=15, ge=0, le=240)
 
 
 class OvertimePolicyBlock(BaseModel):

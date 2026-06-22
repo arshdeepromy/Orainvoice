@@ -57,6 +57,7 @@ from app.modules.leave import service as leave_service
 from app.modules.leave.models import LeaveRequest, LeaveType
 from app.modules.leave.schemas import (
     AdjustBalanceRequest,
+    EligibilityNote,
     LeaveBalanceListResponse,
     LeaveBalanceResponse,
     LeaveLedgerListResponse,
@@ -69,7 +70,15 @@ from app.modules.leave.schemas import (
     LeaveTypeListResponse,
     LeaveTypeResponse,
     LeaveTypeUpdate,
+    MarkDayLeaveRequest,
+    MarkDayLeaveResponse,
+    ReferenceGuideResponse,
+    ReferenceGuideSection,
+    StaffLeaveBalances,
+    StaffLeaveBalancesListResponse,
 )
+from app.modules.auth.rbac import has_permission
+from app.modules.leave.reference_guide import REFERENCE_GUIDE_SECTIONS
 from app.modules.leave.service import (
     BereavementCapExceededError,
     BereavementValidationError,
@@ -113,6 +122,15 @@ def _get_user_role(request: Request) -> str:
     return str(getattr(request.state, "role", "") or "")
 
 
+# Roles permitted to mark another staff member on leave from the roster grid.
+_MARK_LEAVE_ROLES = {
+    "org_admin",
+    "branch_admin",
+    "location_manager",
+    "global_admin",
+}
+
+
 async def _require_staff_management_module(
     request: Request, db: AsyncSession
 ) -> None:
@@ -140,6 +158,24 @@ def _require_org_admin(request: Request) -> None:
     role = _get_user_role(request)
     if role not in ("org_admin", "global_admin"):
         raise HTTPException(status_code=403, detail="org_admin role required")
+
+
+def _require_permission(request: Request, permission: str) -> None:
+    """Gate an endpoint on a permission key (role + custom-role permissions).
+
+    Mirrors ``app/modules/timesheets/router.py::_check_permission``. Raises 403
+    when the permission is not granted. Used by the org-wide balances list
+    (``leave.balance_view``) and the manual adjust (``leave.balance_adjust``).
+    """
+    role = _get_user_role(request)
+    overrides = getattr(request.state, "permission_overrides", None)
+    custom_perms = getattr(request.state, "custom_role_permissions", None)
+    if not has_permission(
+        role, permission, overrides=overrides, custom_role_permissions=custom_perms
+    ):
+        raise HTTPException(
+            status_code=403, detail=f"Permission '{permission}' required"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -270,6 +306,51 @@ def _scope_approval_queue(query, request: Request, org_id: UUID, user_id: UUID):
 # ===========================================================================
 # Leave types
 # ===========================================================================
+
+
+@router.post(
+    "/leave/mark-day",
+    response_model=MarkDayLeaveResponse,
+    summary="Mark a staff member on leave for a day and publish their shift to Open Shifts",
+)
+async def mark_day_leave_endpoint(
+    payload: MarkDayLeaveRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Roster-grid "paint leave" action (admin / manager).
+
+    Submits + auto-approves a single-day leave for the chosen leave type and,
+    by default, publishes the staff member's displaced shift(s) to Open Shifts.
+    Gated by the ``staff_management`` module and a management role.
+    """
+    await _require_staff_management_module(request, db)
+    if _get_user_role(request) not in _MARK_LEAVE_ROLES:
+        raise HTTPException(status_code=403, detail="forbidden")
+    org_id = _get_org_id(request)
+    user_id = _get_user_id(request)
+    try:
+        result = await leave_service.mark_day_leave(
+            db,
+            org_id=org_id,
+            staff_id=payload.staff_id,
+            leave_type_id=payload.leave_type_id,
+            on_date=payload.date,
+            requested_by_user_id=user_id,
+            request=request,
+            publish_to_open_shifts=payload.publish_to_open_shifts,
+        )
+    except (
+        LeaveServiceError,
+        InsufficientLeaveError,
+        InsufficientToilBalanceError,
+        BereavementCapExceededError,
+        BereavementValidationError,
+    ) as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except LeavePermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    return MarkDayLeaveResponse(**result)
 
 
 @router.get(
@@ -459,6 +540,86 @@ async def update_leave_type(
         )
 
     return LeaveTypeResponse.model_validate(leave_type)
+
+
+# ===========================================================================
+# Org-wide Leave Balances list + reference guide
+# ===========================================================================
+
+
+@router.get(
+    "/leave/balances",
+    response_model=StaffLeaveBalancesListResponse,
+    summary="Org-wide leave balances list",
+)
+async def list_org_leave_balances(
+    request: Request,
+    employment_type: str | None = Query(None),
+    group_by: str | None = Query(None, pattern="^(employment_type)$"),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=500),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """List every staff member with their vested leave balances (R1).
+
+    Module-gated by ``staff_management`` (404 ``not_enabled``) AND the
+    ``leave.balance_view`` permission (403). Org-scoped via RLS. The
+    ``employment_type`` filter and ``group_by`` are display conveniences applied
+    after eligibility (R2.4); only vested types are included per row (R1.6).
+    """
+    await _require_staff_management_module(request, db)
+    _require_permission(request, "leave.balance_view")
+    org_id = _get_org_id(request)
+
+    items, total = await leave_service.list_org_balances(
+        db,
+        org_id=org_id,
+        employment_type=employment_type,
+        group_by=group_by,
+        offset=offset,
+        limit=limit,
+    )
+    return StaffLeaveBalancesListResponse(
+        items=[
+            StaffLeaveBalances(
+                staff_id=row["staff_id"],
+                staff_name=row["staff_name"],
+                employment_type=row["employment_type"],
+                holiday_pay_method=row["holiday_pay_method"],
+                balances=[
+                    LeaveBalanceResponse(**b) for b in row["balances"]
+                ],
+                eligibility_notes=[
+                    EligibilityNote(**n) for n in row["eligibility_notes"]
+                ],
+            )
+            for row in items
+        ],
+        total=total,
+    )
+
+
+@router.get(
+    "/leave/reference-guide",
+    response_model=ReferenceGuideResponse,
+    summary="NZ Holidays Act 2003 reference guide",
+)
+async def get_leave_reference_guide(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return the NZ Holidays Act 2003 reference content (R15).
+
+    Module-gated; available to any org user even when content is partially
+    populated (R15.6).
+    """
+    await _require_staff_management_module(request, db)
+    return ReferenceGuideResponse(
+        rule_set_version="holidays_act_2003",
+        sections=[
+            ReferenceGuideSection(**s) for s in REFERENCE_GUIDE_SECTIONS
+        ],
+    )
 
 
 # ===========================================================================
@@ -753,7 +914,7 @@ async def adjust_leave_balance(
     Returns the resulting ledger row id + new accrued total.
     """
     await _require_staff_management_module(request, db)
-    _require_org_admin(request)
+    _require_permission(request, "leave.balance_adjust")
     org_id = _get_org_id(request)
     user_id = _get_user_id(request)
 

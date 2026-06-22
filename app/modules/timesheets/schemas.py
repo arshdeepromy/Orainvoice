@@ -5,7 +5,7 @@ Decimal fields represent hours (minutes / 60, rounded 2dp).
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal
 from uuid import UUID
@@ -165,3 +165,86 @@ class BulkActionResponse(BaseModel):
     affected_count: int
     skipped_count: int = 0
     errors: list[str] = Field(default_factory=list)
+
+
+# --- Weekly breakdown ("weekly lens" review aid) ---
+#
+# READ-ONLY review aid. A pay period that spans more than one ISO week
+# (fortnightly / monthly) is split into per-week (Mon–Sun) buckets clamped to
+# the period bounds, each carrying per-staff worked minutes and a week total.
+# This NEVER touches pay-run / materialisation / payslip logic.
+
+
+class WeeklyBreakdownStaffEntry(BaseModel):
+    """Per-staff worked minutes within a single week bucket."""
+
+    staff_id: UUID
+    staff_name: str
+    minutes: int
+
+
+class WeeklyBreakdownWeek(BaseModel):
+    """One ISO week (Mon–Sun) bucket clamped to the pay-period bounds.
+
+    ``start_date`` / ``end_date`` are the CLAMPED bounds — the first and last
+    buckets of a period may be partial weeks. ``iso_week`` is the ISO 8601 week
+    number; ``week_index`` is the 1-based position within the period.
+    """
+
+    week_index: int
+    iso_week: int
+    start_date: date
+    end_date: date
+    total_minutes: int
+    staff: list[WeeklyBreakdownStaffEntry] = Field(default_factory=list)
+
+
+class WeeklyBreakdownResponse(BaseModel):
+    """Pay period split into ISO-week buckets. ``multi_week`` = weeks > 1."""
+
+    pay_period_id: UUID
+    multi_week: bool
+    weeks: list[WeeklyBreakdownWeek] = Field(default_factory=list)
+
+
+# --- Attendance report (date-range "who worked + hours vs expected" view) ---
+#
+# READ-ONLY review aid for the Timesheets page "Attendance" tab. Aggregates
+# raw clock attendance (``TimeClockEntry.worked_minutes``) per staff over an
+# arbitrary [date_from, date_to] range (defaults to today), and compares each
+# staff member's worked hours against their EXPECTED hours for that range. The
+# expected figure is resolved per staff with this precedence:
+#   1. ``scheduled``  — sum of ``schedule_entries`` overlapping the range
+#   2. ``fixed``      — fixed-arrangement staff's availability_schedule hours
+#   3. ``roster``     — rostered-arrangement staff's availability_schedule hours
+#   4. ``none``       — no schedule/roster on file (expected_hours is null)
+# This never touches pay-run / materialisation / payslip / timesheet state.
+
+
+class AttendanceRow(BaseModel):
+    staff_id: UUID
+    staff_name: str
+    position: str | None = None
+    branch_name: str | None = None
+    worked_hours: Decimal            # completed shifts only (clocked out)
+    expected_hours: Decimal | None = None
+    expected_source: str             # scheduled | fixed | roster | none
+    variance_hours: Decimal | None = None  # worked - expected (null when no expectation)
+    shift_count: int
+    is_clocked_in: bool = False      # has an open (not-yet-clocked-out) shift in range
+    last_clock_out_at: datetime | None = None
+
+
+class AttendanceSummary(BaseModel):
+    total_staff: int
+    total_worked_hours: Decimal
+    total_expected_hours: Decimal
+    clocked_in_count: int
+
+
+class AttendanceResponse(BaseModel):
+    items: list[AttendanceRow]
+    total: int
+    summary: AttendanceSummary
+    date_from: str  # ISO date
+    date_to: str    # ISO date

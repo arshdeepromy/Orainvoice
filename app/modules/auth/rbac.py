@@ -49,7 +49,7 @@ ALL_ROLES = {GLOBAL_ADMIN, FRANCHISE_ADMIN, ORG_ADMIN, BRANCH_ADMIN, LOCATION_MA
 ROLE_PERMISSIONS: dict[str, list[str]] = {
     "global_admin": ["*"],
     "franchise_admin": ["franchise.read", "reports.read"],
-    "org_admin": ["org.*", "users.*", "modules.*", "settings.*", "reports.*", "billing.*", "timesheet.*", "payrun.*"],
+    "org_admin": ["org.*", "users.*", "modules.*", "settings.*", "reports.*", "billing.*", "timesheet.*", "payrun.*", "leave.*"],
     "branch_admin": [
         "invoices.*", "customers.*", "vehicles.*", "quotes.*", "jobs.*",
         "bookings.*", "inventory.*", "catalogue.*", "expenses.*",

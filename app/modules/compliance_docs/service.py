@@ -231,7 +231,7 @@ class ComplianceService:
         """Validate and store an uploaded file, then create the DB record.
 
         *metadata* should contain keys matching ComplianceDocument columns:
-        document_type, description, expiry_date, invoice_id, job_id.
+        document_type, description, expiry_date, invoice_id, job_id, staff_id.
 
         **Validates: Requirements 3.7**
         """
@@ -247,6 +247,7 @@ class ComplianceService:
             expiry_date=metadata.get("expiry_date"),
             invoice_id=metadata.get("invoice_id"),
             job_id=metadata.get("job_id"),
+            staff_id=metadata.get("staff_id"),
             uploaded_by=uploaded_by,
         )
         self.db.add(doc)
@@ -306,11 +307,14 @@ class ComplianceService:
         category: str | None = None,
         sort_by: str | None = None,
         sort_dir: str | None = None,
+        staff_id: uuid.UUID | None = None,
     ) -> tuple[list[ComplianceDocument], int]:
         """Return filtered, sorted compliance documents for an org.
 
         Supports server-side text search (file_name, document_type,
-        description), status filtering, category filtering, and sorting.
+        description), status filtering, category filtering, per-staff
+        filtering (``staff_id`` — used by the Staff Detail Documents tab to
+        surface onboarding / working-rights uploads), and sorting.
 
         **Validates: Requirements 2.2, 2.3, 2.4, 2.5**
         """
@@ -320,6 +324,10 @@ class ComplianceService:
         stmt = select(ComplianceDocument).where(
             ComplianceDocument.org_id == org_id,
         )
+
+        # Per-staff filtering (Staff Detail → Documents tab).
+        if staff_id is not None:
+            stmt = stmt.where(ComplianceDocument.staff_id == staff_id)
 
         # Text search across file_name, document_type, description
         if search:

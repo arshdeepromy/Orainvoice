@@ -332,6 +332,7 @@ async def list_compliance_documents(
     search: str | None = Query(None, description="Text search across file_name, document_type, description"),
     status: str | None = Query(None, description="Filter by status: valid, expiring_soon, expired, no_expiry"),
     category: str | None = Query(None, description="Filter by document_type/category"),
+    staff_id: UUID | None = Query(None, description="Filter to documents linked to a staff member"),
     sort_by: str | None = Query(None, description="Sort column: document_type, file_name, expiry_date, created_at"),
     sort_dir: str | None = Query(None, description="Sort direction: asc or desc"),
     db: AsyncSession = Depends(get_db_session),
@@ -350,6 +351,7 @@ async def list_compliance_documents(
         category=category,
         sort_by=sort_by,
         sort_dir=sort_dir,
+        staff_id=staff_id,
     )
     items = [ComplianceDocumentResponse.model_validate(d) for d in documents]
     return DocumentListResponse(items=items, total=total)

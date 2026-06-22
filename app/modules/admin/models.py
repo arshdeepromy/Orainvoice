@@ -136,6 +136,12 @@ class Organisation(Base):
         String(50), nullable=False, server_default="'UTC'"
     )
 
+    # Organisation Employee Portal — unique, URL-safe slug forming the branded
+    # portal URL (/e/{slug}). Nullable; no backfill. Global case-insensitive
+    # uniqueness is enforced at the DB level via uq_organisations_slug_lower
+    # (migration 0224). Stored normalised (lowercased/trimmed). (D5, R2.1, R2.5)
+    slug: Mapped[str | None] = mapped_column(String(63), nullable=True)
+
     # Sprint 7 — Business Entity Type Classification (Req 29.1, 29.2)
     business_type: Mapped[str | None] = mapped_column(
         String(20), server_default="sole_trader", nullable=True

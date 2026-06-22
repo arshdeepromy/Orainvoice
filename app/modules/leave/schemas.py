@@ -309,3 +309,106 @@ class AdjustBalanceRequest(BaseModel):
     delta_hours: Decimal
     reason: str = Field(..., min_length=1, max_length=128)
     notes: str | None = None
+
+    @field_validator("reason")
+    @classmethod
+    def _reason_not_blank(cls, v: str) -> str:
+        """Reject an empty or all-whitespace reason (R4.3 / Property 13)."""
+        if not v or not v.strip():
+            raise ValueError("reason must not be blank")
+        return v
+
+
+# ===========================================================================
+# Mark-day leave (Roster Grid "paint leave" action)
+# ===========================================================================
+
+
+class MarkDayLeaveRequest(BaseModel):
+    """Inbound payload for ``POST /api/v2/leave/mark-day``.
+
+    Admin/manager action from the Roster Grid Editor: mark ``staff_id`` on
+    leave for a single ``date`` using a configured ``leave_type_id`` (the
+    single source of truth in Settings → Leave Types), and — by default —
+    publish that staff member's displaced shift(s) to Open Shifts so someone
+    else can pick them up.
+    """
+
+    staff_id: UUID
+    leave_type_id: UUID
+    date: date
+    publish_to_open_shifts: bool = True
+
+
+class MarkDayLeaveResponse(BaseModel):
+    """Result of a mark-day-leave action."""
+
+    leave_request_id: UUID
+    status: str
+    displaced_shift_count: int
+    open_shift_ids: list[UUID] = Field(default_factory=list)
+
+
+# ===========================================================================
+# Org-wide Leave Balances view (Leave Balances & Eligibility feature)
+# ===========================================================================
+
+
+class EligibilityNote(BaseModel):
+    """One vesting / Eligibility_Note row surfaced in the balances view.
+
+    ``condition_text`` is the human-readable trigger (e.g. "Annual holidays
+    vested — 12 months continuous service reached on 2026-03-01").
+    """
+
+    leave_type_id: UUID
+    leave_type_code: str | None = None
+    rule_set_version: str
+    milestone_key: str
+    hours_test_met: bool | None = None
+    condition_text: str
+    vested_on: date
+
+    model_config = {"from_attributes": True}
+
+
+class StaffLeaveBalances(BaseModel):
+    """One staff member's row in the org-wide Leave Balances list.
+
+    ``balances`` carries only **vested** leave types (R1.6). ``holiday_pay_method``
+    surfaces the casual 8% pay-as-you-go indicator (R11.3).
+    """
+
+    staff_id: UUID
+    staff_name: str
+    employment_type: str
+    holiday_pay_method: str
+    balances: list[LeaveBalanceResponse] = Field(default_factory=list)
+    eligibility_notes: list[EligibilityNote] = Field(default_factory=list)
+
+
+class StaffLeaveBalancesListResponse(BaseModel):
+    """``{ items, total }`` envelope for the org-wide balances list."""
+
+    items: list[StaffLeaveBalances]
+    total: int
+
+
+# ===========================================================================
+# NZ Holidays Act 2003 reference guide
+# ===========================================================================
+
+
+class ReferenceGuideSection(BaseModel):
+    """One titled section of the reference guide content."""
+
+    key: str
+    title: str
+    body: str
+
+
+class ReferenceGuideResponse(BaseModel):
+    """Structured NZ Holidays Act 2003 reference content (R15)."""
+
+    rule_set_version: str
+    sections: list[ReferenceGuideSection]

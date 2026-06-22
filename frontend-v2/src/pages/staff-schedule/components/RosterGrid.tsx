@@ -32,6 +32,7 @@ import type {
 } from '../hooks/useRosterGridData'
 import { computePaintRectangle } from '../utils/paint'
 import { toIsoDate } from '../utils/time'
+import { fixedShiftForDate, isFixedArrangement } from '../utils/fixedHours'
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -196,6 +197,14 @@ export interface RosterGridProps {
     anchor: { x: number; y: number },
   ) => void
 
+  /**
+   * Called when the admin interacts with a fixed-working-arrangement
+   * staff member's row (whose hours are read-only on the grid). The page
+   * surfaces a message directing them to change the working arrangement
+   * under Staff. When omitted, fixed rows simply ignore interaction.
+   */
+  onLockedInteraction?: (staff: StaffMember) => void
+
   paintMode?: boolean
   selectedTemplate?: ShiftTemplateResponse | null
   onPaintCommit?: (rect: {
@@ -219,6 +228,13 @@ export interface RosterGridProps {
   conflictCells?: Set<string>
   savingEntryIds?: Set<string>
   ariaBusy?: boolean
+  /**
+   * When true, the grid is in "leave paint" mode: every clickable cell
+   * (including fixed-hours staff rows, which are otherwise read-only)
+   * routes its click to ``onCellClick`` so the page can open the
+   * mark-leave confirmation. The cursor is a crosshair.
+   */
+  leaveMode?: boolean
 }
 
 function cellKey(staffId: string, dateKey: string): string {
@@ -232,6 +248,7 @@ export default function RosterGrid({
   visibleWindow,
   isLoading,
   onCellClick,
+  onLockedInteraction,
   paintMode = false,
   selectedTemplate = null,
   onPaintCommit,
@@ -248,6 +265,7 @@ export default function RosterGrid({
   conflictCells,
   savingEntryIds,
   ariaBusy = false,
+  leaveMode = false,
 }: RosterGridProps) {
   const [paintAnchor, setPaintAnchor] = useState<{
     row: number
@@ -521,7 +539,7 @@ export default function RosterGrid({
       data-testid="roster-grid"
       data-paint-mode={paintMode ? 'true' : undefined}
       className={`overflow-hidden rounded-card border border-border bg-card ${
-        paintMode ? 'cursor-crosshair' : ''
+        paintMode || leaveMode ? 'cursor-crosshair' : ''
       }`}
       onPointerUp={handleContainerPointerUp}
     >
@@ -569,6 +587,7 @@ export default function RosterGrid({
         {/* Body rows */}
         {sortedStaff.map((s, rowIndex) => {
           const isSelectedStaff = selectedStaff?.has(s.id)
+          const isFixed = isFixedArrangement(s)
           return (
             <div
               key={`row-${s.id}`}
@@ -579,15 +598,47 @@ export default function RosterGrid({
               <button
                 type="button"
                 role="rowheader"
-                onClick={(e) => handleStaffHeaderClick(e, rowIndex)}
-                aria-pressed={isSelectedStaff}
+                onClick={(e) => {
+                  if (isFixed) {
+                    onLockedInteraction?.(s)
+                    return
+                  }
+                  handleStaffHeaderClick(e, rowIndex)
+                }}
+                aria-pressed={isFixed ? undefined : isSelectedStaff}
+                title={
+                  isFixed
+                    ? 'Fixed hours — edit the working arrangement under Staff to change this roster'
+                    : undefined
+                }
                 className={`cursor-pointer border-b border-r border-border px-2 py-2 text-left ${
                   isSelectedStaff ? 'bg-accent-soft' : 'bg-card hover:bg-canvas'
                 }`}
               >
-                <div className="font-medium text-text">
-                  {s.name ??
-                    `${s.first_name ?? ''} ${s.last_name ?? ''}`.trim()}
+                <div className="flex items-center gap-1.5">
+                  <span className="font-medium text-text">
+                    {s.name ??
+                      `${s.first_name ?? ''} ${s.last_name ?? ''}`.trim()}
+                  </span>
+                  {isFixed && (
+                    <span
+                      className="inline-flex items-center gap-0.5 rounded bg-border px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-muted"
+                      data-testid={`fixed-badge-${s.id}`}
+                    >
+                      <svg
+                        className="h-2.5 w-2.5"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth={2.5}
+                        aria-hidden="true"
+                      >
+                        <rect x="5" y="11" width="14" height="9" rx="1.5" />
+                        <path d="M8 11V8a4 4 0 018 0v3" />
+                      </svg>
+                      Fixed
+                    </span>
+                  )}
                 </div>
                 {s.position && (
                   <div className="text-[11px] text-muted">{s.position}</div>
@@ -612,6 +663,64 @@ export default function RosterGrid({
                 const baseCellClass = `relative min-h-[56px] border-b border-r border-border p-1 ${
                   isWeek2Start ? 'border-l-2 border-l-border-strong' : ''
                 }`
+
+                // Fixed-arrangement rows are READ-ONLY: their recurring
+                // hours are pre-populated from the staff record's
+                // availability_schedule and cannot be edited from the grid.
+                // Any interaction surfaces the "change working arrangement
+                // under Staff" message instead of creating/editing entries.
+                if (isFixed) {
+                  const fixed = fixedShiftForDate(s, d)
+                  return (
+                    <button
+                      type="button"
+                      key={`c-${s.id}-${dateKey}`}
+                      role="gridcell"
+                      tabIndex={isFocused ? 0 : -1}
+                      data-staff-id={s.id}
+                      data-date={dateKey}
+                      data-row={rowIndex}
+                      data-col={colIndex}
+                      data-fixed="true"
+                      onClick={(ev) => {
+                        setFocusedCell?.({ row: rowIndex, col: colIndex })
+                        if (leaveMode) {
+                          onCellClick?.(s.id, d, cellEntries, {
+                            x: ev.clientX,
+                            y: ev.clientY,
+                          })
+                          return
+                        }
+                        onLockedInteraction?.(s)
+                      }}
+                      title={
+                        leaveMode
+                          ? 'Click to mark leave for this day'
+                          : fixed
+                          ? `Fixed hours ${fixed.start}–${fixed.end} — change the working arrangement under Staff to edit`
+                          : 'Fixed hours — change the working arrangement under Staff to edit'
+                      }
+                      className={`${baseCellClass} text-left ${
+                        leaveMode ? 'cursor-crosshair' : 'cursor-not-allowed'
+                      } ${isFocused ? 'ring-2 ring-accent' : ''}`}
+                      style={{
+                        backgroundImage:
+                          'repeating-linear-gradient(45deg, rgba(0,0,0,0.03) 0 5px, transparent 5px 10px)',
+                      }}
+                    >
+                      {fixed ? (
+                        <div className="truncate rounded border border-border-strong bg-canvas px-1 py-0.5 text-[11px] text-muted">
+                          <span className="mono font-medium">
+                            {fixed.start}-{fixed.end}
+                          </span>{' '}
+                          <span>Fixed</span>
+                        </div>
+                      ) : (
+                        <span className="text-[10px] text-muted-2">—</span>
+                      )}
+                    </button>
+                  )
+                }
 
                 if (isLeave) {
                   return (

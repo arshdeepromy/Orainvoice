@@ -822,6 +822,278 @@ function InventoryTab() {
   )
 }
 
+/* ── Employee Portal Tab (R3, R4) ── */
+
+interface SlugAvailabilityResponse {
+  result: 'available' | 'unavailable' | 'invalid'
+  reason: string | null
+}
+
+interface SlugUpdateResponse {
+  slug: string
+}
+
+interface EmployeePortalToggleResponse {
+  enabled: boolean
+}
+
+/** Debounce before firing the live availability check (R3.1 — ≥300ms). */
+const SLUG_DEBOUNCE_MS = 350
+/**
+ * Hard ceiling on the availability round-trip (R3.2/R3.8). If the endpoint
+ * does not answer within this window the UI shows "could not complete" and
+ * never reports the candidate as available.
+ */
+const SLUG_AVAILABILITY_TIMEOUT_MS = 1000
+
+type AvailabilityState =
+  | { status: 'idle' }
+  | { status: 'checking' }
+  | { status: 'available' }
+  | { status: 'unavailable'; reason: string }
+  | { status: 'invalid'; reason: string }
+  | { status: 'error' } // "could not complete" — timeout or endpoint error
+
+/** Safely pull status/message/code off an unknown (Axios) error without `as any`. */
+function readApiError(err: unknown): { status?: number; message?: string; code?: string } {
+  const e = err as { response?: { status?: number; data?: { message?: string; code?: string } } }
+  return {
+    status: e?.response?.status,
+    message: e?.response?.data?.message,
+    code: e?.response?.data?.code,
+  }
+}
+
+export function EmployeePortalTab() {
+  const [slug, setSlug] = useState('')
+  const [savedSlug, setSavedSlug] = useState<string | null>(null)
+  const [enabled, setEnabled] = useState(false)
+  const [availability, setAvailability] = useState<AvailabilityState>({ status: 'idle' })
+  const [loaded, setLoaded] = useState(false)
+  const [savingSlug, setSavingSlug] = useState(false)
+  const [togglingPortal, setTogglingPortal] = useState(false)
+  const { toasts, addToast, dismissToast } = useToast()
+
+  // Load current slug + enablement flag (R4.1 — defaults to disabled).
+  useEffect(() => {
+    const controller = new AbortController()
+    apiClient
+      .get<{ slug?: string | null; employee_portal_enabled?: boolean }>('/org/settings', {
+        signal: controller.signal,
+      })
+      .then(({ data }) => {
+        const current = data?.slug ?? ''
+        setSavedSlug(data?.slug ?? null)
+        setSlug(current)
+        setEnabled(data?.employee_portal_enabled ?? false)
+        setLoaded(true)
+      })
+      .catch(() => {
+        // Ignore abort; surface nothing on initial load failure beyond defaults.
+      })
+    return () => controller.abort()
+  }, [])
+
+  // Live availability: debounce ≥300ms after typing stops, then call the
+  // endpoint with a 1s ceiling (R3.1, R3.2, R3.7, R3.8). On timeout/error we
+  // show "could not complete" and NEVER report the candidate as available.
+  useEffect(() => {
+    const candidate = slug.trim()
+    if (!candidate) {
+      setAvailability({ status: 'idle' })
+      return
+    }
+
+    const controller = new AbortController()
+    let timeoutId: number | undefined
+    let timedOut = false
+    let active = true
+
+    const debounceId = window.setTimeout(() => {
+      setAvailability({ status: 'checking' })
+      timeoutId = window.setTimeout(() => {
+        timedOut = true
+        controller.abort()
+      }, SLUG_AVAILABILITY_TIMEOUT_MS)
+
+      apiClient
+        .get<SlugAvailabilityResponse>('/api/v2/organisations/slug-availability', {
+          params: { slug: candidate },
+          signal: controller.signal,
+        })
+        .then((res) => {
+          if (!active) return
+          const result = res.data?.result
+          const reason = res.data?.reason ?? ''
+          if (result === 'available') {
+            setAvailability({ status: 'available' })
+          } else if (result === 'unavailable') {
+            setAvailability({ status: 'unavailable', reason: reason || 'This slug is already taken.' })
+          } else if (result === 'invalid') {
+            setAvailability({ status: 'invalid', reason: reason || 'This slug is not a valid format.' })
+          } else {
+            // Unexpected payload — treat as "could not complete", never available.
+            setAvailability({ status: 'error' })
+          }
+        })
+        .catch(() => {
+          // Surface "could not complete" only for a genuine timeout/error —
+          // never for a cancellation caused by re-typing or unmount (R3.8).
+          if (!active && !timedOut) return
+          setAvailability({ status: 'error' })
+        })
+        .finally(() => {
+          if (timeoutId) window.clearTimeout(timeoutId)
+        })
+    }, SLUG_DEBOUNCE_MS)
+
+    return () => {
+      active = false
+      window.clearTimeout(debounceId)
+      if (timeoutId) window.clearTimeout(timeoutId)
+      controller.abort()
+    }
+  }, [slug])
+
+  const saveSlug = async () => {
+    const candidate = slug.trim()
+    if (!candidate) {
+      addToast('error', 'Enter a slug before saving')
+      return
+    }
+    setSavingSlug(true)
+    try {
+      const res = await apiClient.put<SlugUpdateResponse>('/api/v2/organisations/slug', {
+        slug: candidate,
+      })
+      const stored = res.data?.slug ?? candidate
+      setSavedSlug(stored)
+      setSlug(stored)
+      setAvailability({ status: 'available' })
+      addToast('success', 'Organisation slug saved')
+    } catch (err) {
+      const { status, message } = readApiError(err)
+      if (status === 409) {
+        // Save-time race — slug taken since the live check (R3.9). Retain the
+        // entered value and reflect the new unavailable state.
+        const reason = message || 'This slug is no longer available.'
+        setAvailability({ status: 'unavailable', reason })
+        addToast('error', reason)
+      } else if (status === 422) {
+        const reason = message || 'This slug is invalid or reserved.'
+        setAvailability({ status: 'invalid', reason })
+        addToast('error', reason)
+      } else {
+        addToast('error', message || 'Failed to save slug')
+      }
+    } finally {
+      setSavingSlug(false)
+    }
+  }
+
+  const togglePortal = async () => {
+    const next = !enabled
+    setTogglingPortal(true)
+    try {
+      const res = await apiClient.put<EmployeePortalToggleResponse>(
+        '/api/v2/organisations/employee-portal',
+        { enabled: next },
+      )
+      setEnabled(res.data?.enabled ?? next)
+      addToast('success', next ? 'Employee Portal enabled' : 'Employee Portal disabled')
+    } catch (err) {
+      const { message } = readApiError(err)
+      // 422 slug_required when enabling without a slug (R4.4). The server
+      // leaves the flag disabled, so `enabled` stays at its previous value.
+      addToast('error', message || 'Failed to update the Employee Portal')
+    } finally {
+      setTogglingPortal(false)
+    }
+  }
+
+  const renderAvailability = () => {
+    switch (availability.status) {
+      case 'checking':
+        return <p className="text-sm text-muted-2">Checking availability…</p>
+      case 'available':
+        return <p className="text-sm text-ok">✓ Available</p>
+      case 'unavailable':
+        return <p className="text-sm text-danger">✗ {availability.reason}</p>
+      case 'invalid':
+        return <p className="text-sm text-danger">✗ {availability.reason}</p>
+      case 'error':
+        return <p className="text-sm text-warn">Could not complete the availability check. Try again.</p>
+      default:
+        return null
+    }
+  }
+
+  const slugDirty = slug.trim() !== (savedSlug ?? '')
+
+  return (
+    <div className="space-y-6 max-w-2xl">
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
+
+      <p className="text-sm text-muted">
+        The Employee Portal gives your staff an organisation-branded login at{' '}
+        <span className="mono">/e/{slug.trim() || 'your-slug'}</span> where they can view their
+        profile and roster. Choose a unique slug, then enable the portal.
+      </p>
+
+      <div className="flex flex-col gap-1">
+        <Input
+          label="Organisation Slug"
+          value={slug}
+          onChange={(e) => setSlug(e.target.value)}
+          placeholder="e.g. acme-motors"
+          helperText="3–63 characters: lowercase letters, digits, and single internal hyphens."
+          autoComplete="off"
+          spellCheck={false}
+        />
+        <div aria-live="polite" className="min-h-[1.25rem]">
+          {renderAvailability()}
+        </div>
+      </div>
+
+      <Button
+        onClick={saveSlug}
+        loading={savingSlug}
+        disabled={!slugDirty || !slug.trim() || availability.status === 'checking'}
+      >
+        Save Slug
+      </Button>
+
+      <hr className="border-border" />
+
+      <div>
+        <div className="flex items-center gap-3">
+          <label htmlFor="employee-portal-toggle" className="text-sm font-medium text-text">
+            Employee Portal
+          </label>
+          <button
+            id="employee-portal-toggle"
+            role="switch"
+            aria-checked={enabled}
+            disabled={togglingPortal || !loaded}
+            onClick={togglePortal}
+            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors disabled:opacity-50 ${enabled ? 'bg-accent' : 'bg-border-strong'}`}
+          >
+            <span
+              className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${enabled ? 'translate-x-6' : 'translate-x-1'}`}
+            />
+          </button>
+          <span className="text-sm text-muted">{enabled ? 'Enabled' : 'Disabled'}</span>
+        </div>
+        <p className="text-xs text-muted-2 mt-1">
+          {enabled
+            ? 'Your staff can log in at your organisation-branded portal URL.'
+            : 'Set a valid slug above, then enable the portal so your staff can log in.'}
+        </p>
+      </div>
+    </div>
+  )
+}
+
 /* ── Main Export ── */
 
 export function OrgSettings() {
@@ -833,6 +1105,7 @@ export function OrgSettings() {
     { id: 'inventory', label: 'Inventory', content: <InventoryTab /> },
     { id: 'terms', label: 'Terms & Conditions', content: <TermsTab /> },
     { id: 'portal', label: 'Portal', content: <PortalTab /> },
+    { id: 'employee-portal', label: 'Employee Portal', content: <EmployeePortalTab /> },
   ]
 
   return (

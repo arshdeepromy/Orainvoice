@@ -2,8 +2,11 @@
 
 import logging
 import os
+import re
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -38,6 +41,30 @@ def create_app() -> FastAPI:
     # Global exception handlers — catch unhandled errors and return JSON
     # instead of bare 500 responses.
     # ------------------------------------------------------------------
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error_handler(
+        request: Request, exc: RequestValidationError,
+    ):
+        """Log the offending fields for 422s, then return the standard body.
+
+        FastAPI's default 422 handler returns the error list to the client but
+        logs nothing server-side, which makes "422 on save" reports hard to
+        diagnose. We log a compact ``loc → msg`` summary at WARNING and keep the
+        exact same response shape the frontend already expects.
+        """
+        try:
+            summary = "; ".join(
+                f"{'.'.join(str(p) for p in e.get('loc', []))}: {e.get('msg', '')}"
+                for e in exc.errors()
+            )
+        except Exception:  # noqa: BLE001 — never let logging break the response
+            summary = "<unparseable validation errors>"
+        logger.warning(
+            "422 validation on %s %s: %s",
+            request.method, request.url.path, summary,
+        )
+        return JSONResponse(status_code=422, content={"detail": jsonable_encoder(exc.errors())})
 
     @app.exception_handler(IntegrityError)
     async def integrity_error_handler(request: Request, exc: IntegrityError):
@@ -99,9 +126,27 @@ def create_app() -> FastAPI:
                 detail = message
                 break
 
-        # Also handle FK violations
+        # Also handle FK violations. Distinguish the two directions:
+        #  - "is still referenced from table X"  → a delete/update is blocked
+        #    because dependent rows still exist (RESTRICT / NO ACTION). The data
+        #    very much DOES still exist, so say so and point at the dependent
+        #    record type and the soft-delete (deactivate) alternative.
+        #  - otherwise (insert/update naming a missing parent) → the referenced
+        #    row does not exist.
         if "foreign key" in raw.lower() or "ForeignKeyViolation" in raw:
-            detail = "Cannot complete this action because it references data that no longer exists"
+            ref_match = re.search(r'is still referenced from table "([^"]+)"', raw)
+            if ref_match:
+                table = ref_match.group(1).replace("_", " ")
+                detail = (
+                    f"Cannot delete this record because it still has related "
+                    f"{table} records. Remove or reassign them first, or "
+                    f"deactivate the record instead of deleting it."
+                )
+            else:
+                detail = (
+                    "Cannot complete this action because it references a record "
+                    "that no longer exists"
+                )
 
         # Also handle NOT NULL violations
         if "not-null" in raw.lower() or "NotNullViolation" in raw:
@@ -292,6 +337,7 @@ def create_app() -> FastAPI:
     from app.modules.ird import models as _ird_models  # noqa: F401
     from app.modules.in_app_notifications import models as _in_app_notif_models  # noqa: F401
     from app.modules.fleet_portal import models as _fleet_portal_models  # noqa: F401
+    from app.modules.employee_portal import models as _employee_portal_models  # noqa: F401
 
     # Force SQLAlchemy to resolve all relationship references now,
     # while all models are loaded. This prevents lazy mapper configuration
@@ -304,6 +350,7 @@ def create_app() -> FastAPI:
     from app.modules.admin.router import router as admin_router
     from app.modules.admin.router import coupon_public_router
     from app.modules.organisations.router import router as org_router
+    from app.modules.organisations.router import org_portal_admin_router
     from app.modules.customers.router import router as customers_router
     from app.modules.vehicles.router import router as vehicles_router
     from app.modules.invoices.router import router as invoices_router
@@ -439,6 +486,15 @@ def create_app() -> FastAPI:
     ]
     for _v2_router, _v2_prefix, _v2_tag in _V1_ROUTERS_FOR_V2:
         app.include_router(_v2_router, prefix=_v2_prefix, tags=[_v2_tag])
+
+    # Employee Portal admin endpoints — mounted at the exact `/api/v2/organisations`
+    # prefix the spec/design and rate-limit middleware key on (slug availability,
+    # slug set, portal enablement). JWT + org_admin enforced on the router itself.
+    app.include_router(
+        org_portal_admin_router,
+        prefix="/api/v2/organisations",
+        tags=["v2-organisations-portal"],
+    )
     # --- New universal-platform module routers ---
     from app.modules.feature_flags.router import admin_router as ff_admin_router
     from app.modules.feature_flags.router import org_router as ff_org_router
@@ -556,11 +612,21 @@ def create_app() -> FastAPI:
     app.include_router(payrun_router, prefix="/api/v2/pay-run", tags=["v2-pay-run"])
 
     # --- Public staff roster viewer (no auth, token-gated, G5 rate-limited) ---
-    from app.modules.staff.public_router import public_router as staff_public_router
+    from app.modules.staff.public_router import (
+        public_router as staff_public_router,
+        onboarding_public_router as staff_onboarding_public_router,
+    )
     app.include_router(
         staff_public_router,
         prefix="/api/v2/public/staff-roster",
         tags=["v2-public-staff-roster"],
+    )
+
+    # --- Public staff onboarding (no auth, token-gated, 30/min rate-limited) ---
+    app.include_router(
+        staff_onboarding_public_router,
+        prefix="/api/v2/public/staff-onboarding",
+        tags=["v2-public-staff-onboarding"],
     )
 
     # --- Scheduling module routers ---
@@ -754,6 +820,26 @@ def create_app() -> FastAPI:
         fleet_portal_admin_router,
         prefix="/api/v2/fleet-portal/admin",
         tags=["fleet-portal-admin"],
+    )
+
+    # --- Organisation Employee Portal ---
+    # Portal-user surface for an org's own staff (HttpOnly cookie auth, path
+    # /e). Mounted under /e/api so the emp_portal_session/emp_portal_csrf
+    # cookies are path-scoped to /e (R6.1, R6.2). The JWT-bypass + CSRF
+    # exemption middleware wiring and the nginx /e/api/ location are task 12.x.
+    from app.modules.employee_portal.router import router as employee_portal_router
+    app.include_router(employee_portal_router, prefix="/e/api", tags=["employee-portal"])
+    # Public (no-auth) mobile lookup — resolves an org name/slug to a branded
+    # login target. Mounted at exactly /api/v2/public/portal-resolve so the
+    # /api/v2/public/ JWT bypass applies (R9.2) and the per-IP rate-limit path
+    # constant (_PORTAL_RESOLVE_PATH, task 12.2) matches.
+    from app.modules.employee_portal.public_router import (
+        public_router as employee_portal_public_router,
+    )
+    app.include_router(
+        employee_portal_public_router,
+        prefix="/api/v2/public",
+        tags=["v2-public-employee-portal"],
     )
 
     # --- PPSR module (vehicle PPSR / money-owing checks via CarJam) ---

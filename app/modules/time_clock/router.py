@@ -61,7 +61,7 @@ from app.modules.auth.rbac import (
     LOCATION_MANAGER,
     ORG_ADMIN,
 )
-from app.modules.staff.models import StaffMember
+from app.modules.staff.models import StaffLocationAssignment, StaffMember
 from app.modules.time_clock import (
     approvals as approvals_service,
     breaks as breaks_service,
@@ -96,6 +96,9 @@ from app.modules.time_clock.schemas import (
     ShiftCoverCreate,
     ShiftCoverListResponse,
     ShiftCoverResponse,
+    ShiftCoverAssignRequest,
+    EligibleStaffItem,
+    EligibleStaffListResponse,
     ShiftSwapCreate,
     ShiftSwapListResponse,
     ShiftSwapResponse,
@@ -178,6 +181,68 @@ def _require_review_role(request: Request) -> None:
         raise HTTPException(
             status_code=403,
             detail="org_admin, branch_admin, or location_manager required",
+        )
+
+
+async def _require_force_close_scope(
+    request: Request,
+    db: AsyncSession,
+    *,
+    staff_id: UUID,
+) -> None:
+    """Restrict which staff members an Org_User may force-close
+    (R6.4 / R6.5).
+
+    An org-level admin (``org_admin``) MAY force-close any Open_Entry
+    in the organisation. A branch-scoped user (``branch_admin`` /
+    ``location_manager``) MAY force-close only entries for staff
+    whose ``staff_location_assignments`` intersect the requester's
+    ``request.state.branch_ids``.
+
+    Mirrors the authoritative branch-scope data gate in
+    :mod:`app.modules.staff.router` (the staff-stats endpoint). Raises
+    403 ``forbidden_scope`` for an out-of-scope target — the caller
+    MUST invoke this BEFORE mutating the entry so a rejected request
+    leaves the row unchanged.
+
+    Assumes :func:`_require_review_role` has already run, so ``role``
+    is one of ``org_admin`` / ``branch_admin`` / ``location_manager``.
+    """
+    role = _get_user_role(request)
+
+    # Org-level admins have full-org scope — close any entry (R6.4).
+    if role == ORG_ADMIN:
+        return
+
+    # Branch-scoped users (branch_admin / location_manager): the target
+    # staff member must be assigned to a location within the requester's
+    # branch scope (R6.4). An out-of-scope target is rejected (R6.5).
+    branch_ids_raw = getattr(request.state, "branch_ids", None) or []
+    branch_uuids: list[UUID] = []
+    for raw in branch_ids_raw:
+        try:
+            branch_uuids.append(UUID(str(raw)))
+        except (ValueError, TypeError):
+            continue
+
+    in_scope = False
+    if branch_uuids:
+        scoped = (
+            await db.execute(
+                select(StaffLocationAssignment.id)
+                .where(
+                    StaffLocationAssignment.staff_id == staff_id,
+                    StaffLocationAssignment.location_id.in_(branch_uuids),
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        in_scope = scoped is not None
+
+    if not in_scope:
+        raise HTTPException(
+            status_code=403,
+            detail={"detail": "forbidden_scope"},
         )
 
 
@@ -1031,7 +1096,13 @@ async def admin_clock_out(
     inside an approved week.
 
     RBAC: ``org_admin`` / ``branch_admin`` / ``location_manager`` —
-    same gating as the flag-for-review endpoint (G10).
+    same gating as the flag-for-review endpoint (G10). Force-close is
+    additionally **scope-restricted** (R6.4 / R6.5): an ``org_admin``
+    may close any open entry in the org, WHILE a branch-scoped user
+    (``branch_admin`` / ``location_manager``) may close only entries
+    for staff in their assigned branches — an out-of-scope target is
+    refused with 403 ``forbidden_scope`` and the entry is left
+    unchanged.
     """
     await _require_staff_management_module(request, db)
     _require_review_role(request)
@@ -1049,6 +1120,15 @@ async def admin_clock_out(
             status_code=404,
             detail={"detail": "time_clock_entry_not_found"},
         )
+
+    # Authorisation scope (R6.4 / R6.5): an org-level admin may close any
+    # entry in the org; a branch-scoped user (branch_admin /
+    # location_manager) may close only entries for staff in their assigned
+    # branches. Checked BEFORE the service mutates the row so an
+    # out-of-scope request (403 forbidden_scope) leaves the entry unchanged.
+    await _require_force_close_scope(
+        request, db, staff_id=entry_check.staff_id,
+    )
 
     try:
         entry = await clock_service.admin_force_clock_out(
@@ -1984,6 +2064,98 @@ async def shift_cover_accept(
             org_id=org_id,
             cover_id=cover_id,
             accepting_staff_id=staff.id,
+            user_id=user_id,
+            ip_address=ip_address,
+        )
+    except cover_service.ShiftCoverServiceError as exc:
+        _raise_cover_service_error(exc)
+
+    staff_ids = {cover.requester_staff_id}
+    if cover.accepted_by:
+        staff_ids.add(cover.accepted_by)
+    staff_names = await _bulk_resolve_staff_names(db, staff_ids)
+    return _serialise_cover(cover, staff_names=staff_names)
+
+
+@router.get(
+    "/shift-cover/{cover_id}/eligible",
+    response_model=EligibleStaffListResponse,
+    summary="List staff who can be assigned an open cover (no conflicting shift)",
+)
+async def shift_cover_eligible(
+    cover_id: UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+) -> EligibleStaffListResponse:
+    """Return active staff with no scheduling conflict in the cover's
+    window (admin/manager only) — used to populate the "Assign to staff"
+    picker on the Open Shifts page.
+    """
+    await _require_staff_management_module(request, db)
+    if _get_user_role(request) not in (ORG_ADMIN, BRANCH_ADMIN, LOCATION_MANAGER):
+        raise HTTPException(status_code=403, detail="forbidden")
+    org_id = _get_org_id(request)
+
+    from app.modules.scheduling_v2.models import ScheduleEntry
+
+    cover = await db.get(ShiftCoverRequest, cover_id)
+    if cover is None or cover.org_id != org_id:
+        raise HTTPException(status_code=404, detail="shift_cover_not_found")
+    entry = await db.get(ScheduleEntry, cover.schedule_entry_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="schedule_entry_not_found")
+
+    eligible = await cover_service.list_eligible_staff(
+        db, org_id=org_id, schedule_entry=entry,
+        requester_staff_id=cover.requester_staff_id,
+    )
+    items = [
+        EligibleStaffItem(
+            id=s.id,
+            name=(
+                s.name
+                or f"{s.first_name or ''} {s.last_name or ''}".strip()
+                or "Staff"
+            ),
+            position=s.position,
+        )
+        for s in eligible
+    ]
+    items.sort(key=lambda i: i.name.lower())
+    return EligibleStaffListResponse(items=items, total=len(items))
+
+
+@router.post(
+    "/shift-cover/{cover_id}/assign",
+    response_model=ShiftCoverResponse,
+    summary="Assign an open cover request to a staff member (admin/manager)",
+)
+async def shift_cover_assign(
+    cover_id: UUID,
+    payload: ShiftCoverAssignRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+) -> ShiftCoverResponse:
+    """Admin/manager assigns an open cover to a chosen staff member.
+
+    Reuses :func:`accept_cover_request` so the same base-eligibility and
+    window-conflict re-checks apply (409 ``scheduling_conflict_at_claim``
+    when the chosen staff has a conflicting shift). On success the shift's
+    ``staff_id`` flips to the assignee and the cover is marked accepted.
+    """
+    await _require_staff_management_module(request, db)
+    if _get_user_role(request) not in (ORG_ADMIN, BRANCH_ADMIN, LOCATION_MANAGER):
+        raise HTTPException(status_code=403, detail="forbidden")
+    org_id = _get_org_id(request)
+    user_id = _get_user_id(request)
+    ip_address = _get_client_ip(request)
+
+    try:
+        cover = await cover_service.accept_cover_request(
+            db,
+            org_id=org_id,
+            cover_id=cover_id,
+            accepting_staff_id=payload.staff_id,
             user_id=user_id,
             ip_address=ip_address,
         )

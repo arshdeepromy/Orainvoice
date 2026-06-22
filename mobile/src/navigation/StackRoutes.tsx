@@ -519,6 +519,23 @@ const LandingScreen = lazy(() =>
     default: () => <ScreenPlaceholder name="Landing" />,
   })),
 )
+
+// Portal selection (first-run portal-type selector)
+const PortalTypeSelector = lazy(() =>
+  import('@/screens/portal-select/PortalTypeSelector').catch(() => ({
+    default: () => <ScreenPlaceholder name="Choose Portal" />,
+  })),
+)
+const EmployeePortalLoginScreen = lazy(() =>
+  import('@/screens/portal-select/EmployeePortalLoginScreen').catch(() => ({
+    default: () => <ScreenPlaceholder name="Employee Portal Login" />,
+  })),
+)
+const OrgLookupScreen = lazy(() =>
+  import('@/screens/portal-select/OrgLookupScreen').catch(() => ({
+    default: () => <ScreenPlaceholder name="Find Organisation" />,
+  })),
+)
 const PublicPaymentScreen = lazy(() =>
   import('@/screens/auth/PublicPaymentScreen').catch(() => ({
     default: () => <ScreenPlaceholder name="Payment" />,
@@ -626,6 +643,11 @@ export function StackRoutes() {
         <Route path="/verify-email" element={<VerifyEmailScreen />} />
         <Route path="/landing" element={<GuestOnly><LandingScreen /></GuestOnly>} />
         <Route path="/pay/:token" element={<PublicPaymentScreen />} />
+
+        {/* ── Portal selection (first-run, pre-auth) ──────────────── */}
+        <Route path="/portal-select" element={<PortalTypeSelector />} />
+        <Route path="/portal-select/lookup" element={<OrgLookupScreen />} />
+        <Route path="/portal-select/employee-login" element={<EmployeePortalLoginScreen />} />
 
         {/* ── Authenticated screens (all wrapped in AuthGuard) ────── */}
         <Route path="/" element={<AuthGuard><DashboardScreen /></AuthGuard>} />

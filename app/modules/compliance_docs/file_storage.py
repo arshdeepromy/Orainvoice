@@ -128,6 +128,24 @@ class ComplianceFileStorage:
         if await asyncio.to_thread(file_path.is_file):
             await asyncio.to_thread(file_path.unlink)
 
+    async def file_size(self, file_key: str) -> int | None:
+        """Return the stored file's size in bytes, or ``None`` when missing.
+
+        Compliance files are stored unencrypted, so the on-disk size equals the
+        original upload size — usable for display without a DB column.
+        """
+        file_path = self.base_path / file_key
+        try:
+            file_path.resolve().relative_to(self.base_path.resolve())
+        except ValueError:
+            return None
+        try:
+            if not await asyncio.to_thread(file_path.is_file):
+                return None
+            return await asyncio.to_thread(lambda: file_path.stat().st_size)
+        except OSError:
+            return None
+
     # ------------------------------------------------------------------
     # Validation helpers (static for independent testability)
     # ------------------------------------------------------------------

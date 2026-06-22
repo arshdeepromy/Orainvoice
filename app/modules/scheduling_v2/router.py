@@ -205,6 +205,19 @@ async def update_entry(
     return ScheduleEntryResponse.model_validate(entry)
 
 
+@router.delete("/{entry_id}", status_code=204, summary="Delete schedule entry")
+async def delete_entry(
+    entry_id: UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    org_id = _get_org_id(request)
+    svc = SchedulingService(db)
+    deleted = await svc.delete_entry(org_id, entry_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Schedule entry not found")
+
+
 @router.put(
     "/{entry_id}/reschedule",
     response_model=ScheduleEntryResponse,

@@ -123,6 +123,12 @@ class PayslipCalc:
     gross: Decimal = Decimal(0)
     gross_ytd: Decimal = Decimal(0)
 
+    # Statutory deductions computed by the PAYE engine (period amounts).
+    paye: Decimal = Decimal(0)
+    acc_levy: Decimal = Decimal(0)
+    student_loan: Decimal = Decimal(0)
+    annualised_gross: Decimal = Decimal(0)
+
     deductions_total: Decimal = Decimal(0)
     reimbursements_total: Decimal = Decimal(0)
     net: Decimal = Decimal(0)
@@ -408,26 +414,78 @@ async def compute_gross_ytd(
 async def _aggregate_period_hours(
     db: AsyncSession,
     *,
-    staff_id: uuid.UUID,
+    staff: StaffMember,
     period: PayPeriod,
 ) -> tuple[Decimal, Decimal, Decimal]:
-    """Sum ``timesheet_approvals`` minutes covering the period and
-    return ``(ordinary_hours, overtime_hours, public_holiday_hours)``.
+    """Return ``(ordinary_hours, overtime_hours, public_holiday_hours)``
+    for the staff member over the pay period.
 
-    The approval table is week-based with ``status='approved'``
-    rows — this query selects every approved week whose
-    ``[week_start, week_end]`` intersects ``[period.start_date,
-    period.end_date]`` and sums the three minute counters.
+    Two sources, in priority order:
 
-    Note: an approved week could span two pay periods (e.g. a week
-    that ends on Monday but the period ends on Sunday). In that case
-    BOTH periods would attribute the full week's hours to themselves
-    on naive aggregation. Phase 4 accepts this small edge-case bias
-    as documented under R12 / P4-N30 — admins overlap weeks rarely
-    and the wage variance report (R12) surfaces any anomaly. A future
-    phase could prorate by date-range, but the spec does not require
-    it.
+      1. **Staff-timesheets surface** (the active system) — one
+         :class:`~app.modules.timesheets.models.Timesheet` row per
+         staff per pay period carries classified
+         ``ordinary``/``overtime``/``public_holiday`` minutes. When a
+         row exists for ``(staff, period)`` it is the source of truth.
+         If the classified bands are all zero we fall back, in order,
+         to: the configured rostered minutes (for ``fixed``-arrangement
+         staff, who are paid their configured hours even without clock
+         punches), then the effective worked minutes
+         (``adjusted`` override, else ``actual``) treated as ordinary.
+
+      2. **Legacy week-based ``timesheet_approvals``** — used only when
+         no Timesheet row exists for the period (orgs that have not yet
+         adopted the staff-timesheets surface). Sums every approved week
+         whose ``[week_start, week_end]`` intersects the period.
+
+    Note (legacy path): an approved week could span two pay periods. In
+    that case BOTH periods would attribute the full week's hours to
+    themselves on naive aggregation. Phase 4 accepts this small
+    edge-case bias as documented under R12 / P4-N30 — the wage variance
+    report (R12) surfaces any anomaly.
     """
+    from app.modules.timesheets.models import Timesheet
+
+    sixty = Decimal(60)
+
+    # --- Source 1: staff-timesheets surface (active system) ---
+    ts_row = (
+        await db.execute(
+            select(Timesheet).where(
+                Timesheet.staff_id == staff.id,
+                Timesheet.pay_period_id == period.id,
+            )
+        )
+    ).scalar_one_or_none()
+
+    if ts_row is not None:
+        ordinary_min = ts_row.ordinary_minutes or 0
+        overtime_min = ts_row.overtime_minutes or 0
+        ph_min = ts_row.public_holiday_minutes or 0
+
+        if ordinary_min == 0 and overtime_min == 0 and ph_min == 0:
+            # No classified bands. Fixed-arrangement staff are paid
+            # their configured rostered hours even without any clock
+            # punches; everyone else falls back to the effective worked
+            # minutes (adjusted override, else actual) as ordinary.
+            arrangement = getattr(staff, "working_arrangement", None)
+            rostered = ts_row.rostered_minutes or 0
+            if arrangement == "fixed" and rostered > 0:
+                ordinary_min = rostered
+            else:
+                effective = (
+                    ts_row.adjusted_minutes
+                    if ts_row.adjusted_minutes is not None
+                    else ts_row.actual_minutes
+                ) or 0
+                ordinary_min = effective
+
+        ordinary_hours = (Decimal(ordinary_min) / sixty).quantize(_CENTS)
+        overtime_hours = (Decimal(overtime_min) / sixty).quantize(_CENTS)
+        public_holiday_hours = (Decimal(ph_min) / sixty).quantize(_CENTS)
+        return ordinary_hours, overtime_hours, public_holiday_hours
+
+    # --- Source 2: legacy week-based timesheet_approvals ---
     stmt = text(
         """
         SELECT
@@ -444,7 +502,7 @@ async def _aggregate_period_hours(
     result = await db.execute(
         stmt,
         {
-            "staff_id": str(staff_id),
+            "staff_id": str(staff.id),
             "period_start": period.start_date,
             "period_end": period.end_date,
         },
@@ -452,7 +510,6 @@ async def _aggregate_period_hours(
     row = result.one_or_none()
     if row is None:
         return Decimal("0.00"), Decimal("0.00"), Decimal("0.00")
-    sixty = Decimal(60)
     ordinary_hours = (Decimal(row.ordinary_minutes or 0) / sixty).quantize(_CENTS)
     overtime_hours = (Decimal(row.overtime_minutes or 0) / sixty).quantize(_CENTS)
     public_holiday_hours = (
@@ -502,7 +559,7 @@ async def compute_payslip(
 
     # ---------------- Hour bands ----------------
     ordinary_hours, overtime_hours, public_holiday_hours = (
-        await _aggregate_period_hours(db, staff_id=staff.id, period=period)
+        await _aggregate_period_hours(db, staff=staff, period=period)
     )
 
     ordinary_rate = _q(staff.hourly_rate) if staff.hourly_rate is not None else None
@@ -652,6 +709,37 @@ async def compute_payslip(
         kiwisaver_employee = (gross * emp_rate).quantize(_CENTS)
         kiwisaver_employer = (gross * empl_rate).quantize(_CENTS)
 
+    # ---------------- Statutory deductions: PAYE / ACC / student loan ----------------
+    # The PAYE engine annualises the period gross, applies the NZ
+    # progressive brackets (or secondary flat rate) for the staff's tax
+    # code, adds the ACC earner levy, and computes student-loan
+    # repayments. These are attached as deduction lines by the service
+    # layer (mirroring KiwiSaver) so they flow into net pay.
+    from app.modules.timesheets.paye import compute_paye
+
+    period_days = (period.end_date - period.start_date).days + 1
+    paye_result = compute_paye(
+        gross_pay=gross,
+        tax_code=getattr(staff, "tax_code", None) or "M",
+        period_days=period_days,
+        student_loan=bool(getattr(staff, "student_loan", False)),
+        kiwisaver_enrolled=bool(staff.kiwisaver_enrolled),
+        kiwisaver_employee_rate=(
+            _q(staff.kiwisaver_employee_rate)
+            if staff.kiwisaver_employee_rate is not None
+            else Decimal("3")
+        ),
+        kiwisaver_employer_rate=(
+            _q(staff.kiwisaver_employer_rate)
+            if staff.kiwisaver_employer_rate is not None
+            else Decimal("3")
+        ),
+    )
+    paye = paye_result.paye_tax
+    acc_levy = paye_result.acc_levy
+    student_loan = paye_result.student_loan
+    annualised_gross = paye_result.annualised_gross
+
     # ---------------- Net composition ----------------
     deductions_total = Decimal("0.00")
     for d in deductions:
@@ -698,6 +786,10 @@ async def compute_payslip(
         casual_8pct=casual_8pct,
         gross=gross,
         gross_ytd=gross_ytd,
+        paye=paye,
+        acc_levy=acc_levy,
+        student_loan=student_loan,
+        annualised_gross=annualised_gross,
         deductions_total=deductions_total,
         reimbursements_total=reimbursements_total,
         net=net,

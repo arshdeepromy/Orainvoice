@@ -14,13 +14,19 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit_log
 from app.modules.admin.models import Coupon, Organisation, OrganisationCoupon, SubscriptionPlan
 from app.modules.auth.models import User
 from app.modules.organisations.models import Branch
+from app.modules.organisations.slug_service import (
+    classify_availability,
+    is_reserved,
+    normalise_slug,
+    validate_slug_format,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -242,7 +248,272 @@ SETTINGS_JSONB_KEYS = {
     # (C9) and save-time minimum-wage gate (C10). Default 23.15 NZD applied
     # at call-sites when key is missing from JSONB; no row backfill needed.
     "minimum_wage_threshold_nzd",
+    # Staff onboarding link (R5.4) — when True, the public onboarding form
+    # requires the staff member to supply bank account details before
+    # submission. Read by onboarding_submit / onboarding_prefill in
+    # app/modules/staff/public_router.py. Must live in the allow-list so it
+    # is both projected on read and persisted on write via update_org_settings.
+    "onboarding_bank_account_required",
+    # Organisation Employee Portal (R4.1) — when True, the org-branded
+    # Employee Portal at /e/{slug} is enabled. Default False so existing
+    # orgs (with no stored value) read as disabled; enabling additionally
+    # requires a slug to be set (see employee-portal toggle endpoint).
+    "employee_portal_enabled",
 }
+
+
+async def check_slug_availability(
+    db: AsyncSession,
+    *,
+    requesting_org_id: uuid.UUID | None,
+    candidate: str,
+) -> tuple[str, str | None]:
+    """Classify the availability of a candidate Org_Slug (R3.2–R3.6).
+
+    Normalises the candidate, validates its format, checks it against the
+    reserved-slug set, performs a case-insensitive ``lower(slug)`` holder
+    lookup against ``organisations``, and feeds the resolved holder org id
+    into the pure ``classify_availability`` helper.
+
+    Returns ``(result, reason)`` where ``result`` is exactly one of
+    ``available`` / ``unavailable`` / ``invalid`` and ``reason`` is a
+    human-readable explanation for the non-available cases (``None`` when
+    available).
+
+    The DB holder lookup is skipped for candidates that are already known to
+    be invalid (bad format) or reserved, since those outcomes do not depend
+    on the holder — keeping the endpoint comfortably within its 1s budget
+    (R3.2). The classification itself is delegated to the pure helper.
+
+    Requirements: 3.2, 3.3, 3.4, 3.5, 3.6
+    """
+    normalised = normalise_slug(candidate)
+
+    holder_org_id: uuid.UUID | None = None
+    ok, _msg = validate_slug_format(normalised)
+    if ok and not is_reserved(normalised):
+        result = await db.execute(
+            select(Organisation.id).where(
+                func.lower(Organisation.slug) == normalised
+            )
+        )
+        holder_org_id = result.scalar_one_or_none()
+
+    return classify_availability(
+        candidate,
+        requesting_org_id=requesting_org_id,
+        holder_org_id=holder_org_id,
+    )
+
+
+class SlugUpdateError(Exception):
+    """Raised when an Org_Slug update is rejected (R2.3, R2.4, R2.6).
+
+    Carries a machine-readable ``code`` (one of ``slug_invalid_format``,
+    ``slug_reserved``, ``slug_taken``) and a human-readable ``message`` so the
+    router can map it directly onto the documented error envelope
+    (``422`` for format/reserved, ``409`` for taken). See design.md
+    §Admin API → ``PUT /api/v2/organisations/slug``.
+    """
+
+    def __init__(self, code: str, message: str):
+        self.code = code
+        self.message = message
+        super().__init__(message)
+
+
+async def update_org_slug(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    user_id: uuid.UUID,
+    candidate: str,
+    ip_address: str | None = None,
+) -> str:
+    """Set or change the Organisation's Org_Slug (D2 hard cut-over).
+
+    Flow (design.md §Admin API):
+        normalise → validate_format → reserved check → save-time uniqueness
+        re-check (R3.9) → ``UPDATE organisations SET slug = :normalised``
+        (stored normalised, R2.7) → ``write_audit_log`` (previous/new value,
+        R4.7) → ``invalidate_org_settings_cache``.
+
+    Mutability is a **hard cut-over** (D2): if a slug already exists it is
+    replaced and the old value is freed immediately for reuse — there is no
+    immutability branch (R2.10 not adopted) and no redirect/grace window
+    (R2.11). The save-time uniqueness re-check excludes the requesting org so
+    re-submitting the org's own current slug is accepted.
+
+    Returns the stored (normalised) slug on success.
+
+    Raises:
+        SlugUpdateError: bad format → ``slug_invalid_format`` (R2.3); reserved
+            → ``slug_reserved`` (R2.4); held by another org → ``slug_taken``
+            (R2.6, R3.9).
+        ValueError: when the organisation does not exist.
+
+    Requirements: 2.1, 2.6, 2.7, 2.9, 2.11, 3.9, 4.2, 4.3, 4.7
+    """
+    normalised = normalise_slug(candidate)
+
+    # 1. Format validation (R2.2, R2.3) → 422 slug_invalid_format.
+    ok, message = validate_slug_format(normalised)
+    if not ok:
+        raise SlugUpdateError("slug_invalid_format", message or "Invalid slug format.")
+
+    # 2. Reserved check (R2.4) → 422 slug_reserved.
+    if is_reserved(normalised):
+        raise SlugUpdateError(
+            "slug_reserved", "This slug is reserved and cannot be used."
+        )
+
+    # Load the requesting org (must exist).
+    result = await db.execute(
+        select(Organisation).where(Organisation.id == org_id)
+    )
+    org = result.scalar_one_or_none()
+    if org is None:
+        raise ValueError("Organisation not found")
+
+    # 3. Save-time uniqueness re-check against OTHER orgs (R2.6, R3.9). The
+    #    requesting org is excluded so re-saving its own current slug is fine.
+    holder_result = await db.execute(
+        select(Organisation.id).where(
+            func.lower(Organisation.slug) == normalised,
+            Organisation.id != org_id,
+        )
+    )
+    holder_org_id = holder_result.scalar_one_or_none()
+    if holder_org_id is not None:
+        raise SlugUpdateError("slug_taken", "This slug is already taken.")
+
+    # 4. Apply the change — hard cut-over (D2). Store normalised (R2.7).
+    previous_slug = org.slug
+    org.slug = normalised
+    await db.flush()
+
+    # 5. Audit log with previous/new value and acting user (R4.7).
+    await write_audit_log(
+        session=db,
+        org_id=org_id,
+        user_id=user_id,
+        action="org.slug_updated",
+        entity_type="organisation",
+        entity_id=org_id,
+        before_value={"slug": previous_slug},
+        after_value={"slug": normalised},
+        ip_address=ip_address,
+    )
+
+    # 6. Invalidate the read-through org-settings cache.
+    await invalidate_org_settings_cache(org_id)
+
+    return normalised
+
+
+class EmployeePortalToggleError(Exception):
+    """Raised when an Employee_Portal enablement change is rejected (R4.4).
+
+    Carries a machine-readable ``code`` (currently only ``slug_required``)
+    and a human-readable ``message`` so the router can map it onto the
+    documented ``422`` error envelope. See design.md §Admin API →
+    ``PUT /api/v2/organisations/employee-portal``.
+    """
+
+    def __init__(self, code: str, message: str):
+        self.code = code
+        self.message = message
+        super().__init__(message)
+
+
+async def set_employee_portal_enabled(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    user_id: uuid.UUID,
+    enabled: bool,
+    ip_address: str | None = None,
+) -> bool:
+    """Enable or disable the Employee_Portal for an organisation (R4.2–R4.8).
+
+    Flow (design.md §Admin API):
+        load org → if enabling while ``slug IS NULL`` reject ``slug_required``
+        leaving the flag disabled (R4.4) → otherwise persist the flag via
+        ``update_org_settings`` (cache invalidation + JSONB allow-list) →
+        on **disable** delete every active session for the org in the **same**
+        transaction (R4.6) → ``write_audit_log`` recording the acting user and
+        previous/new value (R4.7).
+
+    Atomicity (R4.8): the request runs inside the ``get_db_session``
+    ``session.begin()`` auto-commit transaction, so the settings flush, the
+    session deletion, and the audit write all commit together. If the audit
+    write raises, the whole change — including the session deletion — rolls
+    back and nothing is persisted.
+
+    Returns the persisted ``enabled`` flag on success.
+
+    Raises:
+        EmployeePortalToggleError: enabling with no slug set → ``slug_required``
+            (R4.4); the flag is left unchanged (disabled).
+        ValueError: when the organisation does not exist.
+
+    Requirements: 4.2, 4.3, 4.4, 4.5, 4.6, 4.7, 4.8
+    """
+    result = await db.execute(
+        select(Organisation).where(Organisation.id == org_id)
+    )
+    org = result.scalar_one_or_none()
+    if org is None:
+        raise ValueError("Organisation not found")
+
+    # R4.4 — enabling requires a valid slug. Reject before any write so the
+    # flag is left disabled and no partial state is persisted.
+    if enabled and not org.slug:
+        raise EmployeePortalToggleError(
+            "slug_required",
+            "Set a valid organisation slug before enabling the Employee Portal.",
+        )
+
+    # Capture the previous flag value for the audit entry (R4.7).
+    before_settings = dict(org.settings) if org.settings else {}
+    previous_enabled = bool(before_settings.get("employee_portal_enabled", False))
+
+    # Persist the flag through the settings allow-list path so the JSONB write
+    # and the read-through cache invalidation reuse the audited CRUD helper.
+    # ``False`` is a real (non-None) value so the disable case is applied.
+    await update_org_settings(
+        db,
+        org_id=org_id,
+        user_id=user_id,
+        ip_address=ip_address,
+        employee_portal_enabled=enabled,
+    )
+
+    # R4.6 — on disable, invalidate every active Employee_Portal session for
+    # the org in the SAME transaction as the flag flip.
+    if not enabled:
+        from app.modules.employee_portal.services.session_service import (
+            delete_sessions_for_org,
+        )
+
+        await delete_sessions_for_org(db, org_id)
+
+    # R4.7 — explicit audit entry capturing the toggle's previous/new value and
+    # the acting user. Placed last so a failure here rolls back the whole
+    # change under the request's auto-commit transaction (R4.8).
+    await write_audit_log(
+        session=db,
+        org_id=org_id,
+        user_id=user_id,
+        action="org.employee_portal_toggled",
+        entity_type="organisation",
+        entity_id=org_id,
+        before_value={"employee_portal_enabled": previous_enabled},
+        after_value={"employee_portal_enabled": enabled},
+        ip_address=ip_address,
+    )
+
+    return enabled
 
 
 async def get_org_settings(
@@ -379,6 +650,7 @@ async def _load_org_settings_from_db(
         "payment_terms_enabled": True,
         "terms_and_conditions_enabled": True,
         "pos_preview_enabled": True,
+        "employee_portal_enabled": False,
     }
 
     settings_dict = {key: settings_data.get(key) for key in SETTINGS_JSONB_KEYS}
@@ -392,6 +664,10 @@ async def _load_org_settings_from_db(
         "country_code": org.country_code or settings_data.get("address_country"),
         "trade_family": trade_family,
         "trade_category": trade_category,
+        # Organisation Employee Portal slug (dedicated column, D5/R2). Exposed
+        # read-only here so the Org Settings → Employee Portal panel can show
+        # the current slug; writes go through PUT /api/v2/organisations/slug.
+        "slug": org.slug,
         **settings_dict,
     }
 
@@ -2524,6 +2800,14 @@ _CLOCK_IN_POLICY_DEFAULTS: dict[str, Any] = {
     "allow_late_clock_out_edits": True,
     "kiosk_employee_id_rate_limit": 10,
     "shift_swap_requires_manager_approval": False,
+    "late_clock_in_alert_enabled": True,
+    "late_clock_in_alert_channels": ["sms"],
+    "missed_clock_out_alert_enabled": True,
+    "missed_clock_out_alert_channels": ["sms"],
+    # --- auto-clock-out (opt-in, OFF by default — affects pay) ---
+    "auto_clock_out_enabled": False,
+    "auto_clock_out_after_hours": 14,
+    "auto_clock_out_grace_minutes": 15,
 }
 
 _OVERTIME_POLICY_DEFAULTS: dict[str, Any] = {

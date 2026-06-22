@@ -31,6 +31,22 @@ import ClockedInDrawer from './components/ClockedInDrawer'
 import AuthorizedAvatar from '@/components/AuthorizedAvatar'
 import { getPendingLeaveCount } from '@/api/staff'
 
+/**
+ * Coerce any API error into a human-readable string for display. Backend 409s
+ * (duplicate staff, dependent-record blocks, etc.) return `detail` as an object
+ * ({message, code, …}); rendering that object directly crashes React
+ * ("Objects are not valid as a React child"). Always pass errors through here.
+ */
+function errMessage(err: any, fallback = 'Something went wrong'): string {
+  const detail = err?.response?.data?.detail
+  if (typeof detail === 'string') return detail
+  if (detail && typeof detail === 'object') {
+    return detail.message || detail.detail || detail.msg || fallback
+  }
+  if (typeof err?.message === 'string') return err.message
+  return fallback
+}
+
 interface StaffMember {
   id: string
   name: string
@@ -70,6 +86,26 @@ interface StaffFormData {
   hourly_rate: string
   overtime_rate: string
   skills: string
+  /**
+   * Selected pay cycle (per-staff-pay-cycle feature). Empty string means
+   * "Use organisation default" — no staff-level assignment is created so the
+   * staff member resolves to the org Default_Cycle (REQ 1.4, 2.3).
+   */
+  pay_cycle_id: string
+}
+
+/**
+ * Active pay cycle as returned by `GET /api/v2/pay-cycles/` (the endpoint
+ * filters to `active == True`, so every item is an Active_Cycle). Mirrors the
+ * shape consumed by the timesheets/pay-run tabs.
+ */
+interface PayCycle {
+  id: string
+  name: string
+  frequency: string
+  anchor_date: string
+  pay_date_offset_days: number
+  is_default: boolean
 }
 
 const DEFAULT_SCHEDULE: WeekSchedule = {
@@ -84,7 +120,7 @@ const emptyForm: StaffFormData = {
   first_name: '', last_name: '', email: '', phone: '',
   employee_id: '', position: '', reporting_to: '',
   role_type: 'employee', employment_basis: 'full_time', working_arrangement: 'rostered',
-  hourly_rate: '', overtime_rate: '', skills: '',
+  hourly_rate: '', overtime_rate: '', skills: '', pay_cycle_id: '',
 }
 
 const modalInputCls = 'w-full rounded-ctl border border-border bg-card px-3 py-2 text-sm text-text focus:border-accent focus:outline-none focus:shadow-[0_0_0_3px_var(--accent-soft)]'
@@ -120,6 +156,13 @@ export default function StaffList() {
   const [createAsUser, setCreateAsUser] = useState(false)
   const [userRole, setUserRole] = useState<'org_admin' | 'salesperson' | 'branch_admin' | 'location_manager' | 'staff_member'>('salesperson')
   const [assignBranchId, setAssignBranchId] = useState<string>('')
+
+  // "Send onboarding link" state — independent of the invite above (R1.5)
+  const [sendOnboardingLink, setSendOnboardingLink] = useState(false)
+
+  // Active pay cycles for the per-staff pay-cycle selector (per-staff-pay-cycle).
+  // Fetched once on mount; the selector is hidden when none are configured.
+  const [payCycles, setPayCycles] = useState<PayCycle[]>([])
 
   const { branches } = useBranch()
   const { isEnabled } = useModules()
@@ -182,6 +225,19 @@ export default function StaffList() {
     return () => controller.abort()
   }, [])
 
+  // Active pay cycles for the Add-modal pay-cycle selector (REQ 1.1). The
+  // endpoint returns only active cycles wrapped in `{ items, total }`; consume
+  // defensively and default to an empty list so the selector simply hides when
+  // none exist (REQ 1.5, 1.6). AbortController cancels the request on unmount.
+  useEffect(() => {
+    const controller = new AbortController()
+    apiClient
+      .get<{ items: PayCycle[]; total: number }>('/api/v2/pay-cycles/', { signal: controller.signal })
+      .then((res) => setPayCycles(res.data?.items ?? []))
+      .catch(() => setPayCycles([]))
+    return () => controller.abort()
+  }, [])
+
   // Shared client-side search predicate — the SAME filter applied to render
   // table rows is reused for the CSV export so they always agree (R5.3).
   const matchesSearch = useCallback((m: StaffMember) => {
@@ -202,36 +258,22 @@ export default function StaffList() {
     setCreateAsUser(false)
     setUserRole('salesperson')
     setAssignBranchId('')
+    setSendOnboardingLink(false)
     setShowModal(true)
   }
 
   const openEdit = (member: StaffMember) => {
-    setEditingId(member.id)
-    setForm({
-      first_name: member.first_name || '',
-      last_name: member.last_name || '',
-      email: member.email || '',
-      phone: member.phone || '',
-      employee_id: member.employee_id || '',
-      position: member.position || '',
-      reporting_to: member.reporting_to || '',
-      role_type: member.role_type || 'employee',
-      employment_basis: member.employment_basis || 'full_time',
-      working_arrangement: member.working_arrangement || 'rostered',
-      hourly_rate: member.hourly_rate || '',
-      overtime_rate: member.overtime_rate || '',
-      skills: (member.skills || []).join(', '),
-    })
-    setSchedule(member.availability_schedule && Object.keys(member.availability_schedule).length > 0
-      ? { ...member.availability_schedule }
-      : { ...DEFAULT_SCHEDULE })
-    setFormError('')
-    setDupWarnings({})
-    setShowModal(true)
+    // Editing happens on the full Staff Detail page (single source of truth).
+    navigate(`/staff/${member.id}?edit=1`)
   }
 
   const handleSave = async () => {
     if (!form.first_name.trim()) { setFormError('First name is required'); return }
+    // R1.2 — block submit when "Send onboarding link" is checked but no email
+    if (!editingId && sendOnboardingLink && !form.email.trim()) {
+      setFormError('An email address is required to send an onboarding link')
+      return
+    }
     setSaving(true)
     setFormError('')
     try {
@@ -254,7 +296,21 @@ export default function StaffList() {
       if (editingId) {
         await apiClient.put(`/staff/${editingId}`, payload, { baseURL: '/api/v2' })
       } else {
-        await apiClient.post('/staff', payload, { baseURL: '/api/v2' })
+        payload.send_onboarding_link = sendOnboardingLink
+        // Per-staff pay cycle (REQ 2.1). A selected cycle id assigns a
+        // staff-level pay cycle; an empty selection ("Use organisation
+        // default") sends null so no assignment is created and the staff
+        // member resolves to the org Default_Cycle (REQ 2.3).
+        payload.pay_cycle_id = form.pay_cycle_id || null
+        const res = await apiClient.post('/staff', payload, { baseURL: '/api/v2' })
+        // R1.3/R3.6 — when the onboarding link was requested, surface a failure
+        // to send the email (the staff record is still created and preserved).
+        if (sendOnboardingLink && res.data?.onboarding_email_sent === false) {
+          setFormError('Staff created, but the onboarding email could not be sent. You can resend it from the staff member\u2019s page.')
+          setSaving(false)
+          fetchStaff()
+          return
+        }
         // If "Also create as user" is checked, send invite via existing user invite flow
         if (createAsUser && form.email.trim()) {
           try {
@@ -287,7 +343,7 @@ export default function StaffList() {
       setShowModal(false)
       fetchStaff()
     } catch (err: any) {
-      setFormError(err?.response?.data?.detail || 'Failed to save')
+      setFormError(errMessage(err, 'Failed to save'))
     } finally {
       setSaving(false)
     }
@@ -305,11 +361,52 @@ export default function StaffList() {
   const [deleteTarget, setDeleteTarget] = useState<StaffMember | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [deleteAlsoUser, setDeleteAlsoUser] = useState(true)
+  // Preflight: which dependent records (payroll, timesheets, …) block a hard
+  // delete, plus any error surfaced from the delete attempt itself.
+  const [deleteBlockers, setDeleteBlockers] = useState<{ label: string; count: number }[]>([])
+  const [checkingBlockers, setCheckingBlockers] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+
+  // When the delete modal opens for a member, preflight the deletion-check so
+  // the admin sees exactly what blocks a permanent delete before trying.
+  useEffect(() => {
+    if (!deleteTarget) return
+    let cancelled = false
+    setDeleteBlockers([])
+    setDeleteError(null)
+    setCheckingBlockers(true)
+    apiClient
+      .get(`/staff/${deleteTarget.id}/deletion-check`, { baseURL: '/api/v2' })
+      .then((res) => {
+        if (cancelled) return
+        const blockers = (res.data as any)?.blockers ?? []
+        setDeleteBlockers(Array.isArray(blockers) ? blockers : [])
+      })
+      .catch(() => { if (!cancelled) setDeleteBlockers([]) })
+      .finally(() => { if (!cancelled) setCheckingBlockers(false) })
+    return () => { cancelled = true }
+  }, [deleteTarget])
+
+  const handleDeactivateFromModal = async () => {
+    if (!deleteTarget) return
+    setDeleting(true)
+    setDeleteError(null)
+    try {
+      await apiClient.delete(`/staff/${deleteTarget.id}`, { baseURL: '/api/v2' })
+      setDeleteTarget(null)
+      fetchStaff()
+    } catch (err: any) {
+      setDeleteError(errMessage(err, 'Failed to deactivate staff member'))
+    } finally {
+      setDeleting(false)
+    }
+  }
 
   const handleDeleteStaff = async () => {
     if (!deleteTarget) return
     const member = deleteTarget
     setDeleting(true)
+    setDeleteError(null)
     try {
       await apiClient.delete(`/staff/${member.id}/permanent`, { baseURL: '/api/v2' })
       if (deleteAlsoUser && member.email) {
@@ -325,7 +422,13 @@ export default function StaffList() {
       setDeleteTarget(null)
       fetchStaff()
     } catch (err: any) {
-      setFormError(err?.response?.data?.detail || 'Failed to delete staff member')
+      // The backend returns a structured 409 ({detail:{message, blockers}}) when
+      // payroll/timesheet history blocks a hard delete; show the message + list.
+      const detail = err?.response?.data?.detail
+      if (detail && typeof detail === 'object' && Array.isArray(detail.blockers)) {
+        setDeleteBlockers(detail.blockers)
+      }
+      setDeleteError(errMessage(err, 'Failed to delete staff member'))
     } finally {
       setDeleting(false)
     }
@@ -713,6 +816,44 @@ export default function StaffList() {
                 </select>
               </div>
 
+              {/* Pay cycle selector (per-staff-pay-cycle). Shown only when the
+                  org has at least one active cycle; otherwise hidden with a
+                  hint to configure one (REQ 1.1, 1.2, 1.4, 1.5, 1.6). */}
+              {payCycles.length > 0 ? (
+                <div>
+                  <label className={modalLabelCls}>Pay Cycle</label>
+                  <select
+                    value={form.pay_cycle_id}
+                    onChange={(e) => setForm(f => ({ ...f, pay_cycle_id: e.target.value }))}
+                    className={modalInputCls}
+                  >
+                    {/* "Use organisation default" — leaves no staff-level
+                        assignment so the org Default_Cycle applies (REQ 1.4). */}
+                    <option value="">
+                      Use organisation default{(() => {
+                        const def = payCycles.find(c => c.is_default)
+                        return def ? ` (${def.name})` : ''
+                      })()}
+                    </option>
+                    {payCycles.map((c) => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                  </select>
+                  <p className="mt-1 text-xs text-muted-2">
+                    Choose a pay cycle for this staff member, or leave as
+                    “Use organisation default” to pay them on your organisation’s
+                    default cycle.
+                  </p>
+                </div>
+              ) : (
+                <div className="rounded-ctl border border-dashed border-border bg-canvas p-4">
+                  <p className="text-xs text-muted-2">
+                    No pay cycle configured — set one up under Timesheets →
+                    Settings to assign a pay cycle to this staff member.
+                  </p>
+                </div>
+              )}
+
               {/* Also create as user — only for new staff */}
               {!editingId && (
                 <div className="rounded-ctl border border-border bg-canvas p-4 space-y-3">
@@ -762,6 +903,24 @@ export default function StaffList() {
                 </div>
               )}
 
+              {/* Send onboarding link — only for new staff (R1.1, R1.5) */}
+              {!editingId && (
+                <div className="rounded-ctl border border-border bg-canvas p-4 space-y-3">
+                  <label className="flex items-center gap-2 text-[12.5px] font-medium text-text cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={sendOnboardingLink}
+                      onChange={(e) => setSendOnboardingLink(e.target.checked)}
+                      className="h-4 w-4 rounded border-border text-accent focus:ring-accent"
+                    />
+                    Send onboarding link (staff completes their own details)
+                  </label>
+                  {sendOnboardingLink && !form.email.trim() && (
+                    <p className="text-xs text-warn">Email is required to send an onboarding link</p>
+                  )}
+                </div>
+              )}
+
               {form.working_arrangement === 'fixed' ? (
                 <div className="rounded-ctl border border-border bg-canvas p-4 space-y-2">
                   <WorkSchedule schedule={schedule} onChange={setSchedule} />
@@ -791,19 +950,55 @@ export default function StaffList() {
 
       {/* Delete Confirmation Modal */}
       <Modal open={!!deleteTarget} onClose={() => setDeleteTarget(null)} title="Delete Staff Member">
-        {deleteTarget && (
+        {deleteTarget && (() => {
+          const blocked = deleteBlockers.length > 0
+          const fullName = `${deleteTarget.first_name} ${deleteTarget.last_name || ''}`.trim()
+          return (
           <div className="space-y-4">
-            <div className="rounded-ctl border border-danger/30 bg-danger-soft p-4">
-              <p className="text-sm text-danger">
-                This will permanently delete <span className="font-semibold">{deleteTarget.first_name} {deleteTarget.last_name || ''}</span>.
-                This action cannot be undone.
-              </p>
-              <p className="mt-2 text-sm text-danger">
-                Any invoices, quotes, or other data they created will be preserved and remain accessible.
-              </p>
-            </div>
+            {/* Blocked: payroll/timesheet history prevents a hard delete */}
+            {blocked ? (
+              <div className="rounded-ctl border border-warn/40 bg-warn-soft p-4">
+                <p className="text-sm font-medium text-text">
+                  {fullName || 'This staff member'} can’t be permanently deleted
+                </p>
+                <p className="mt-1 text-sm text-muted">
+                  They have history that must be kept for your records:
+                </p>
+                <ul className="mt-2 space-y-1">
+                  {deleteBlockers.map((b) => (
+                    <li key={b.label} className="flex items-center justify-between rounded bg-canvas px-3 py-1.5 text-sm">
+                      <span className="text-text">{b.label}</span>
+                      <span className="mono font-semibold text-text">{b.count}</span>
+                    </li>
+                  ))}
+                </ul>
+                <p className="mt-3 text-sm text-muted">
+                  Deactivate them instead — this removes them from active lists and
+                  sign-in while preserving these records.
+                </p>
+              </div>
+            ) : (
+              <div className="rounded-ctl border border-danger/30 bg-danger-soft p-4">
+                <p className="text-sm text-danger">
+                  This will permanently delete <span className="font-semibold">{fullName}</span>.
+                  This action cannot be undone.
+                </p>
+                <p className="mt-2 text-sm text-danger">
+                  {checkingBlockers
+                    ? 'Checking for linked records…'
+                    : 'Any invoices, quotes, or other data they created will be preserved and remain accessible.'}
+                </p>
+              </div>
+            )}
 
-            {deleteTarget.email && (
+            {/* Error surfaced from the delete/deactivate attempt itself */}
+            {deleteError && (
+              <div role="alert" className="rounded-ctl border border-danger/40 bg-danger-soft p-3 text-sm text-danger">
+                {deleteError}
+              </div>
+            )}
+
+            {!blocked && deleteTarget.email && (
               <label className="flex items-start gap-3 rounded-ctl border border-border bg-canvas p-3 cursor-pointer">
                 <input
                   type="checkbox"
@@ -822,12 +1017,29 @@ export default function StaffList() {
 
             <div className="flex justify-end gap-2 pt-2">
               <Button variant="ghost" size="sm" onClick={() => setDeleteTarget(null)}>Cancel</Button>
-              <Button variant="danger" size="sm" onClick={handleDeleteStaff} loading={deleting}>
-                Delete permanently
-              </Button>
+              {blocked ? (
+                deleteTarget.is_active ? (
+                  <Button variant="primary" size="sm" onClick={handleDeactivateFromModal} loading={deleting}>
+                    Deactivate instead
+                  </Button>
+                ) : (
+                  <Button variant="ghost" size="sm" disabled>Already inactive</Button>
+                )
+              ) : (
+                <Button
+                  variant="danger"
+                  size="sm"
+                  onClick={handleDeleteStaff}
+                  loading={deleting}
+                  disabled={checkingBlockers}
+                >
+                  Delete permanently
+                </Button>
+              )}
             </div>
           </div>
-        )}
+          )
+        })()}
       </Modal>
 
       <ClockedInDrawer

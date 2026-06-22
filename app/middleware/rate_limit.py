@@ -71,6 +71,14 @@ _HA_HEARTBEAT_RATE_LIMIT = 12
 _PUBLIC_STAFF_ROSTER_PATH_PREFIX = "/api/v2/public/staff-roster/"
 _PUBLIC_STAFF_ROSTER_RATE_LIMIT = 30
 
+# Public staff onboarding link — 30 req/min per IP (Staff onboarding R11.2).
+# Unauthenticated + token-gated; the limit defends against accidental
+# scraping when an onboarding token leaks into a public channel without
+# breaking a legitimate recipient who refreshes the page a few times.
+# Draft endpoints share this prefix and inherit the same limit (R12.10).
+_PUBLIC_STAFF_ONBOARDING_PATH_PREFIX = "/api/v2/public/staff-onboarding/"
+_PUBLIC_STAFF_ONBOARDING_RATE_LIMIT = 30
+
 # PPSR search — 10 req/min per org (Phase 1 G10).
 # Cache hits in the service don't reach this middleware because the
 # service short-circuits before any HTTP call; only fresh searches
@@ -86,6 +94,35 @@ _PORTAL_PER_IP_RATE_LIMIT = 20
 
 # Default password reset limit per IP per minute.
 _PASSWORD_RESET_LIMIT = 5
+
+# Employee portal login — 10 req/min per IP (Employee Portal R16.1, R16.2).
+# Unauthenticated, slug-scoped credential endpoint; the per-IP limit defends
+# against credential-stuffing / brute-force. Enforced alongside the generic
+# auth-endpoint limit but evaluated first so this stricter, portal-specific
+# key applies before the shared auth bucket.
+_EMPLOYEE_PORTAL_LOGIN_PATH = "/e/api/auth/login"
+_EMPLOYEE_PORTAL_LOGIN_RATE_LIMIT = 10
+
+# Slug availability check — 30 req/min per IP (Employee Portal R3.1, R16.1).
+# Authenticated org-admin endpoint hit live as the admin types; the limit
+# bounds the debounced lookups without breaking normal use.
+_SLUG_AVAILABILITY_PATH = "/api/v2/organisations/slug-availability"
+_SLUG_AVAILABILITY_RATE_LIMIT = 30
+
+# Public portal-resolve lookup — 30 req/min per IP (Employee Portal R9.6, R9.7, R16.1).
+# Unauthenticated mobile org-lookup endpoint; the per-IP limit defends against
+# enumeration/scraping without breaking a legitimate user retrying a lookup.
+_PORTAL_RESOLVE_PATH = "/api/v2/public/portal-resolve"
+_PORTAL_RESOLVE_RATE_LIMIT = 30
+
+# Employee portal password-reset — 5 req/min per IP (Employee Portal R16.1, R16.2).
+# Unauthenticated, anti-enumeration endpoints; the strict per-IP limit bounds
+# abuse of the reset-request / reset flow.
+_EMPLOYEE_PORTAL_PASSWORD_RESET_PATHS: set[str] = {
+    "/e/api/auth/password/reset-request",
+    "/e/api/auth/password/reset",
+}
+_EMPLOYEE_PORTAL_PASSWORD_RESET_LIMIT = 5
 
 
 async def _check_rate_limit(
@@ -245,6 +282,57 @@ class RateLimitMiddleware:
                 await response(scope, receive, send)
                 return
 
+        # --- Employee portal password-reset per-IP limit (5/min — Employee Portal R16.1) ---
+        if path in _EMPLOYEE_PORTAL_PASSWORD_RESET_PATHS:
+            from app.middleware.auth import get_client_ip
+            client_ip = get_client_ip(request) or "unknown"
+            key = f"rl:emp_portal_pwreset:ip:{client_ip}"
+            allowed, retry_after = await _check_rate_limit(
+                redis, key, _EMPLOYEE_PORTAL_PASSWORD_RESET_LIMIT, now,
+            )
+            if not allowed:
+                response = JSONResponse(
+                    status_code=429,
+                    content={"detail": "Too many password reset requests — try again later"},
+                    headers={"Retry-After": str(retry_after)},
+                )
+                await response(scope, receive, send)
+                return
+
+        # --- Slug availability per-IP limit (30/min — Employee Portal R3.1, R16.1) ---
+        if path == _SLUG_AVAILABILITY_PATH:
+            from app.middleware.auth import get_client_ip
+            client_ip = get_client_ip(request) or "unknown"
+            key = f"rl:slug_availability:ip:{client_ip}"
+            allowed, retry_after = await _check_rate_limit(
+                redis, key, _SLUG_AVAILABILITY_RATE_LIMIT, now,
+            )
+            if not allowed:
+                response = JSONResponse(
+                    status_code=429,
+                    content={"detail": "Too many requests. Please try again later."},
+                    headers={"Retry-After": str(retry_after)},
+                )
+                await response(scope, receive, send)
+                return
+
+        # --- Public portal-resolve per-IP limit (30/min — Employee Portal R9.6, R9.7) ---
+        if path == _PORTAL_RESOLVE_PATH:
+            from app.middleware.auth import get_client_ip
+            client_ip = get_client_ip(request) or "unknown"
+            key = f"rl:portal_resolve:ip:{client_ip}"
+            allowed, retry_after = await _check_rate_limit(
+                redis, key, _PORTAL_RESOLVE_RATE_LIMIT, now,
+            )
+            if not allowed:
+                response = JSONResponse(
+                    status_code=429,
+                    content={"detail": "Too many requests. Please try again later."},
+                    headers={"Retry-After": str(retry_after)},
+                )
+                await response(scope, receive, send)
+                return
+
         # --- Payment page per-IP limit (20/min — Req 9.3) ---
         if path.startswith(_PAYMENT_PAGE_PREFIX):
             from app.middleware.auth import get_client_ip
@@ -299,6 +387,26 @@ class RateLimitMiddleware:
                 await response(scope, receive, send)
                 return
 
+        # --- Public staff onboarding link per-IP limit (30/min — onboarding R11.2) ---
+        # Unauthenticated, token-gated endpoint; the per-IP limit defends
+        # against accidental scraping when an onboarding token leaks into a
+        # public channel. Draft endpoints share this prefix (R12.10).
+        if path.startswith(_PUBLIC_STAFF_ONBOARDING_PATH_PREFIX):
+            from app.middleware.auth import get_client_ip
+            client_ip = get_client_ip(request) or "unknown"
+            key = f"rl:public_staff_onboarding:ip:{client_ip}"
+            allowed, retry_after = await _check_rate_limit(
+                redis, key, _PUBLIC_STAFF_ONBOARDING_RATE_LIMIT, now,
+            )
+            if not allowed:
+                response = JSONResponse(
+                    status_code=429,
+                    content={"detail": "Too many requests. Please try again later."},
+                    headers={"Retry-After": str(retry_after)},
+                )
+                await response(scope, receive, send)
+                return
+
         # --- PPSR search per-org limit (10/min — Phase 1 G10) ---
         # POST-only endpoint; cache hits short-circuit in the service before
         # reaching this middleware, so only fresh searches consume budget.
@@ -319,6 +427,25 @@ class RateLimitMiddleware:
                     )
                     await response(scope, receive, send)
                     return
+
+        # --- Employee portal login per-IP limit (10/min — Employee Portal R16.1, R16.2) ---
+        # Placed alongside the generic auth-endpoint limit but evaluated first so
+        # this stricter, portal-specific key applies before the shared auth bucket.
+        if path == _EMPLOYEE_PORTAL_LOGIN_PATH:
+            from app.middleware.auth import get_client_ip
+            client_ip = get_client_ip(request) or "unknown"
+            key = f"rl:emp_portal_login:ip:{client_ip}"
+            allowed, retry_after = await _check_rate_limit(
+                redis, key, _EMPLOYEE_PORTAL_LOGIN_RATE_LIMIT, now,
+            )
+            if not allowed:
+                response = JSONResponse(
+                    status_code=429,
+                    content={"detail": "Too many requests — try again later"},
+                    headers={"Retry-After": str(retry_after)},
+                )
+                await response(scope, receive, send)
+                return
 
         # --- Auth-endpoint per-IP limit (skip public read-only endpoints) ---
         if is_auth_endpoint(path) and path not in _PUBLIC_READ_ONLY_PATHS:

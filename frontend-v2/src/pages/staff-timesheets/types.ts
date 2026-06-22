@@ -29,6 +29,45 @@ export interface TimesheetListResponse {
   period_summary: PeriodSummary
 }
 
+export interface TimesheetDetailEntry {
+  id: string
+  clock_in_at: string
+  clock_out_at: string | null
+  worked_minutes: number | null
+  matched_minutes: number | null
+  match_type: string | null
+  schedule_entry_id: string | null
+  schedule_start: string | null
+  schedule_end: string | null
+  branch_name: string | null
+  source: string | null
+  breaks: Record<string, unknown>[]
+}
+
+export interface TimesheetDetail {
+  id: string
+  staff_id: string
+  staff_name: string
+  pay_period_id: string
+  period_start: string
+  period_end: string
+  branch_name: string | null
+  status: string
+  rostered_minutes: number
+  actual_minutes: number
+  adjusted_minutes: number | null
+  ordinary_minutes: number
+  overtime_minutes: number
+  public_holiday_minutes: number
+  exception_flags: Record<string, unknown>[]
+  notes: string | null
+  approved_by_name: string | null
+  approved_at: string | null
+  locked_at: string | null
+  locked_by_name: string | null
+  entries: TimesheetDetailEntry[]
+}
+
 export interface ClockedInEntry {
   id: string
   staff_id: string
@@ -68,4 +107,59 @@ export interface TimesheetSettingsData {
 export interface TimesheetSettingsResponse {
   org_default: TimesheetSettingsData | null
   branch_overrides: TimesheetSettingsData[]
+}
+
+// --- Weekly breakdown ("weekly lens" review aid) ---
+
+export interface WeeklyBreakdownStaffEntry {
+  staff_id: string
+  staff_name: string
+  minutes: number
+}
+
+export interface WeeklyBreakdownWeek {
+  week_index: number
+  iso_week: number
+  start_date: string
+  end_date: string
+  total_minutes: number
+  staff: WeeklyBreakdownStaffEntry[]
+}
+
+export interface WeeklyBreakdownResponse {
+  pay_period_id: string
+  multi_week: boolean
+  weeks: WeeklyBreakdownWeek[]
+}
+
+
+// --- Attendance report (date-range "who worked + hours vs expected") ---
+
+export interface AttendanceRow {
+  staff_id: string
+  staff_name: string
+  position: string | null
+  branch_name: string | null
+  worked_hours: number
+  expected_hours: number | null
+  expected_source: 'scheduled' | 'fixed' | 'roster' | 'none'
+  variance_hours: number | null
+  shift_count: number
+  is_clocked_in: boolean
+  last_clock_out_at: string | null
+}
+
+export interface AttendanceSummary {
+  total_staff: number
+  total_worked_hours: number
+  total_expected_hours: number
+  clocked_in_count: number
+}
+
+export interface AttendanceResponse {
+  items: AttendanceRow[]
+  total: number
+  summary: AttendanceSummary
+  date_from: string
+  date_to: string
 }

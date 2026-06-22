@@ -342,6 +342,39 @@ export default function ScheduleEntryModal({
   }
 
   /* ---------------------------------------------------------------- */
+  /*  Delete (edit mode only)                                          */
+  /* ---------------------------------------------------------------- */
+
+  const handleDelete = async () => {
+    if (!isEdit || !entry) return
+    if (
+      !window.confirm(
+        'Remove this shift? This cannot be undone.',
+      )
+    ) {
+      return
+    }
+    setSubmitting(true)
+    setErrors({})
+    try {
+      await apiClient.delete(`/api/v2/schedule/${entry.id}`)
+      onSave()
+      onClose()
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })
+        ?.response?.data?.detail
+      setErrors({
+        submit:
+          typeof detail === 'string'
+            ? detail
+            : 'Failed to remove shift. Please try again.',
+      })
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  /* ---------------------------------------------------------------- */
   /*  Render                                                           */
   /* ---------------------------------------------------------------- */
 
@@ -559,21 +592,35 @@ export default function ScheduleEntryModal({
           )}
 
           {/* Actions */}
-          <div className="flex items-center justify-end gap-3 pt-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded-ctl border border-border bg-card px-4 py-2 text-sm font-medium text-text hover:bg-canvas hover:border-border-strong focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={submitting}
-              className="rounded-ctl bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-press disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-            >
-              {submitting ? 'Saving…' : isEdit ? 'Update' : 'Create'}
-            </button>
+          <div className="flex items-center justify-between gap-3 pt-2">
+            {isEdit ? (
+              <button
+                type="button"
+                onClick={handleDelete}
+                disabled={submitting}
+                className="rounded-ctl border border-danger/40 bg-danger-soft px-4 py-2 text-sm font-medium text-danger hover:bg-danger/10 disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-danger"
+              >
+                Remove shift
+              </button>
+            ) : (
+              <span />
+            )}
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={onClose}
+                className="rounded-ctl border border-border bg-card px-4 py-2 text-sm font-medium text-text hover:bg-canvas hover:border-border-strong focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={submitting}
+                className="rounded-ctl bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-press disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              >
+                {submitting ? 'Saving…' : isEdit ? 'Update' : 'Create'}
+              </button>
+            </div>
           </div>
         </form>
       )}

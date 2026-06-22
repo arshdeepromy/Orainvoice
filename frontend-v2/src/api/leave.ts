@@ -466,3 +466,137 @@ export async function revokeFvLeaveView(
   )
   return res.data
 }
+
+// ===========================================================================
+// Mark-day leave (Roster Grid "paint leave" action)
+// ===========================================================================
+
+export interface MarkDayLeavePayload {
+  staff_id: string
+  leave_type_id: string
+  /** YYYY-MM-DD */
+  date: string
+  publish_to_open_shifts?: boolean
+}
+
+export interface MarkDayLeaveResult {
+  leave_request_id: string
+  status: string
+  displaced_shift_count: number
+  open_shift_ids: string[]
+}
+
+export async function markDayLeave(
+  payload: MarkDayLeavePayload,
+  signal?: AbortSignal,
+): Promise<MarkDayLeaveResult> {
+  const res = await apiClient.post<MarkDayLeaveResult>(
+    '/api/v2/leave/mark-day',
+    payload,
+    { signal },
+  )
+  return res.data
+}
+
+// ===========================================================================
+// Org-wide Leave Balances list + reference guide (Leave Balances & Eligibility)
+// ===========================================================================
+
+export interface EligibilityNote {
+  leave_type_id: string
+  leave_type_code: string | null
+  rule_set_version: string
+  milestone_key: string
+  hours_test_met: boolean | null
+  condition_text: string
+  vested_on: string
+}
+
+export interface StaffLeaveBalances {
+  staff_id: string
+  staff_name: string
+  employment_type: string
+  holiday_pay_method: string
+  balances: LeaveBalance[]
+  eligibility_notes: EligibilityNote[]
+}
+
+export interface ListOrgBalancesParams {
+  employment_type?: string
+  group_by?: 'employment_type'
+  offset?: number
+  limit?: number
+}
+
+export async function listOrgLeaveBalances(
+  params: ListOrgBalancesParams = {},
+  signal?: AbortSignal,
+): Promise<ListResponse<StaffLeaveBalances>> {
+  const res = await apiClient.get<ListResponse<StaffLeaveBalances>>(
+    '/api/v2/leave/balances',
+    { params, signal },
+  )
+  return {
+    items: res.data?.items ?? [],
+    total: res.data?.total ?? 0,
+  }
+}
+
+export interface ReferenceGuideSection {
+  key: string
+  title: string
+  body: string
+}
+
+export interface ReferenceGuide {
+  rule_set_version: string
+  sections: ReferenceGuideSection[]
+}
+
+export async function getLeaveReferenceGuide(
+  signal?: AbortSignal,
+): Promise<ReferenceGuide> {
+  const res = await apiClient.get<ReferenceGuide>(
+    '/api/v2/leave/reference-guide',
+    { signal },
+  )
+  return {
+    rule_set_version: res.data?.rule_set_version ?? 'holidays_act_2003',
+    sections: res.data?.sections ?? [],
+  }
+}
+
+/**
+ * The full staff fields the per-staff `LeaveTab` needs for the drill-in.
+ * Fetched from `GET /api/v2/staff/{id}` because the org-wide balances row is a
+ * lightweight projection (no standard hours / shift / availability).
+ */
+export interface StaffLeaveContext {
+  id: string
+  name?: string
+  employment_type: string
+  standard_hours_per_week: string | null
+  shift_start: string | null
+  shift_end: string | null
+  availability_schedule: Record<string, { start: string; end: string } | undefined>
+}
+
+export async function getStaffLeaveContext(
+  staffId: string,
+  signal?: AbortSignal,
+): Promise<StaffLeaveContext> {
+  const res = await apiClient.get<Partial<StaffLeaveContext>>(
+    `/api/v2/staff/${staffId}`,
+    { signal },
+  )
+  const d = res.data ?? {}
+  return {
+    id: d.id ?? staffId,
+    name: d.name,
+    employment_type: d.employment_type ?? '',
+    standard_hours_per_week: d.standard_hours_per_week ?? null,
+    shift_start: d.shift_start ?? null,
+    shift_end: d.shift_end ?? null,
+    availability_schedule: d.availability_schedule ?? {},
+  }
+}

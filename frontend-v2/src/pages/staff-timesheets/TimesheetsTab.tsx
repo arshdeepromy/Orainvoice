@@ -1,16 +1,49 @@
 import { useEffect, useState, useCallback } from 'react'
 import apiClient from '@/api/client'
-import type { TimesheetListResponse, TimesheetSummary, PeriodSummary } from './types'
+import type {
+  TimesheetListResponse,
+  TimesheetSummary,
+  PeriodSummary,
+  TimesheetDetail,
+  WeeklyBreakdownResponse,
+} from './types'
+import WeeklyBreakdownView from './WeeklyBreakdownView'
+import {
+  CycleBoxes,
+  PeriodStepper,
+  activeCyclesOf,
+  defaultCycleId,
+  periodsForCycle,
+  pickDefaultPeriodId,
+  type CycleLike,
+  type PeriodLike,
+} from './CyclePeriodControls'
 
 interface TimesheetsTabProps {
   onPeriodSummary?: (summary: PeriodSummary) => void
+}
+
+/**
+ * Monday (ISO date) of the week containing `iso`. Used to decide whether a
+ * period spans more than one ISO week (Mon–Sun) — i.e. its start and end fall
+ * in different Monday-anchored weeks. Mirrors the backend's Monday-anchored
+ * week bucketing for the weekly-breakdown review aid.
+ */
+function mondayOf(iso: string): string {
+  const d = new Date(iso + 'T00:00:00')
+  const dayNr = (d.getDay() + 6) % 7 // Mon = 0 … Sun = 6
+  d.setDate(d.getDate() - dayNr)
+  return d.toISOString().split('T')[0]
 }
 
 export default function TimesheetsTab({ onPeriodSummary }: TimesheetsTabProps) {
   const [data, setData] = useState<TimesheetListResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [selectedPeriod, setSelectedPeriod] = useState<string>('current')
+  // The selected period is always a real id (or '' before anything loads); the
+  // cycle-first control derives a smart default per cycle.
+  const [selectedPeriod, setSelectedPeriod] = useState<string>('')
+  const [selectedCycleId, setSelectedCycleId] = useState<string>('')
 
   // Filter state
   const [searchQuery, setSearchQuery] = useState('')
@@ -19,50 +52,96 @@ export default function TimesheetsTab({ onPeriodSummary }: TimesheetsTabProps) {
   // Action loading state (per row)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
 
+  // Toolbar (bulk) action state
+  const [bulkBusy, setBulkBusy] = useState<string | null>(null)
+  const [feedback, setFeedback] = useState<{ kind: 'success' | 'error'; text: string } | null>(null)
+  const flash = (kind: 'success' | 'error', text: string) => {
+    setFeedback({ kind, text })
+    setTimeout(() => setFeedback(null), 5000)
+  }
+
   // Adjust modal state
   const [adjustTarget, setAdjustTarget] = useState<TimesheetSummary | null>(null)
   const [adjustMinutes, setAdjustMinutes] = useState<string>('')
   const [adjustNotes, setAdjustNotes] = useState<string>('')
   const [adjusting, setAdjusting] = useState(false)
 
-  // Fetch available pay periods
-  const [periods, setPeriods] = useState<{ id: string; start_date: string; end_date: string; status: string }[]>([])
+  // View (detail) modal state
+  const [viewId, setViewId] = useState<string | null>(null)
+  const [viewData, setViewData] = useState<TimesheetDetail | null>(null)
+  const [viewLoading, setViewLoading] = useState(false)
+
+  // Weekly-lens view state (READ-ONLY review aid). Only offered when the
+  // selected period spans more than one ISO week (fortnightly / monthly).
+  const [viewMode, setViewMode] = useState<'period' | 'weekly'>('period')
+  const [weeklyData, setWeeklyData] = useState<WeeklyBreakdownResponse | null>(null)
+  const [weeklyLoading, setWeeklyLoading] = useState(false)
+
+  const openView = async (id: string) => {
+    setViewId(id)
+    setViewData(null)
+    setViewLoading(true)
+    try {
+      const res = await apiClient.get<TimesheetDetail>(`/api/v2/timesheets/${id}`)
+      setViewData(res.data ?? null)
+    } catch {
+      setViewData(null)
+    } finally {
+      setViewLoading(false)
+    }
+  }
+
+  // Fetch available pay cycles + periods
+  const [cycles, setCycles] = useState<CycleLike[]>([])
+  const [periods, setPeriods] = useState<PeriodLike[]>([])
 
   useEffect(() => {
     const controller = new AbortController()
     const loadPeriods = async () => {
       try {
-        // First check if there's a configured pay cycle
-        const cyclesRes = await apiClient.get<{ items: any[]; total: number }>('/api/v2/pay-cycles/', { signal: controller.signal })
-        const cycles = cyclesRes.data?.items ?? []
+        // Fetch the organisation's pay cycles. Multiple active cycles can run
+        // at once (e.g. weekly for casual staff, fortnightly for permanent).
+        const cyclesRes = await apiClient.get<{ items: CycleLike[]; total: number }>('/api/v2/pay-cycles/', { signal: controller.signal })
+        const loadedCycles = cyclesRes.data?.items ?? []
+        // Active cycles only — generate a period schedule for every one of them
+        // so periods exist for each cycle the org runs (REQ 8.1).
+        const activeCycles = activeCyclesOf(loadedCycles)
 
-        // If a cycle exists, try to generate periods from it (idempotent)
-        if (cycles.length > 0) {
-          const cycleId = cycles[0]?.id
-          if (cycleId) {
+        // Generate periods for ALL active cycles (idempotent). Run in parallel;
+        // each call is independent and failures (already-exists / not org_admin)
+        // are ignored per cycle.
+        await Promise.all(
+          activeCycles.map(async (cycle) => {
+            const cycleId = cycle?.id
+            if (!cycleId) return
             try {
-              await apiClient.post(`/api/v2/pay-cycles/${cycleId}/generate-periods/`, { count: 8 })
+              await apiClient.post(`/api/v2/pay-cycles/${cycleId}/generate-periods/`, { count: 8 }, { signal: controller.signal })
             } catch { /* ignore — already exists or not org_admin */ }
-          }
-        }
+          }),
+        )
 
         // Now fetch periods
-        const res = await apiClient.get<{ items: any[]; total: number; pay_periods?: any[] }>('/api/v2/pay-periods', { signal: controller.signal })
-        const items = res.data?.items ?? res.data?.pay_periods ?? []
-        if (Array.isArray(items) && items.length > 0) {
-          // Sort by start_date descending (most recent first) and limit to recent 20
-          const sorted = [...items]
-            .sort((a: any, b: any) => (b?.start_date ?? '').localeCompare(a?.start_date ?? ''))
-            .slice(0, 20)
+        const res = await apiClient.get<{ items: PeriodLike[]; total: number; pay_periods?: PeriodLike[] }>('/api/v2/pay-periods', { signal: controller.signal })
+        const allItems = res.data?.items ?? res.data?.pay_periods ?? []
+        setCycles(loadedCycles)
+        if (Array.isArray(allItems) && allItems.length > 0) {
+          // Sort by start_date descending (most recent first).
+          const sortedAll = [...allItems]
+            .sort((a, b) => (b?.start_date ?? '').localeCompare(a?.start_date ?? ''))
+          // Source of truth: when pay cycles are configured, the cycle-managed
+          // periods (those carrying a pay_cycle_id) take precedence — this keeps
+          // the Timesheets tab aligned with the Pay Runs tab and avoids showing
+          // stale/orphan periods from a previous cycle. Fall back to all periods
+          // only when no cycle-managed periods exist yet.
+          const cycleManaged = sortedAll.filter((p) => !!p?.pay_cycle_id)
+          const sorted = (activeCycles.length > 0 && cycleManaged.length > 0 ? cycleManaged : sortedAll).slice(0, 40)
           setPeriods(sorted)
-          // Auto-select the period covering today
-          const today = new Date().toISOString().split('T')[0]
-          const current = sorted.find((p: any) => p?.start_date <= today && p?.end_date >= today)
-          if (current) {
-            setSelectedPeriod(current.id)
-          } else if (sorted[0]) {
-            setSelectedPeriod(sorted[0].id)
-          }
+          // Default the cycle to the org default (else first active), then pick
+          // the smart default period within that cycle (most recently completed).
+          const cycleId = defaultCycleId(loadedCycles)
+          setSelectedCycleId(cycleId)
+          const scoped = cycleId ? periodsForCycle(sorted, cycleId) : sorted
+          setSelectedPeriod(pickDefaultPeriodId(scoped.length > 0 ? scoped : sorted))
         }
       } catch { /* ignore */ }
     }
@@ -70,8 +149,16 @@ export default function TimesheetsTab({ onPeriodSummary }: TimesheetsTabProps) {
     return () => controller.abort()
   }, [])
 
+  // Switching cycle re-scopes the period list and re-defaults the period.
+  const handleSelectCycle = useCallback((cycleId: string) => {
+    setSelectedCycleId(cycleId)
+    setSelectedPeriod(pickDefaultPeriodId(periodsForCycle(periods, cycleId)))
+  }, [periods])
+
+  const cyclePeriods = periodsForCycle(periods, selectedCycleId)
+
   const fetchData = useCallback(async (signal?: AbortSignal) => {
-    if (!selectedPeriod || selectedPeriod === 'current' || selectedPeriod === 'previous') {
+    if (!selectedPeriod) {
       // No valid period selected yet
       setLoading(false)
       return
@@ -95,13 +182,48 @@ export default function TimesheetsTab({ onPeriodSummary }: TimesheetsTabProps) {
     } finally {
       setLoading(false)
     }
-  }, [onPeriodSummary])
+  }, [selectedPeriod, onPeriodSummary])
 
   useEffect(() => {
     const controller = new AbortController()
     fetchData(controller.signal)
     return () => controller.abort()
   }, [selectedPeriod, fetchData])
+
+  // Whether the selected period spans more than one ISO week (Mon–Sun). The
+  // weekly-lens toggle only appears for multi-week periods.
+  const selectedPeriodObj = periods.find((p) => p?.id === selectedPeriod) ?? null
+  const isMultiWeek = !!(
+    selectedPeriodObj?.start_date &&
+    selectedPeriodObj?.end_date &&
+    mondayOf(selectedPeriodObj.start_date) !== mondayOf(selectedPeriodObj.end_date)
+  )
+  // Effective view: only show weekly when the period actually supports it.
+  const showWeekly = isMultiWeek && viewMode === 'weekly'
+
+  // Fetch the weekly breakdown when the weekly lens is active for a period.
+  useEffect(() => {
+    if (!showWeekly || !selectedPeriod) return
+    const controller = new AbortController()
+    const loadWeekly = async () => {
+      setWeeklyLoading(true)
+      try {
+        const res = await apiClient.get<WeeklyBreakdownResponse>('/api/v2/timesheets/weekly-breakdown', {
+          params: { pay_period_id: selectedPeriod },
+          signal: controller.signal,
+        })
+        setWeeklyData(res.data ?? null)
+      } catch (err: unknown) {
+        if (!(err as { name?: string })?.name?.includes('Cancel')) {
+          setWeeklyData(null)
+        }
+      } finally {
+        setWeeklyLoading(false)
+      }
+    }
+    loadWeekly()
+    return () => controller.abort()
+  }, [showWeekly, selectedPeriod])
 
   // Row-level action handler
   const handleAction = async (id: string, action: 'submit' | 'approve' | 'reject' | 'lock') => {
@@ -134,6 +256,90 @@ export default function TimesheetsTab({ onPeriodSummary }: TimesheetsTabProps) {
       // Could show error toast
     } finally {
       setAdjusting(false)
+    }
+  }
+
+  // Toolbar bulk-action handlers ------------------------------------------
+  const periodReady = !!selectedPeriod
+
+  const handleGenerate = async () => {
+    if (!periodReady) {
+      flash('error', 'Select a pay period first')
+      return
+    }
+    setBulkBusy('generate')
+    try {
+      const res = await apiClient.post<{ created_count: number }>(
+        '/api/v2/timesheets/materialise/',
+        null,
+        { params: { pay_period_id: selectedPeriod, include_all_active: true } },
+      )
+      const created = res.data?.created_count ?? 0
+      flash(
+        'success',
+        created > 0
+          ? `Generated ${created} timesheet${created === 1 ? '' : 's'} for staff in this period`
+          : 'All active staff already have a timesheet for this period',
+      )
+      await fetchData()
+    } catch {
+      flash('error', 'Failed to generate timesheets')
+    } finally {
+      setBulkBusy(null)
+    }
+  }
+
+  const handleApproveAll = async () => {
+    if (!periodReady) return
+    setBulkBusy('approve')
+    try {
+      const res = await apiClient.post<{ affected_count: number; skipped_count: number }>(
+        '/api/v2/timesheets/bulk-approve',
+        null,
+        { params: { pay_period_id: selectedPeriod } },
+      )
+      const { affected_count = 0, skipped_count = 0 } = res.data ?? {}
+      flash('success', `Approved ${affected_count} timesheet(s)${skipped_count ? `, skipped ${skipped_count}` : ''}`)
+      await fetchData()
+    } catch {
+      flash('error', 'Failed to approve timesheets')
+    } finally {
+      setBulkBusy(null)
+    }
+  }
+
+  const handleLockAll = async () => {
+    if (!periodReady) return
+    setBulkBusy('lock')
+    try {
+      const res = await apiClient.post<{ affected_count: number; skipped_count: number }>(
+        '/api/v2/timesheets/bulk-lock',
+        null,
+        { params: { pay_period_id: selectedPeriod } },
+      )
+      const { affected_count = 0 } = res.data ?? {}
+      flash('success', `Locked ${affected_count} approved timesheet(s)`)
+      await fetchData()
+    } catch {
+      flash('error', 'Failed to lock timesheets')
+    } finally {
+      setBulkBusy(null)
+    }
+  }
+
+  const handleMatchAll = async () => {
+    if (!periodReady) return
+    setBulkBusy('match')
+    try {
+      await apiClient.post('/api/v2/timesheets/match-all', null, {
+        params: { pay_period_id: selectedPeriod },
+      })
+      flash('success', 'Re-matched clock entries for this period')
+      await fetchData()
+    } catch {
+      flash('error', 'Failed to match entries')
+    } finally {
+      setBulkBusy(null)
     }
   }
 
@@ -186,58 +392,105 @@ export default function TimesheetsTab({ onPeriodSummary }: TimesheetsTabProps) {
 
   return (
     <div className="space-y-4">
-      {/* Toolbar: Period selector + Bulk actions */}
+      {/* Cycle-first period filter */}
+      <div className="space-y-3">
+        {activeCyclesOf(cycles).length === 0 ? (
+          <p className="text-sm text-muted">No active pay cycles — configure one in the Settings tab.</p>
+        ) : (
+          <CycleBoxes
+            cycles={cycles}
+            periods={periods}
+            selectedCycleId={selectedCycleId}
+            onSelect={handleSelectCycle}
+          />
+        )}
+      </div>
+
+      {/* Toolbar: Period stepper + Bulk actions */}
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          {/* Pay Period Selector */}
-          <select
-            value={selectedPeriod}
-            onChange={(e) => setSelectedPeriod(e.target.value)}
-            className="h-9 rounded-lg border border-border bg-canvas px-3 text-sm text-text focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20"
-          >
-            {periods.length === 0 && <option value="">Loading periods...</option>}
-            {periods.map((p) => {
-              const start = new Date(p.start_date + 'T00:00:00')
-              const end = new Date(p.end_date + 'T00:00:00')
-              const today = new Date().toISOString().split('T')[0]
-              const rel = p.end_date < today ? '' : p.start_date > today ? ' • Upcoming' : ' • This week'
-              // ISO week number of the period start.
-              const wk = (() => {
-                const t = new Date(Date.UTC(start.getFullYear(), start.getMonth(), start.getDate()))
-                const dayNr = (t.getUTCDay() + 6) % 7
-                t.setUTCDate(t.getUTCDate() - dayNr + 3)
-                const firstThu = new Date(Date.UTC(t.getUTCFullYear(), 0, 4))
-                const firstDayNr = (firstThu.getUTCDay() + 6) % 7
-                firstThu.setUTCDate(firstThu.getUTCDate() - firstDayNr + 3)
-                return 1 + Math.round((t.getTime() - firstThu.getTime()) / (7 * 24 * 3600 * 1000))
-              })()
-              const fmtStart = (d: Date) => d.toLocaleDateString('en-NZ', { day: 'numeric', month: 'short' })
-              const fmtEnd = (d: Date) => d.toLocaleDateString('en-NZ', { day: 'numeric', month: 'short', year: 'numeric' })
-              return (
-                <option key={p.id} value={p.id}>
-                  Wk {wk} · {fmtStart(start)} – {fmtEnd(end)}{rel}{p.status !== 'open' ? ` (${p.status})` : ''}
-                </option>
-              )
-            })}
-          </select>
+        <div className="flex flex-wrap items-center gap-3">
+          <PeriodStepper
+            cyclePeriods={cyclePeriods}
+            selectedPeriod={selectedPeriod}
+            onChange={setSelectedPeriod}
+          />
           <span className="text-xs text-muted">{total} timesheets</span>
+          {/* Weekly-lens toggle — only for periods spanning >1 ISO week. */}
+          {isMultiWeek && (
+            <div
+              className="inline-flex rounded-lg border border-border bg-card p-0.5"
+              role="group"
+              aria-label="Timesheet view"
+            >
+              <button
+                type="button"
+                onClick={() => setViewMode('period')}
+                aria-pressed={viewMode === 'period'}
+                className={`inline-flex h-7 items-center rounded-md px-2.5 text-xs font-medium transition-colors ${
+                  viewMode === 'period' ? 'bg-accent text-white' : 'text-muted hover:text-text'
+                }`}
+              >
+                Period total
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode('weekly')}
+                aria-pressed={viewMode === 'weekly'}
+                className={`inline-flex h-7 items-center rounded-md px-2.5 text-xs font-medium transition-colors ${
+                  viewMode === 'weekly' ? 'bg-accent text-white' : 'text-muted hover:text-text'
+                }`}
+              >
+                Weekly
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Bulk Actions */}
         <div className="flex items-center gap-2">
-          <button className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-card px-3 text-xs font-medium text-text hover:bg-canvas transition-colors">
+          <button
+            onClick={handleGenerate}
+            disabled={!periodReady || bulkBusy !== null}
+            title="Create timesheets for all active staff in this period (fixed, rostered, or casual)"
+            className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-accent px-3 text-xs font-medium text-white hover:bg-accent/90 transition-colors disabled:opacity-50"
+          >
+            {bulkBusy === 'generate' ? (
+              <svg className="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth={4} />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+            ) : (
+              <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+              </svg>
+            )}
+            Generate Timesheets
+          </button>
+          <button
+            onClick={handleApproveAll}
+            disabled={!periodReady || bulkBusy !== null}
+            className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-card px-3 text-xs font-medium text-text hover:bg-canvas transition-colors disabled:opacity-50"
+          >
             <svg className="h-3.5 w-3.5 text-success" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
             Approve All Clean
           </button>
-          <button className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-card px-3 text-xs font-medium text-text hover:bg-canvas transition-colors">
+          <button
+            onClick={handleLockAll}
+            disabled={!periodReady || bulkBusy !== null}
+            className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-card px-3 text-xs font-medium text-text hover:bg-canvas transition-colors disabled:opacity-50"
+          >
             <svg className="h-3.5 w-3.5 text-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
             </svg>
             Lock All Approved
           </button>
-          <button className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-card px-3 text-xs font-medium text-text hover:bg-canvas transition-colors">
+          <button
+            onClick={handleMatchAll}
+            disabled={!periodReady || bulkBusy !== null}
+            className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-card px-3 text-xs font-medium text-text hover:bg-canvas transition-colors disabled:opacity-50"
+          >
             <svg className="h-3.5 w-3.5 text-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5" />
             </svg>
@@ -245,8 +498,9 @@ export default function TimesheetsTab({ onPeriodSummary }: TimesheetsTabProps) {
           </button>
           <button
             onClick={async () => {
-              // First materialise missing timesheets for this period, then refresh
-              if (selectedPeriod && selectedPeriod !== 'current' && selectedPeriod !== 'previous') {
+              // Refresh: re-run the automatic (non-manual) materialise sweep
+              // for clock + fixed staff, then reload.
+              if (periodReady) {
                 try {
                   await apiClient.post(`/api/v2/timesheets/materialise/`, null, {
                     params: { pay_period_id: selectedPeriod },
@@ -255,7 +509,8 @@ export default function TimesheetsTab({ onPeriodSummary }: TimesheetsTabProps) {
               }
               fetchData()
             }}
-            className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-card px-3 text-xs font-medium text-text hover:bg-canvas transition-colors"
+            disabled={bulkBusy !== null}
+            className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-card px-3 text-xs font-medium text-text hover:bg-canvas transition-colors disabled:opacity-50"
           >
             <svg className="h-3.5 w-3.5 text-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
@@ -265,8 +520,25 @@ export default function TimesheetsTab({ onPeriodSummary }: TimesheetsTabProps) {
         </div>
       </div>
 
-      {/* Filters: Search + Status */}
-      <div className="flex flex-wrap items-center gap-3">
+      {/* Feedback banner */}
+      {feedback && (
+        <div
+          className={`rounded-lg px-4 py-2.5 text-sm font-medium ${
+            feedback.kind === 'success'
+              ? 'border border-success/20 bg-success/5 text-success'
+              : 'border border-danger/20 bg-danger/5 text-danger'
+          }`}
+        >
+          {feedback.text}
+        </div>
+      )}
+
+      {/* Filters: Search + Status (period-total view only) */}
+      {showWeekly ? (
+        <WeeklyBreakdownView data={weeklyData} loading={weeklyLoading} />
+      ) : (
+        <>
+          <div className="flex flex-wrap items-center gap-3">
         <div className="relative flex-1 min-w-[180px] max-w-xs">
           <svg className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
@@ -306,7 +578,9 @@ export default function TimesheetsTab({ onPeriodSummary }: TimesheetsTabProps) {
           <p className="mt-4 text-sm font-medium text-text">No timesheets for this period</p>
           <p className="mt-1 max-w-sm text-center text-xs text-muted">
             Timesheets are created automatically when staff clock in, get rostered,
-            or have approved leave. Select a pay period with activity to see timesheets here.
+            or have approved leave. For fixed, rostered, or casual staff who don&apos;t
+            clock in, use <span className="font-medium text-text">Generate Timesheets</span> above
+            to create them for everyone in this period.
           </p>
         </div>
       ) : (
@@ -418,7 +692,12 @@ export default function TimesheetsTab({ onPeriodSummary }: TimesheetsTabProps) {
                         </button>
                       )}
 
-                      <button className="text-xs text-accent hover:underline ml-1">View</button>
+                      <button
+                        onClick={() => openView(ts.id)}
+                        className="text-xs text-accent hover:underline ml-1"
+                      >
+                        View
+                      </button>
                     </div>
                   </td>
                 </tr>
@@ -426,6 +705,8 @@ export default function TimesheetsTab({ onPeriodSummary }: TimesheetsTabProps) {
             </tbody>
           </table>
         </div>
+      )}
+        </>
       )}
 
       {/* Adjust modal */}
@@ -476,6 +757,129 @@ export default function TimesheetsTab({ onPeriodSummary }: TimesheetsTabProps) {
                 {adjusting ? 'Saving…' : 'Save Adjustment'}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* View (detail) modal */}
+      {viewId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/50 p-4" onClick={() => setViewId(null)}>
+          <div className="w-full max-w-lg rounded-card bg-card p-6 shadow-pop" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start justify-between">
+              <div>
+                <h3 className="text-lg font-semibold text-text">Timesheet Detail</h3>
+                {viewData && (
+                  <p className="mt-0.5 text-sm text-muted">
+                    {viewData.staff_name}
+                    {viewData.period_start && ` · ${viewData.period_start} – ${viewData.period_end}`}
+                  </p>
+                )}
+              </div>
+              <button
+                onClick={() => setViewId(null)}
+                className="rounded-lg p-1 text-muted hover:bg-canvas hover:text-text transition-colors"
+                aria-label="Close"
+              >
+                <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            {viewLoading ? (
+              <div className="mt-6 space-y-3 animate-pulse">
+                <div className="h-5 w-40 rounded bg-muted/10" />
+                <div className="h-20 rounded bg-muted/10" />
+              </div>
+            ) : !viewData ? (
+              <p className="mt-6 text-sm text-muted">Failed to load timesheet detail.</p>
+            ) : (
+              <div className="mt-4 space-y-4">
+                {/* Status + hour summary */}
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${
+                    viewData.status === 'approved' ? 'bg-success/10 text-success' :
+                    viewData.status === 'locked' ? 'bg-muted/20 text-muted' :
+                    viewData.status === 'pending_approval' ? 'bg-warning/10 text-warning' :
+                    'bg-accent/10 text-accent'
+                  }`}>
+                    {viewData.status?.replace(/_/g, ' ')}
+                  </span>
+                  {viewData.branch_name && <span className="text-xs text-muted">{viewData.branch_name}</span>}
+                </div>
+
+                <div className="grid grid-cols-3 gap-3">
+                  {[
+                    ['Rostered', viewData.rostered_minutes],
+                    ['Actual', viewData.actual_minutes],
+                    ['Ordinary', viewData.ordinary_minutes],
+                    ['Overtime', viewData.overtime_minutes],
+                    ['Public Hol.', viewData.public_holiday_minutes],
+                    ['Adjusted', viewData.adjusted_minutes ?? 0],
+                  ].map(([label, mins]) => (
+                    <div key={label as string} className="rounded-lg bg-canvas p-3 text-center">
+                      <p className="text-sm font-semibold text-text">{((Number(mins) || 0) / 60).toFixed(2)}h</p>
+                      <p className="text-xs text-muted">{label as string}</p>
+                    </div>
+                  ))}
+                </div>
+
+                {viewData.notes && (
+                  <div className="rounded-lg border border-border p-3">
+                    <p className="text-xs font-medium text-muted">Notes</p>
+                    <p className="mt-0.5 text-sm text-text">{viewData.notes}</p>
+                  </div>
+                )}
+
+                {/* Approval / lock trail */}
+                {(viewData.approved_by_name || viewData.locked_by_name) && (
+                  <div className="space-y-1 text-xs text-muted">
+                    {viewData.approved_by_name && (
+                      <p>Approved by {viewData.approved_by_name}{viewData.approved_at ? ` on ${new Date(viewData.approved_at).toLocaleString('en-NZ')}` : ''}</p>
+                    )}
+                    {viewData.locked_by_name && (
+                      <p>Locked by {viewData.locked_by_name}{viewData.locked_at ? ` on ${new Date(viewData.locked_at).toLocaleString('en-NZ')}` : ''}</p>
+                    )}
+                  </div>
+                )}
+
+                {/* Clock entries */}
+                <div>
+                  <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted">
+                    Clock Entries ({viewData.entries.length})
+                  </p>
+                  {viewData.entries.length === 0 ? (
+                    <p className="rounded-lg border border-dashed border-border p-3 text-center text-xs text-muted">
+                      No clock entries — hours come from the staff member&apos;s configured schedule.
+                    </p>
+                  ) : (
+                    <div className="max-h-48 space-y-1.5 overflow-y-auto">
+                      {viewData.entries.map((e) => (
+                        <div key={e.id} className="flex items-center justify-between rounded-lg border border-border p-2.5 text-xs">
+                          <span className="text-text">
+                            {new Date(e.clock_in_at).toLocaleString('en-NZ', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                            {' → '}
+                            {e.clock_out_at ? new Date(e.clock_out_at).toLocaleTimeString('en-NZ', { hour: '2-digit', minute: '2-digit' }) : '—'}
+                          </span>
+                          <span className="font-mono text-muted">
+                            {e.worked_minutes != null ? `${(e.worked_minutes / 60).toFixed(2)}h` : '—'}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex justify-end">
+                  <button
+                    onClick={() => setViewId(null)}
+                    className="inline-flex h-10 items-center rounded-lg bg-accent px-4 text-sm font-medium text-white hover:bg-accent/90 transition-colors"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

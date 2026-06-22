@@ -24,6 +24,18 @@ from app.modules.scheduling_v2.schemas import (
 )
 
 
+def _starts_in_past(start_time: datetime) -> bool:
+    """True when ``start_time`` is before 'now' (UTC).
+
+    Schedule entries are created with UTC-aware ``start_time`` values (the
+    frontend sends ISO ``...Z`` strings via ``Date.toISOString()``), so this is
+    a timezone-independent absolute-instant comparison. A naive datetime is
+    treated as UTC defensively.
+    """
+    st = start_time if start_time.tzinfo is not None else start_time.replace(tzinfo=timezone.utc)
+    return st < datetime.now(timezone.utc)
+
+
 class SchedulingService:
     """Service layer for schedule entry management."""
 
@@ -70,6 +82,8 @@ class SchedulingService:
         """Create a new schedule entry."""
         if payload.end_time <= payload.start_time:
             raise ValueError("end_time must be after start_time")
+        if _starts_in_past(payload.start_time):
+            raise ValueError("Cannot add a shift that starts in the past.")
 
         entry = ScheduleEntry(
             org_id=org_id,
@@ -131,6 +145,11 @@ class SchedulingService:
             try:
                 async with self.db.begin_nested():
                     if entry_payload.end_time <= entry_payload.start_time:
+                        raise _InvalidEntry()
+                    if _starts_in_past(entry_payload.start_time):
+                        # A shift starting in the past is reported as a
+                        # non-created entry (R: no past shifts) — the batch's
+                        # future entries still persist.
                         raise _InvalidEntry()
 
                     if entry_payload.staff_id is not None:
@@ -341,6 +360,8 @@ class SchedulingService:
         """
         if payload.end_time <= payload.start_time:
             raise ValueError("end_time must be after start_time")
+        if _starts_in_past(payload.start_time):
+            raise ValueError("Cannot add a shift that starts in the past.")
 
         recurrence = getattr(payload, "recurrence", "none")
         if recurrence == "none":
@@ -398,6 +419,22 @@ class SchedulingService:
         )
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def delete_entry(
+        self, org_id: uuid.UUID, entry_id: uuid.UUID,
+    ) -> bool:
+        """Delete a single org-scoped schedule entry.
+
+        Returns ``True`` when a row was deleted, ``False`` when no entry with
+        that id exists for the org (so the router can return 404). Uses
+        ``flush()`` only — the request's ``session.begin()`` owns the commit.
+        """
+        entry = await self.get_entry(org_id, entry_id)
+        if entry is None:
+            return False
+        await self.db.delete(entry)
+        await self.db.flush()
+        return True
 
     async def update_entry(
         self,

@@ -11,19 +11,32 @@ Phase B implementation per design § Phase B Architecture Notes.
 
 from __future__ import annotations
 
-import uuid
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
 from decimal import Decimal
-from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit_log
-from app.modules.timesheets.models import Timesheet, TimesheetSettings
+from app.modules.timesheets.models import Timesheet
 from app.modules.timesheets.pay_cycles import TimesheetAdjustment
+
+
+class PayRunScopingError(Exception):
+    """Raised when a pay run cannot be scoped to a single pay cycle.
+
+    The pay run derives its staff scope from the period's ``pay_cycle_id``
+    (materialisation is cycle-scoped). A period that is missing or has a
+    ``NULL`` ``pay_cycle_id`` cannot be scoped, so the run is refused (REQ 8.5).
+
+    ``code`` is a machine-readable reason (``pay_period_missing_cycle``) the
+    route maps to HTTP 422.
+    """
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
 
 
 @dataclass
@@ -36,56 +49,6 @@ class PayRunSummary:
     adjustments_included: int = 0
 
 
-@dataclass
-class HourBand:
-    """Hour band breakdown for payslip generation."""
-    category: str  # 'ordinary', 'overtime', 'public_holiday'
-    minutes: int
-    rate_multiplier: Decimal = Decimal("1.0")
-
-
-def compute_hour_bands(timesheet: Timesheet) -> list[HourBand]:
-    """Extract hour bands from a locked timesheet for payslip generation.
-
-    Uses the effective minutes (adjusted_minutes if set, else actual_minutes)
-    split into ordinary/overtime/public_holiday bands.
-    """
-    bands = []
-
-    # Effective minutes = adjusted if set, else actual
-    effective = timesheet.adjusted_minutes if timesheet.adjusted_minutes is not None else timesheet.actual_minutes
-
-    # If ordinary/overtime/PH breakdown is available, use it
-    if timesheet.ordinary_minutes or timesheet.overtime_minutes or timesheet.public_holiday_minutes:
-        if timesheet.ordinary_minutes:
-            bands.append(HourBand(
-                category="ordinary",
-                minutes=timesheet.ordinary_minutes,
-                rate_multiplier=Decimal("1.0"),
-            ))
-        if timesheet.overtime_minutes:
-            bands.append(HourBand(
-                category="overtime",
-                minutes=timesheet.overtime_minutes,
-                rate_multiplier=Decimal("1.5"),
-            ))
-        if timesheet.public_holiday_minutes:
-            bands.append(HourBand(
-                category="public_holiday",
-                minutes=timesheet.public_holiday_minutes,
-                rate_multiplier=Decimal("1.5"),
-            ))
-    else:
-        # Phase A fallback: all minutes are ordinary
-        bands.append(HourBand(
-            category="ordinary",
-            minutes=effective,
-            rate_multiplier=Decimal("1.0"),
-        ))
-
-    return bands
-
-
 async def generate_payslip_draft(
     db: AsyncSession,
     *,
@@ -93,32 +56,35 @@ async def generate_payslip_draft(
     org_id: UUID,
     actor_id: UUID,
 ) -> UUID | None:
-    """Generate a payslip draft from a locked timesheet.
+    """Generate (or refresh) a payslip draft from a locked timesheet.
 
-    Returns the payslip_id if created, None if timesheet already has one.
+    Returns the payslip_id. If a draft already exists for the staff/period
+    it is recomputed with the latest math (so re-running a pay run refreshes
+    drafts); a finalised payslip is left untouched.
     """
     from app.modules.payslips.models import Payslip
 
     if timesheet.status != "locked":
         return None
 
+    # Resolve any existing payslip — via the timesheet link first, then by
+    # the staff/period pair (the UNIQUE key).
+    payslip = None
     if timesheet.payslip_id is not None:
-        return timesheet.payslip_id  # Already linked
-
-    # Check if a payslip already exists for this staff/period
-    existing = await db.execute(
-        select(Payslip).where(
-            Payslip.staff_id == timesheet.staff_id,
-            Payslip.pay_period_id == timesheet.pay_period_id,
+        payslip = await db.get(Payslip, timesheet.payslip_id)
+    if payslip is None:
+        existing = await db.execute(
+            select(Payslip).where(
+                Payslip.staff_id == timesheet.staff_id,
+                Payslip.pay_period_id == timesheet.pay_period_id,
+            )
         )
-    )
-    payslip = existing.scalar_one_or_none()
+        payslip = existing.scalar_one_or_none()
 
     if payslip is None:
-        # Create draft payslip
-        hour_bands = compute_hour_bands(timesheet)
-        effective_minutes = sum(b.minutes for b in hour_bands)
-
+        # Create draft payslip. Hours are seeded from the locked timesheet's
+        # classified minutes; recompute_payslip (below) then derives the final
+        # hour bands, rates, and money via the shared payslip math.
         payslip = Payslip(
             org_id=org_id,
             staff_id=timesheet.staff_id,
@@ -137,6 +103,28 @@ async def generate_payslip_draft(
     await db.flush()
     await db.refresh(timesheet)
 
+    # Compute (or recompute) real wages on the draft: hours × rate, recurring
+    # allowances, KiwiSaver, casual 8%, and the statutory PAYE / ACC /
+    # student-loan deductions — via the shared payslip math. Finalised
+    # payslips are immutable and skipped.
+    if payslip.status == "draft":
+        from app.modules.payslips.models import PayPeriod
+        from app.modules.payslips.service import (
+            _auto_attach_recurring_allowances,
+            recompute_payslip,
+        )
+        from app.modules.staff.models import StaffMember
+
+        staff = await db.get(StaffMember, timesheet.staff_id)
+        period = await db.get(PayPeriod, timesheet.pay_period_id)
+        if staff is not None and period is not None:
+            await _auto_attach_recurring_allowances(
+                db, payslip=payslip, staff=staff, period=period,
+            )
+            await recompute_payslip(
+                db, payslip=payslip, staff=staff, period=period,
+            )
+
     return payslip.id
 
 
@@ -154,7 +142,21 @@ async def run_pay_period(
     2. Generate payslip drafts for each.
     3. Include any timesheet_adjustments targeting this period.
     4. Return summary.
+
+    Before any work, the period is loaded and its ``pay_cycle_id`` is checked:
+    a missing period or one with a ``NULL`` ``pay_cycle_id`` cannot be
+    cycle-scoped, so the run is refused with ``PayRunScopingError`` (REQ 8.5).
+    No per-staff filtering is needed beyond that — the period's timesheets are
+    already cycle-scoped by materialisation (REQ 7.1-7.3).
     """
+    from app.modules.payslips.models import PayPeriod
+
+    # Null-cycle guard: the pay run scopes staff via the period's cycle, so a
+    # missing or cycle-less period cannot proceed (REQ 8.5).
+    period = await db.get(PayPeriod, pay_period_id)
+    if period is None or period.pay_cycle_id is None:
+        raise PayRunScopingError("pay_period_missing_cycle")
+
     summary = PayRunSummary(pay_period_id=pay_period_id)
 
     # Get all locked timesheets for this period

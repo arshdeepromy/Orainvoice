@@ -30,6 +30,8 @@ from app.modules.organisations.schemas import (
     BranchUpdateResponse,
     BusinessTypeUpdateRequest,
     BusinessTypeResponse,
+    EmployeePortalToggleRequest,
+    EmployeePortalToggleResponse,
     KioskPasswordResetRequest,
     KioskPasswordResetResponse,
     MFAPolicyUpdateRequest,
@@ -45,6 +47,9 @@ from app.modules.organisations.schemas import (
     SalespersonItem,
     SalespersonListResponse,
     SeatLimitResponse,
+    SlugAvailabilityResponse,
+    SlugUpdateRequest,
+    SlugUpdateResponse,
     UserDeactivateResponse,
     UserInviteRequest,
     UserInviteResponse,
@@ -54,7 +59,10 @@ from app.modules.organisations.schemas import (
 )
 from app.modules.organisations.service import (
     SeatLimitExceeded,
+    SlugUpdateError,
+    EmployeePortalToggleError,
     assign_user_branches,
+    check_slug_availability,
     create_branch,
     deactivate_branch,
     deactivate_org_user,
@@ -69,14 +77,229 @@ from app.modules.organisations.service import (
     revoke_user_sessions,
     save_onboarding_step,
     set_business_type,
+    set_employee_portal_enabled,
     update_branch,
     update_branch_settings,
     update_mfa_policy,
     update_org_settings,
+    update_org_slug,
     update_org_user,
 )
 
 router = APIRouter()
+
+# ---------------------------------------------------------------------------
+# Employee Portal — admin endpoints mounted at /api/v2/organisations (Task 9.x)
+#
+# These portal-admin endpoints are deliberately reachable at the exact path
+# `/api/v2/organisations/...` (see design.md §Admin API and the rate-limit
+# path constant `_SLUG_AVAILABILITY_PATH = "/api/v2/organisations/slug-availability"`
+# in app/middleware/rate_limit.py). They live on their own router so they do not
+# inherit the broad `/api/v2/org` surface. They still ride the authenticated
+# `/api/v2` stack (JWT + RBAC) and require `org_admin` of the target org.
+# ---------------------------------------------------------------------------
+org_portal_admin_router = APIRouter()
+
+
+@org_portal_admin_router.get(
+    "/slug-availability",
+    response_model=SlugAvailabilityResponse,
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Org_Admin role required"},
+    },
+    summary="Check Employee Portal slug availability",
+    dependencies=[require_role("org_admin")],
+)
+async def get_slug_availability(
+    request: Request,
+    slug: str,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Report whether a candidate Org_Slug is available for the requesting org.
+
+    Returns exactly one of ``available`` / ``unavailable`` / ``invalid`` with a
+    human-readable ``reason`` for the non-available cases (R3.2). A reserved
+    slug or one held by another organisation is ``unavailable`` (R3.3, R3.4);
+    the requesting org's own current slug is ``available`` (R3.5); a
+    badly-formatted candidate is ``invalid`` and never ``available`` (R3.6).
+
+    Requires an authenticated ``org_admin`` of the target organisation; the
+    target org is the caller's own org resolved from the JWT (R4.2, R4.3).
+
+    Requirements: 3.2, 3.3, 3.4, 3.5, 3.6, 4.2, 4.3
+    """
+    org_id = getattr(request.state, "org_id", None)
+    if not org_id:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    try:
+        org_uuid = uuid.UUID(org_id)
+    except (ValueError, TypeError):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid org_id format"},
+        )
+
+    result, reason = await check_slug_availability(
+        db,
+        requesting_org_id=org_uuid,
+        candidate=slug,
+    )
+
+    return SlugAvailabilityResponse(result=result, reason=reason)
+
+
+@org_portal_admin_router.put(
+    "/slug",
+    response_model=SlugUpdateResponse,
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Org_Admin role required"},
+        409: {"description": "Slug taken by another organisation"},
+        422: {"description": "Slug invalid format or reserved"},
+    },
+    summary="Set or change the Employee Portal slug",
+    dependencies=[require_role("org_admin")],
+)
+async def update_slug(
+    payload: SlugUpdateRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Set or change the requesting organisation's Org_Slug (hard cut-over, D2).
+
+    Normalises the candidate, validates its format (``422 slug_invalid_format``),
+    checks the reserved list (``422 slug_reserved``), then performs a save-time
+    ``lower(slug)`` uniqueness re-check against other organisations
+    (``409 slug_taken``, R3.9/R2.6). On success the slug is stored normalised
+    (R2.7), the change is audit-logged with previous/new value (R4.7) and the
+    org-settings cache is invalidated.
+
+    Hard cut-over (D2): an existing slug is replaced and the old value freed
+    immediately; there is no immutability branch and no redirect/grace window
+    (R2.11). The target org is the caller's own org resolved from the JWT, and
+    only an ``org_admin`` of that org may call this (``403`` otherwise, R4.2/R4.3).
+
+    Requirements: 2.1, 2.6, 2.7, 2.9, 2.11, 3.9, 4.2, 4.3, 4.7
+    """
+    user_id = getattr(request.state, "user_id", None)
+    org_id = getattr(request.state, "org_id", None)
+    ip_address = getattr(request.state, "client_ip", None)
+
+    if not org_id:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    try:
+        org_uuid = uuid.UUID(org_id)
+        user_uuid = uuid.UUID(user_id) if user_id else uuid.uuid4()
+    except (ValueError, TypeError):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid org_id or user_id format"},
+        )
+
+    try:
+        stored_slug = await update_org_slug(
+            db,
+            org_id=org_uuid,
+            user_id=user_uuid,
+            candidate=payload.slug,
+            ip_address=ip_address,
+        )
+    except SlugUpdateError as exc:
+        # Format/reserved → 422; taken → 409 (design.md §Admin API).
+        status_code = 409 if exc.code == "slug_taken" else 422
+        return JSONResponse(
+            status_code=status_code,
+            content={"message": exc.message, "code": exc.code},
+        )
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": str(exc)},
+        )
+
+    return SlugUpdateResponse(slug=stored_slug)
+
+
+@org_portal_admin_router.put(
+    "/employee-portal",
+    response_model=EmployeePortalToggleResponse,
+    responses={
+        401: {"description": "Authentication required"},
+        403: {"description": "Org_Admin role required"},
+        422: {"description": "Slug required before enabling"},
+    },
+    summary="Enable or disable the Employee Portal",
+    dependencies=[require_role("org_admin")],
+)
+async def update_employee_portal(
+    payload: EmployeePortalToggleRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Enable or disable the requesting organisation's Employee_Portal.
+
+    Enabling while the organisation has no slug set is rejected
+    ``422 slug_required`` and leaves the flag disabled (R4.4). Otherwise the
+    flag is persisted via ``update_org_settings`` and the change is
+    audit-logged with the previous/new value (R4.7). On **disable**, every
+    active Employee_Portal session for the org is deleted in the same
+    transaction (R4.6). A failed audit write rolls back the whole change
+    (R4.8) — the endpoint rides the ``get_db_session`` auto-commit transaction.
+
+    The target org is the caller's own org resolved from the JWT, and only an
+    ``org_admin`` of that org may call this (``403`` otherwise, R4.2/R4.3).
+
+    Requirements: 4.2, 4.3, 4.4, 4.5, 4.6, 4.7, 4.8
+    """
+    user_id = getattr(request.state, "user_id", None)
+    org_id = getattr(request.state, "org_id", None)
+    ip_address = getattr(request.state, "client_ip", None)
+
+    if not org_id:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Organisation context required"},
+        )
+
+    try:
+        org_uuid = uuid.UUID(org_id)
+        user_uuid = uuid.UUID(user_id) if user_id else uuid.uuid4()
+    except (ValueError, TypeError):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid org_id or user_id format"},
+        )
+
+    try:
+        enabled = await set_employee_portal_enabled(
+            db,
+            org_id=org_uuid,
+            user_id=user_uuid,
+            enabled=payload.enabled,
+            ip_address=ip_address,
+        )
+    except EmployeePortalToggleError as exc:
+        # Enabling with no slug set → 422 slug_required (R4.4).
+        return JSONResponse(
+            status_code=422,
+            content={"message": exc.message, "code": exc.code},
+        )
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": str(exc)},
+        )
+
+    return EmployeePortalToggleResponse(enabled=enabled)
 
 
 async def require_branch_module(

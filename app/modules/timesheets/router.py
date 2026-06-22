@@ -10,7 +10,7 @@ Permission checks use has_permission() from rbac.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from uuid import UUID
 
@@ -25,6 +25,7 @@ from app.modules.timesheets.branch_scope import BranchScopedTimesheets
 from app.modules.timesheets.models import Timesheet, TimesheetSettings
 from app.modules.timesheets.schemas import (
     AdjustRequest,
+    AttendanceResponse,
     BulkActionResponse,
     ClockedInResponse,
     PeriodSummary,
@@ -34,11 +35,14 @@ from app.modules.timesheets.schemas import (
     TimesheetSettingsResponse,
     TimesheetSettingsUpdate,
     TimesheetSummary,
+    WeeklyBreakdownResponse,
 )
 from app.modules.timesheets.service import (
     adjust_timesheet,
     bulk_approve,
     bulk_lock,
+    compute_attendance,
+    compute_weekly_breakdown,
     get_or_create_timesheet,
     get_settings_for_branch,
     transition_status,
@@ -171,6 +175,71 @@ async def list_timesheets(
     )
 
 
+@timesheets_router.get("/weekly-breakdown")
+async def weekly_breakdown(
+    request: Request,
+    pay_period_id: UUID = Query(...),
+    scope: BranchScopedTimesheets = Depends(),
+    db: AsyncSession = Depends(get_db_session),
+) -> WeeklyBreakdownResponse:
+    """Per-week (Mon–Sun) worked-minute subtotals for a pay period.
+
+    READ-ONLY "weekly lens" review aid. Branch-scoped exactly like
+    ``list_timesheets`` (same dependency, no extra role gate). For a period that
+    spans more than one ISO week, the response splits it into per-week buckets
+    clamped to the period bounds, each with per-staff minutes and a week total
+    (``multi_week`` is true when there is more than one week). This endpoint
+    never touches pay-run, materialisation, or payslip logic.
+    """
+    org_id = _get_org_id(request)
+    branch_ids = scope.branch_ids if scope.should_filter else None
+    return await compute_weekly_breakdown(
+        db,
+        org_id=org_id,
+        pay_period_id=pay_period_id,
+        branch_ids=branch_ids,
+    )
+
+
+@timesheets_router.get("/attendance")
+async def attendance_report(
+    request: Request,
+    start: date | None = Query(
+        None, description="Range start (YYYY-MM-DD). Defaults to today (UTC)."
+    ),
+    end: date | None = Query(
+        None, description="Range end inclusive (YYYY-MM-DD). Defaults to start."
+    ),
+    scope: BranchScopedTimesheets = Depends(),
+    db: AsyncSession = Depends(get_db_session),
+) -> AttendanceResponse:
+    """Per-staff worked-hours-vs-expected attendance over a date range.
+
+    Powers the Timesheets page "Attendance" tab. Defaults to **today** (so the
+    page lands on today's workers and their clocked hours). Supports this-week
+    and arbitrary custom ranges via ``start``/``end``. Branch-scoped exactly
+    like ``list_timesheets`` (org/global admins see all branches; branch-scoped
+    users see only their branches). READ-ONLY — never touches pay-run /
+    materialisation / payslip state.
+    """
+    org_id = _get_org_id(request)
+
+    if start is not None and end is not None and end < start:
+        raise HTTPException(
+            status_code=422,
+            detail={"detail": "invalid_range", "message": "end must be on or after start"},
+        )
+
+    branch_ids = scope.branch_ids if scope.should_filter else None
+    return await compute_attendance(
+        db,
+        org_id=org_id,
+        start_date=start,
+        end_date=end,
+        branch_ids=branch_ids,
+    )
+
+
 @timesheets_router.get("/{id}")
 async def get_timesheet_detail(
     id: UUID,
@@ -178,10 +247,12 @@ async def get_timesheet_detail(
     scope: BranchScopedTimesheets = Depends(),
     db: AsyncSession = Depends(get_db_session),
 ) -> TimesheetDetailResponse:
-    """Get timesheet detail with entries.
+    """Get timesheet detail with staff/period context and clock entries."""
+    from app.modules.staff.models import StaffMember
+    from app.modules.organisations.models import Branch
+    from app.modules.payslips.models import PayPeriod
+    from app.modules.time_clock.models import TimeClockEntry
 
-    Placeholder: returns basic data from the Timesheet row, empty entries.
-    """
     org_id = _get_org_id(request)
 
     result = await db.execute(
@@ -197,14 +268,67 @@ async def get_timesheet_detail(
     if not scope.can_access_branch(ts.branch_id):
         raise HTTPException(status_code=403, detail="Branch access denied")
 
+    # Staff name
+    staff = await db.get(StaffMember, ts.staff_id)
+    staff_name = (getattr(staff, "name", None) or "Unknown") if staff else "Unknown"
+
+    # Period dates
+    period = await db.get(PayPeriod, ts.pay_period_id)
+    period_start = period.start_date.isoformat() if period and period.start_date else ""
+    period_end = period.end_date.isoformat() if period and period.end_date else ""
+
+    # Branch name
+    branch_name = None
+    if ts.branch_id:
+        branch = await db.get(Branch, ts.branch_id)
+        branch_name = getattr(branch, "name", None) if branch else None
+
+    # Approver / locker names
+    from app.modules.auth.models import User
+
+    approved_by_name = None
+    if ts.approved_by:
+        approver = await db.get(User, ts.approved_by)
+        approved_by_name = getattr(approver, "full_name", None) or getattr(approver, "email", None) if approver else None
+    locked_by_name = None
+    if ts.locked_by:
+        locker = await db.get(User, ts.locked_by)
+        locked_by_name = getattr(locker, "full_name", None) or getattr(locker, "email", None) if locker else None
+
+    # Clock entries for this staff within the period (best-effort).
+    entries: list[TimesheetDetailEntry] = []
+    if period is not None:
+        from datetime import timedelta
+        clock_rows = await db.execute(
+            select(TimeClockEntry).where(
+                TimeClockEntry.org_id == org_id,
+                TimeClockEntry.staff_id == ts.staff_id,
+                TimeClockEntry.clock_in_at >= period.start_date,
+                TimeClockEntry.clock_in_at < period.end_date + timedelta(days=1),
+            ).order_by(TimeClockEntry.clock_in_at)
+        )
+        for ce in clock_rows.scalars().all():
+            ci = ce.clock_in_at
+            co = getattr(ce, "clock_out_at", None)
+            worked = 0
+            if ci and co:
+                worked = int((co - ci).total_seconds() // 60)
+            entries.append(TimesheetDetailEntry(
+                id=ce.id,
+                clock_in_at=ci,
+                clock_out_at=co,
+                worked_minutes=worked,
+                source=getattr(ce, "source", None) or "clock",
+            ))
+
     return TimesheetDetailResponse(
         id=ts.id,
         staff_id=ts.staff_id,
-        staff_name="",  # Placeholder — will join staff_members.name
+        staff_name=staff_name,
         pay_period_id=ts.pay_period_id,
-        period_start="",  # Placeholder — will join pay_periods
-        period_end="",
-        branch_name=None,
+        period_start=period_start,
+        period_end=period_end,
+        branch_name=branch_name,
         status=ts.status,
         rostered_minutes=ts.rostered_minutes,
         actual_minutes=ts.actual_minutes,
@@ -214,11 +338,11 @@ async def get_timesheet_detail(
         public_holiday_minutes=ts.public_holiday_minutes,
         exception_flags=ts.exception_flags if ts.exception_flags else [],
         notes=ts.notes,
-        approved_by_name=None,
+        approved_by_name=approved_by_name,
         approved_at=ts.approved_at,
         locked_at=ts.locked_at,
-        locked_by_name=None,
-        entries=[],  # Placeholder — will fetch clock entries with matches
+        locked_by_name=locked_by_name,
+        entries=entries,
     )
 
 
@@ -560,9 +684,16 @@ async def match_all_endpoint(
 async def materialise_endpoint(
     request: Request,
     pay_period_id: UUID = Query(...),
+    include_all_active: bool = Query(False),
     db: AsyncSession = Depends(get_db_session),
 ):
-    """Materialise missing timesheets before pay-run cutoff (org_admin only)."""
+    """Materialise missing timesheets before pay-run cutoff (org_admin only).
+
+    When ``include_all_active`` is True, a timesheet is created for every
+    active staff member without one for the period — regardless of working
+    arrangement — so payroll can be run for fixed, rostered, and casual
+    staff who have not clocked in.
+    """
     org_id = _get_org_id(request)
     role = getattr(request.state, "role", None)
     if role not in ("org_admin", "global_admin"):
@@ -572,6 +703,7 @@ async def materialise_endpoint(
 
     result = await materialise_missing_timesheets(
         db, org_id=org_id, pay_period_id=pay_period_id,
+        include_all_active=include_all_active,
     )
 
     return JSONResponse(content={
@@ -1010,12 +1142,22 @@ async def assign_cycle_endpoint(
     from app.modules.timesheets.pay_cycles import assign_pay_cycle
     body = await request.json()
 
-    target_id = UUID(body["target_id"]) if body.get("target_id") else None
+    target_type = body.get("target_type", "all")
+    raw_target = body.get("target_id")
+    # For employment_type assignments the body carries the raw employment-type
+    # string (permanent / casual / fixed_term); the service encodes it to the
+    # deterministic UUIDv5 target id (Decision 3). Every other target type uses
+    # a UUID target_id (staff_id / branch_id) or None for 'all'.
+    if target_type == "employment_type":
+        target_id: UUID | str | None = raw_target if raw_target else None
+    else:
+        target_id = UUID(raw_target) if raw_target else None
+
     assignment = await assign_pay_cycle(
         db,
         org_id=org_id,
         pay_cycle_id=cycle_id,
-        target_type=body.get("target_type", "all"),
+        target_type=target_type,
         target_id=target_id,
     )
 
@@ -1045,11 +1187,14 @@ async def generate_payrun(
     user_id = _get_user_id(request)
     _check_permission(request, "payrun.lock")
 
-    from app.modules.timesheets.payrun import run_pay_period
+    from app.modules.timesheets.payrun import PayRunScopingError, run_pay_period
 
-    summary = await run_pay_period(
-        db, org_id=org_id, pay_period_id=pay_period_id, actor_id=user_id,
-    )
+    try:
+        summary = await run_pay_period(
+            db, org_id=org_id, pay_period_id=pay_period_id, actor_id=user_id,
+        )
+    except PayRunScopingError as exc:
+        raise HTTPException(status_code=422, detail={"detail": exc.code})
 
     return JSONResponse(content={
         "pay_period_id": str(summary.pay_period_id),

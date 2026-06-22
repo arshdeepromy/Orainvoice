@@ -1,5 +1,15 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import apiClient from '@/api/client'
+import { listPeriodPayslips, type Payslip } from '@/api/payslips'
+import {
+  CycleBoxes,
+  PeriodStepper,
+  activeCyclesOf,
+  defaultCycleId,
+  periodsForCycle,
+  pickDefaultPeriodId,
+} from './CyclePeriodControls'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -21,6 +31,7 @@ interface PayPeriod {
   pay_date?: string
   status: string
   pay_cycle_id?: string | null
+  pay_cycle_name?: string | null
 }
 
 interface GeneratedPeriod {
@@ -67,46 +78,6 @@ const fmtDateLong = (iso: string) => {
   return d.toLocaleDateString('en-NZ', { day: 'numeric', month: 'short', year: 'numeric' })
 }
 
-/** ISO 8601 week number (weeks start Monday; week 1 contains the first Thursday). */
-const isoWeek = (iso: string): number => {
-  const d = new Date(iso + 'T00:00:00')
-  // Shift to Thursday of the current week, then count weeks from Jan 1.
-  const target = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()))
-  const dayNr = (target.getUTCDay() + 6) % 7 // Mon=0 … Sun=6
-  target.setUTCDate(target.getUTCDate() - dayNr + 3)
-  const firstThursday = new Date(Date.UTC(target.getUTCFullYear(), 0, 4))
-  const firstDayNr = (firstThursday.getUTCDay() + 6) % 7
-  firstThursday.setUTCDate(firstThursday.getUTCDate() - firstDayNr + 3)
-  return 1 + Math.round((target.getTime() - firstThursday.getTime()) / (7 * 24 * 3600 * 1000))
-}
-
-type PeriodRelative = 'current' | 'past' | 'future'
-
-const periodRelative = (p: PayPeriod): PeriodRelative => {
-  const today = new Date().toISOString().split('T')[0]
-  if (p.end_date < today) return 'past'
-  if (p.start_date > today) return 'future'
-  return 'current'
-}
-
-/** Builds a rich label: "Wk 24 · 8 – 21 Jun 2026". */
-const fmtPeriodLabel = (p: PayPeriod): string => {
-  const startD = new Date(p.start_date + 'T00:00:00')
-  const endD = new Date(p.end_date + 'T00:00:00')
-  const sameMonth = startD.getMonth() === endD.getMonth() && startD.getFullYear() === endD.getFullYear()
-  const sameYear = startD.getFullYear() === endD.getFullYear()
-  const startLabel = sameMonth
-    ? startD.toLocaleDateString('en-NZ', { day: 'numeric' })
-    : sameYear
-      ? startD.toLocaleDateString('en-NZ', { day: 'numeric', month: 'short' })
-      : startD.toLocaleDateString('en-NZ', { day: 'numeric', month: 'short', year: 'numeric' })
-  const endLabel = endD.toLocaleDateString('en-NZ', { day: 'numeric', month: 'short', year: 'numeric' })
-  const rel = periodRelative(p)
-  const relTag = rel === 'current' ? ' • This week' : ''
-  const statusTag = p.status !== 'open' ? ` (${p.status})` : ''
-  return `Wk ${isoWeek(p.start_date)} · ${startLabel} – ${endLabel}${relTag}${statusTag}`
-}
-
 const fmtMinutes = (mins: number) => {
   const sign = mins < 0 ? '-' : '+'
   const abs = Math.abs(mins)
@@ -122,12 +93,15 @@ const fmtMinutes = (mins: number) => {
 // ---------------------------------------------------------------------------
 
 export default function PayRunsTab() {
+  const navigate = useNavigate()
   const [cycles, setCycles] = useState<PayCycle[]>([])
   const [periods, setPeriods] = useState<PayPeriod[]>([])
   const [selectedPeriod, setSelectedPeriod] = useState<string>('')
+  const [selectedCycleId, setSelectedCycleId] = useState<string>('')
   const [summary, setSummary] = useState<PeriodSummary | null>(null)
   const [timesheets, setTimesheets] = useState<TimesheetRow[]>([])
   const [adjustments, setAdjustments] = useState<Adjustment[]>([])
+  const [payslips, setPayslips] = useState<Payslip[]>([])
 
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -156,14 +130,38 @@ export default function PayRunsTab() {
     const load = async () => {
       try {
         setLoading(true)
-        const [cyclesRes, periodsRes] = await Promise.all([
-          apiClient.get<{ items: PayCycle[]; total: number }>('/api/v2/pay-cycles/', { signal: controller.signal }),
-          apiClient.get<{ items: PayPeriod[]; total: number }>('/api/v2/pay-periods', {
-            params: { limit: 50 },
-            signal: controller.signal,
-          }),
-        ])
+        // Fetch the organisation's pay cycles. Multiple active cycles can run
+        // at once (e.g. weekly for casual staff, fortnightly for permanent).
+        const cyclesRes = await apiClient.get<{ items: PayCycle[]; total: number }>(
+          '/api/v2/pay-cycles/',
+          { signal: controller.signal },
+        )
         const loadedCycles = cyclesRes.data?.items ?? []
+        // Active cycles only — generate a period schedule for every one of them
+        // so periods exist for each cycle the org runs (REQ 8.1).
+        const activeCycles = loadedCycles.filter((c) => (c as PayCycle & { active?: boolean }).active !== false)
+
+        // Generate periods for ALL active cycles (idempotent). Run in parallel;
+        // each call is independent and failures (already-exists / not org_admin)
+        // are ignored per cycle.
+        await Promise.all(
+          activeCycles.map(async (cycle) => {
+            if (!cycle?.id) return
+            try {
+              await apiClient.post(
+                `/api/v2/pay-cycles/${cycle.id}/generate-periods/`,
+                { count: 8 },
+                { signal: controller.signal },
+              )
+            } catch { /* ignore — already exists or not org_admin */ }
+          }),
+        )
+
+        // Now fetch periods (labelled by cycle via pay_cycle_name).
+        const periodsRes = await apiClient.get<{ items: PayPeriod[]; total: number }>('/api/v2/pay-periods', {
+          params: { limit: 50 },
+          signal: controller.signal,
+        })
         const allPeriods = (periodsRes.data?.items ?? [])
           .slice()
           .sort((a, b) => (b?.start_date ?? '').localeCompare(a?.start_date ?? ''))
@@ -175,10 +173,13 @@ export default function PayRunsTab() {
         setCycles(loadedCycles)
         setPeriods(loadedPeriods)
 
-        // Auto-select the period covering today, else most recent
-        const today = new Date().toISOString().split('T')[0]
-        const current = loadedPeriods.find((p) => p.start_date <= today && p.end_date >= today)
-        setSelectedPeriod(current?.id ?? loadedPeriods[0]?.id ?? '')
+        // Default the cycle to the org default (else first active), then pick
+        // the smart default period within that cycle — the most recently
+        // completed period (that's what you pay).
+        const cycleId = defaultCycleId(loadedCycles)
+        setSelectedCycleId(cycleId)
+        const scoped = cycleId ? periodsForCycle(loadedPeriods, cycleId) : loadedPeriods
+        setSelectedPeriod(pickDefaultPeriodId(scoped.length > 0 ? scoped : loadedPeriods))
         setError(null)
       } catch (err: unknown) {
         if (!controller.signal.aborted) setError('Failed to load pay runs')
@@ -196,10 +197,11 @@ export default function PayRunsTab() {
       setSummary(null)
       setTimesheets([])
       setAdjustments([])
+      setPayslips([])
       return
     }
     try {
-      const [tsRes, adjRes] = await Promise.all([
+      const [tsRes, adjRes, psRes] = await Promise.all([
         apiClient.get<{ items: TimesheetRow[]; total: number; period_summary: PeriodSummary }>(
           '/api/v2/timesheets/',
           { params: { pay_period_id: periodId }, signal },
@@ -208,10 +210,12 @@ export default function PayRunsTab() {
           params: { pay_period_id: periodId },
           signal,
         }),
+        listPeriodPayslips(periodId, { limit: 200 }, signal).catch(() => ({ items: [], total: 0 })),
       ])
       setTimesheets(tsRes.data?.items ?? [])
       setSummary(tsRes.data?.period_summary ?? null)
       setAdjustments(adjRes.data?.items ?? [])
+      setPayslips(psRes.items ?? [])
     } catch {
       /* non-fatal — leave summary blank */
     }
@@ -223,20 +227,42 @@ export default function PayRunsTab() {
     return () => controller.abort()
   }, [selectedPeriod, loadPeriodDetail])
 
+  // Switching cycle re-scopes the period list and re-defaults the period to the
+  // most recently completed period in that cycle.
+  const handleSelectCycle = useCallback((cycleId: string) => {
+    setSelectedCycleId(cycleId)
+    setSelectedPeriod(pickDefaultPeriodId(periodsForCycle(periods, cycleId)))
+  }, [periods])
+
+  const cyclePeriods = periodsForCycle(periods, selectedCycleId)
+
   // --- Actions ------------------------------------------------------------
   const handleGeneratePeriods = async () => {
-    const cycle = cycles.find((c) => c.is_default) ?? cycles[0]
-    if (!cycle) {
+    const activeCycles = cycles.filter((c) => (c as PayCycle & { active?: boolean }).active !== false)
+    if (activeCycles.length === 0) {
       flash('error', 'Configure a pay cycle in Settings before generating periods')
       return
     }
     setGeneratingPeriods(true)
     try {
-      const res = await apiClient.post<{ created: GeneratedPeriod[]; count: number }>(
-        `/api/v2/pay-cycles/${cycle.id}/generate-periods/`,
-        { count: 8 },
+      // Generate periods for every active cycle so mixed-cycle orgs get a full
+      // schedule per cycle (REQ 8.1). Aggregate the freshly-created periods for
+      // the preview.
+      const results = await Promise.all(
+        activeCycles.map(async (cycle) => {
+          if (!cycle?.id) return [] as GeneratedPeriod[]
+          try {
+            const res = await apiClient.post<{ created: GeneratedPeriod[]; count: number }>(
+              `/api/v2/pay-cycles/${cycle.id}/generate-periods/`,
+              { count: 8 },
+            )
+            return res.data?.created ?? []
+          } catch {
+            return [] as GeneratedPeriod[]
+          }
+        }),
       )
-      const created = res.data?.created ?? []
+      const created = results.flat()
       if (created.length > 0) {
         setPreviewPeriods(created)
         // Refresh the period list
@@ -249,7 +275,7 @@ export default function PayRunsTab() {
         const cycleManaged = allReloaded.filter((p) => !!p.pay_cycle_id)
         setPeriods(cycleManaged.length > 0 ? cycleManaged : allReloaded)
       } else {
-        flash('success', `All periods for "${cycle.name}" already exist — nothing new to generate`)
+        flash('success', 'All periods for your active cycles already exist — nothing new to generate')
       }
     } catch {
       flash('error', 'Failed to generate pay periods')
@@ -285,6 +311,7 @@ export default function PayRunsTab() {
           data?.adjustments_included ? `, ${data.adjustments_included} adjustment(s) included` : ''
         }`,
       )
+      await loadPeriodDetail(selectedPeriod)
     } catch {
       flash('error', 'Failed to generate pay run')
     } finally {
@@ -387,65 +414,28 @@ export default function PayRunsTab() {
         </div>
       )}
 
-      {/* Step 1: Pay Period selection */}
+      {/* Step 1: Cycle-first pay period selection */}
       <div className="rounded-lg border border-border p-5">
         <div className="mb-3 flex items-center gap-2">
           <span className="flex h-6 w-6 items-center justify-center rounded-full bg-accent text-xs font-bold text-white">1</span>
           <h3 className="text-sm font-semibold text-text">Select Pay Period</h3>
         </div>
+        {activeCyclesOf(cycles).length > 0 && (
+          <div className="mb-3">
+            <CycleBoxes
+              cycles={cycles}
+              periods={periods}
+              selectedCycleId={selectedCycleId}
+              onSelect={handleSelectCycle}
+            />
+          </div>
+        )}
         <div className="flex flex-wrap items-center gap-3">
-          <select
-            value={selectedPeriod}
-            onChange={(e) => setSelectedPeriod(e.target.value)}
-            className="h-9 rounded-lg border border-border bg-canvas px-3 text-sm text-text focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20"
-          >
-            {periods.length === 0 && <option value="">No periods — generate below</option>}
-            {(() => {
-              const current = periods.filter((p) => periodRelative(p) === 'current')
-              const future = periods.filter((p) => periodRelative(p) === 'future')
-              const past = periods.filter((p) => periodRelative(p) === 'past')
-              return (
-                <>
-                  {current.length > 0 && (
-                    <optgroup label="Current">
-                      {current.map((p) => (
-                        <option key={p.id} value={p.id}>{fmtPeriodLabel(p)}</option>
-                      ))}
-                    </optgroup>
-                  )}
-                  {future.length > 0 && (
-                    <optgroup label="Upcoming">
-                      {future.map((p) => (
-                        <option key={p.id} value={p.id}>{fmtPeriodLabel(p)}</option>
-                      ))}
-                    </optgroup>
-                  )}
-                  {past.length > 0 && (
-                    <optgroup label="Past">
-                      {past.map((p) => (
-                        <option key={p.id} value={p.id}>{fmtPeriodLabel(p)}</option>
-                      ))}
-                    </optgroup>
-                  )}
-                </>
-              )
-            })()}
-          </select>
-          {(() => {
-            const sel = periods.find((p) => p.id === selectedPeriod)
-            if (!sel) return null
-            const rel = periodRelative(sel)
-            const map = {
-              current: { label: 'This week', cls: 'bg-success/10 text-success' },
-              future: { label: 'Upcoming', cls: 'bg-accent/10 text-accent' },
-              past: { label: 'Past', cls: 'bg-muted/20 text-muted' },
-            } as const
-            return (
-              <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${map[rel].cls}`}>
-                {map[rel].label}
-              </span>
-            )
-          })()}
+          <PeriodStepper
+            cyclePeriods={cyclePeriods}
+            selectedPeriod={selectedPeriod}
+            onChange={setSelectedPeriod}
+          />
           <button
             onClick={handleGeneratePeriods}
             disabled={generatingPeriods || cycles.length === 0}
@@ -469,13 +459,26 @@ export default function PayRunsTab() {
             )}
           </button>
         </div>
-        {cycles.length > 0 && (
-          <p className="mt-2 text-xs text-muted">
-            Periods are derived from the{' '}
-            <span className="font-medium text-text">{(cycles.find((c) => c.is_default) ?? cycles[0])?.name}</span>{' '}
-            cycle ({(cycles.find((c) => c.is_default) ?? cycles[0])?.frequency}). Manage cycles in the Settings tab.
-          </p>
-        )}
+        {cycles.length > 0 && (() => {
+          const activeCycles = cycles.filter((c) => (c as PayCycle & { active?: boolean }).active !== false)
+          if (activeCycles.length > 1) {
+            return (
+              <p className="mt-2 text-xs text-muted">
+                Periods are generated for each active cycle:{' '}
+                <span className="font-medium text-text">{activeCycles.map((c) => c.name).join(', ')}</span>.
+                Periods are labelled by cycle so you can pick the right one. Manage cycles in the Settings tab.
+              </p>
+            )
+          }
+          const cycle = cycles.find((c) => c.is_default) ?? cycles[0]
+          return (
+            <p className="mt-2 text-xs text-muted">
+              Periods are derived from the{' '}
+              <span className="font-medium text-text">{cycle?.name}</span>{' '}
+              cycle ({cycle?.frequency}). Manage cycles in the Settings tab.
+            </p>
+          )
+        })()}
       </div>
 
       {/* Step 2: Period readiness */}
@@ -531,29 +534,100 @@ export default function PayRunsTab() {
               </svg>
             </div>
             <div className="flex-1">
-              <p className="text-sm font-medium text-text">Create payslip drafts for {lockedCount} locked timesheet(s)</p>
+              {payslips.length > 0 ? (
+                <p className="text-sm font-medium text-text">
+                  {payslips.length} payslip draft(s) generated for this period
+                </p>
+              ) : (
+                <p className="text-sm font-medium text-text">Create payslip drafts for {lockedCount} locked timesheet(s)</p>
+              )}
               <p className="mt-0.5 text-xs text-muted">
-                Generates draft payslips in the Payroll module. Hour bands (ordinary, overtime, public holiday) and any
-                recorded adjustments flow into each payslip. Draft payslips can be reviewed and finalised in Payroll.
+                {payslips.length > 0
+                  ? 'Re-running is safe — it only adds drafts for newly locked timesheets and never duplicates existing ones. Review, edit and finalise drafts in Payroll.'
+                  : 'Generates draft payslips in the Payroll module. Hour bands (ordinary, overtime, public holiday) and any recorded adjustments flow into each payslip. Draft payslips can be reviewed and finalised in Payroll.'}
               </p>
-              <button
-                onClick={handleGeneratePayRun}
-                disabled={generatingRun || !readyToRun}
-                className="mt-3 inline-flex h-9 items-center gap-2 rounded-lg bg-accent px-4 text-sm font-medium text-white hover:bg-accent/90 disabled:opacity-50 transition-colors"
-                title={!readyToRun ? 'Lock at least one timesheet first' : undefined}
-              >
-                {generatingRun ? (
-                  <>
-                    <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth={4} />
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                    </svg>
-                    Generating…
-                  </>
-                ) : (
-                  'Generate Pay Run'
-                )}
-              </button>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <button
+                  onClick={handleGeneratePayRun}
+                  disabled={generatingRun || !readyToRun}
+                  className={`inline-flex h-9 items-center gap-2 rounded-lg px-4 text-sm font-medium transition-colors disabled:opacity-50 ${
+                    payslips.length > 0
+                      ? 'border border-border bg-card text-text hover:bg-canvas'
+                      : 'bg-accent text-white hover:bg-accent/90'
+                  }`}
+                  title={!readyToRun ? 'Lock at least one timesheet first' : undefined}
+                >
+                  {generatingRun ? (
+                    <>
+                      <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth={4} />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                      Generating…
+                    </>
+                  ) : payslips.length > 0 ? (
+                    'Re-generate Pay Run'
+                  ) : (
+                    'Generate Pay Run'
+                  )}
+                </button>
+                <button
+                  onClick={() => navigate(`/payroll/run?period=${selectedPeriod}`)}
+                  className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-border bg-card px-4 text-sm font-medium text-text hover:bg-canvas transition-colors"
+                  title="Open the Payroll console to review, edit, finalise and email draft payslips"
+                >
+                  Review in Payroll
+                  <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
+                  </svg>
+                </button>
+              </div>
+
+              {/* Generated payslip drafts for this period */}
+              {payslips.length > 0 && (
+                <div className="mt-4 overflow-hidden rounded-lg border border-border">
+                  <table className="w-full border-collapse text-sm">
+                    <thead>
+                      <tr className="border-b border-border bg-canvas text-left">
+                        <th className="px-3 py-2 text-xs font-medium uppercase tracking-wide text-muted">Staff</th>
+                        <th className="px-3 py-2 text-xs font-medium uppercase tracking-wide text-muted">Status</th>
+                        <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-muted">Gross</th>
+                        <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-muted">Net</th>
+                        <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-muted">Generated</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border">
+                      {payslips.map((ps) => (
+                        <tr
+                          key={ps.id}
+                          className="cursor-pointer hover:bg-muted/5 transition-colors"
+                          onClick={() => navigate(`/payroll/payslips/${ps.id}`)}
+                        >
+                          <td className="px-3 py-2 font-medium text-text">{ps.staff_name ?? 'Unknown'}</td>
+                          <td className="px-3 py-2">
+                            <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${
+                              ps.status === 'finalised' ? 'bg-success/10 text-success' :
+                              ps.status === 'voided' ? 'bg-danger/10 text-danger' :
+                              'bg-accent/10 text-accent'
+                            }`}>
+                              {ps.status}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2 text-right font-mono">
+                            {new Intl.NumberFormat('en-NZ', { style: 'currency', currency: 'NZD' }).format(Number(ps.gross_pay) || 0)}
+                          </td>
+                          <td className="px-3 py-2 text-right font-mono">
+                            {new Intl.NumberFormat('en-NZ', { style: 'currency', currency: 'NZD' }).format(Number(ps.net_pay) || 0)}
+                          </td>
+                          <td className="px-3 py-2 text-right text-xs text-muted">
+                            {ps.created_at ? new Date(ps.created_at).toLocaleDateString('en-NZ', { day: 'numeric', month: 'short' }) : '—'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           </div>
         </div>

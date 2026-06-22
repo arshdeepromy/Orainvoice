@@ -342,6 +342,9 @@ export default function PayPeriodsPage() {
                   Pay date
                 </th>
                 <th className="mono border-b border-border px-4 py-3 text-left text-[10.5px] font-medium uppercase tracking-[0.08em] text-muted-2">
+                  Cycle
+                </th>
+                <th className="mono border-b border-border px-4 py-3 text-left text-[10.5px] font-medium uppercase tracking-[0.08em] text-muted-2">
                   Status
                 </th>
                 <th className="mono border-b border-border px-4 py-3 text-right text-[10.5px] font-medium uppercase tracking-[0.08em] text-muted-2">
@@ -386,6 +389,12 @@ export default function PayPeriodsPage() {
                       ) : (
                         formatDate(p?.pay_date)
                       )}
+                    </td>
+                    <td
+                      className="px-4 py-2 text-muted"
+                      data-testid={`pay-period-cycle-${p?.id ?? ''}`}
+                    >
+                      {p?.pay_cycle_name ?? '—'}
                     </td>
                     <td className="px-4 py-2">
                       {isEditing ? (

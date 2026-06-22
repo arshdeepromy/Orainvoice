@@ -36,6 +36,13 @@ CUSTOM_PERMISSIONS: dict[str, list[PermissionItem]] = {
         PermissionItem(key="timesheet.approve", label="Approve Timesheets"),
         PermissionItem(key="payrun.lock", label="Lock Pay Runs"),
     ],
+    # Leave Balances & Eligibility — custom (non-CRUD) permissions surfaced under
+    # the staff_management module group. org_admin holds both via ROLE_PERMISSIONS
+    # ("leave.*"); other roles get them only via custom roles.
+    "staff_management": [
+        PermissionItem(key="leave.balance_view", label="View Leave Balances"),
+        PermissionItem(key="leave.balance_adjust", label="Adjust Leave Balances"),
+    ],
 }
 
 _CACHE_KEY_PREFIX = "permissions:available"

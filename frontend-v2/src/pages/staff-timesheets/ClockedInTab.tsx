@@ -16,6 +16,8 @@ export default function ClockedInTab() {
   // Clock-out confirmation modal state
   const [clockOutTarget, setClockOutTarget] = useState<ClockedInEntry | null>(null)
   const [clockingOut, setClockingOut] = useState(false)
+  const [reasonNote, setReasonNote] = useState('')
+  const [clockOutError, setClockOutError] = useState<string | null>(null)
 
   // Collapsible sections state
   const [showOnLeave, setShowOnLeave] = useState(true)
@@ -76,17 +78,45 @@ export default function ClockedInTab() {
 
   const handleClockOut = async () => {
     if (!clockOutTarget) return
+    const trimmed = reasonNote.trim()
+    if (trimmed.length < 3) {
+      setClockOutError('Please enter a reason note (at least 3 characters).')
+      return
+    }
     setClockingOut(true)
+    setClockOutError(null)
     try {
-      // Use the existing time-clock admin clock-out endpoint
+      // Use the existing time-clock admin clock-out endpoint. The reason
+      // note is required (3..500) and is recorded on the audit log.
       await apiClient.post(`/api/v2/time-clock/admin-clock-out/${clockOutTarget.id}`, {
-        reason_note: 'Manual clock-out from timesheets admin',
+        reason_note: trimmed,
       })
       setClockOutTarget(null)
-      // Refresh the list
+      setReasonNote('')
+      // Refresh the list so the closed row drops off.
       fetchData()
-    } catch {
-      setClockOutTarget(null)
+    } catch (err: unknown) {
+      const status = (err as { response?: { status?: number } })?.response?.status
+      const rawDetail = (err as {
+        response?: { data?: { detail?: { detail?: string } | string } }
+      })?.response?.data?.detail
+      const detailStr =
+        typeof rawDetail === 'string' ? rawDetail : rawDetail?.detail ?? ''
+      if (status === 403 && detailStr === 'forbidden_scope') {
+        setClockOutError(
+          "This staff member is outside your branch scope — you can't clock them out.",
+        )
+      } else if (status === 409 && detailStr === 'already_clocked_out') {
+        setClockOutError('This entry was already clocked out by someone else.')
+      } else if (status === 409 && detailStr === 'timesheet_locked') {
+        setClockOutError(
+          "Can't close — this shift's week is already approved. Reopen the timesheet first.",
+        )
+      } else if (status === 404 || detailStr === 'time_clock_entry_not_found') {
+        setClockOutError('That entry could not be found. It may have been deleted.')
+      } else {
+        setClockOutError("Couldn't clock the user out. Please try again.")
+      }
     } finally {
       setClockingOut(false)
     }
@@ -224,7 +254,11 @@ export default function ClockedInTab() {
                 <p className="text-xs text-muted capitalize">{entry.source?.replace(/_/g, ' ')}</p>
               </div>
               <button
-                onClick={() => setClockOutTarget(entry)}
+                onClick={() => {
+                  setClockOutTarget(entry)
+                  setReasonNote('')
+                  setClockOutError(null)
+                }}
                 className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-card px-3 text-xs font-medium text-danger hover:bg-danger/5 transition-colors"
               >
                 <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
@@ -294,9 +328,45 @@ export default function ClockedInTab() {
             <p className="mt-1 text-xs text-muted">
               They have been clocked in for {clockOutTarget.elapsed_minutes} minutes.
             </p>
+
+            <div className="mt-4">
+              <label
+                htmlFor="clockout-reason-note"
+                className="mb-1 block text-xs font-medium text-text"
+              >
+                Reason note <span className="text-danger">*</span>
+              </label>
+              <textarea
+                id="clockout-reason-note"
+                value={reasonNote}
+                onChange={(e) => setReasonNote(e.target.value)}
+                rows={3}
+                maxLength={500}
+                placeholder="e.g. Forgot to tap out at end of shift"
+                className="w-full rounded-lg border border-border bg-canvas px-3 py-2 text-sm text-text focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20"
+                autoFocus
+              />
+              <p className="mt-1 text-[11px] text-muted">
+                {reasonNote.trim().length}/500 — minimum 3 characters
+              </p>
+            </div>
+
+            {clockOutError && (
+              <div
+                role="alert"
+                className="mt-3 rounded-lg bg-danger/10 px-3 py-2 text-sm font-medium text-danger"
+              >
+                {clockOutError}
+              </div>
+            )}
+
             <div className="mt-6 flex items-center justify-end gap-3">
               <button
-                onClick={() => setClockOutTarget(null)}
+                onClick={() => {
+                  setClockOutTarget(null)
+                  setReasonNote('')
+                  setClockOutError(null)
+                }}
                 disabled={clockingOut}
                 className="inline-flex h-10 items-center rounded-lg border border-border bg-card px-4 text-sm font-medium text-text hover:bg-canvas transition-colors"
               >
@@ -304,8 +374,8 @@ export default function ClockedInTab() {
               </button>
               <button
                 onClick={handleClockOut}
-                disabled={clockingOut}
-                className="inline-flex h-10 items-center rounded-lg bg-danger px-4 text-sm font-medium text-white hover:bg-danger/90 transition-colors disabled:opacity-50"
+                disabled={clockingOut || reasonNote.trim().length < 3}
+                className="inline-flex h-10 items-center rounded-lg bg-danger px-4 text-sm font-medium text-white hover:bg-danger/90 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {clockingOut ? 'Clocking out…' : 'Confirm'}
               </button>

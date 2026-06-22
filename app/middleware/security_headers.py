@@ -49,9 +49,11 @@ _CSRF_EXEMPT_PATHS: set[str] = {
 
 # Path prefixes exempt from CSRF — fleet portal auth endpoints use their
 # own CSRF mechanism (fleet_portal_csrf cookie) and must not be blocked
-# by the global staff-session CSRF check.
+# by the global staff-session CSRF check. The organisation employee portal
+# (/e/api/auth/) likewise uses its own double-submit CSRF cookie.
 _CSRF_EXEMPT_PREFIXES: tuple[str, ...] = (
     "/fleet/api/auth/",
+    "/e/api/auth/",
 )
 
 

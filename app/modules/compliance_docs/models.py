@@ -49,6 +49,13 @@ class ComplianceDocument(Base):
     job_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), nullable=True,
     )
+    # Optional link to a staff member (migration 0223). Mirrors the existing
+    # nullable invoice_id / job_id link columns; lets working-rights documents
+    # uploaded via the public onboarding submit be attached to a staff member
+    # (R7.6).
+    staff_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True,
+    )
     uploaded_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), nullable=True,
     )

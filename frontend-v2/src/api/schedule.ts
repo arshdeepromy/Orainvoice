@@ -85,3 +85,13 @@ export async function listTemplates(opts: {
     total: res.data?.total ?? 0,
   }
 }
+
+export async function deleteEntry(
+  id: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  await apiClient.delete(`/schedule/${id}`, {
+    baseURL: '/api/v2',
+    signal,
+  })
+}

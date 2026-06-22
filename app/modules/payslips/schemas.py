@@ -112,6 +112,7 @@ class PayPeriodResponse(BaseModel):
     pay_date: date
     status: str
     pay_cycle_id: UUID | None = None
+    pay_cycle_name: str | None = None
     created_at: datetime
     finalised_at: datetime | None = None
     paid_at: datetime | None = None

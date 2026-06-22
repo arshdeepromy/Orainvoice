@@ -329,6 +329,8 @@ const StaffSchedule = lazy(() => import('@/pages/scheduling/StaffSchedule'))
 const ShiftSwapPage = lazy(() => import('@/pages/swaps/ShiftSwapPage'))
 const ShiftCoverPage = lazy(() => import('@/pages/swaps/ShiftCoverPage'))
 const ApprovalQueue = lazy(() => import('@/pages/leave/ApprovalQueue'))
+const LeaveBalancesPage = lazy(() => import('@/pages/leave/LeaveBalancesPage'))
+const LeaveReferenceGuidePage = lazy(() => import('@/pages/leave/LeaveReferenceGuidePage'))
 const TimeSheet = lazy(() => import('@/pages/time-tracking/TimeSheet'))
 
 // Staff Timesheets (Phase A3) — module-gated (`timesheets`):
@@ -496,6 +498,18 @@ const InvoicePaymentPage = lazy(() => import('@/pages/public/InvoicePaymentPage'
 
 // Public staff roster viewer (Task 62 — token-gated, no auth).
 const StaffRosterPublicView = lazy(() => import('@/pages/public/StaffRosterPublicView'))
+
+// Staff onboarding form (token-based, no auth — reached via emailed
+// /onboard/{token} link).
+const OnboardingFormPage = lazy(() => import('@/pages/public/OnboardingFormPage'))
+
+// Organisation Employee Portal (Task 14) — branded, slug-addressed staff portal
+// at /e/:slug (login) and /e/:slug/* (authenticated app). Cookie-authenticated
+// (NOT the staff-app JWT) so it sits OUTSIDE RequireAuth/GuestOnly, like the
+// /onboard and /public/staff-roster token pages. Registered above the marketing
+// PublicPageRenderer catch-all so score-based matching resolves it first (R8.4).
+const EmployeePortalLogin = lazy(() => import('@/pages/employee-portal/EmployeePortalLogin'))
+const EmployeePortalApp = lazy(() => import('@/pages/employee-portal/EmployeePortalApp'))
 
 // QR payment result pages (Task 62 — public, rendered on customer's phone
 // after Stripe redirect).
@@ -861,6 +875,7 @@ function AppRoutes() {
           Stripe redirect. */}
       <Route path="/pay/:token" element={<InvoicePaymentPage />} />
       <Route path="/public/staff-roster/:token" element={<StaffRosterPublicView />} />
+      <Route path="/onboard/:token" element={<OnboardingFormPage />} />
       <Route path="/payments/qr-success" element={<QrPaymentSuccess />} />
       <Route path="/payments/qr-cancel" element={<QrPaymentCancel />} />
 
@@ -1455,6 +1470,17 @@ function AppRoutes() {
             element={<ModuleRoute moduleSlug="staff_management"><ApprovalQueue /></ModuleRoute>}
           />
 
+          {/* Leave Balances & Eligibility — org-wide balances view + reference
+              guide, module-gated (`staff_management`). */}
+          <Route
+            path="leave/balances"
+            element={<ModuleRoute moduleSlug="staff_management"><LeaveBalancesPage /></ModuleRoute>}
+          />
+          <Route
+            path="leave/reference-guide"
+            element={<ModuleRoute moduleSlug="staff_management"><LeaveReferenceGuidePage /></ModuleRoute>}
+          />
+
           {/* Time tracking (Task 33) — module-gated (`time_tracking`),
               mirroring frontend/src/App.tsx exactly: /time-tracking
               (TimeSheet). */}
@@ -1805,6 +1831,16 @@ function AppRoutes() {
           </Route>
         </Route>
       </Route>
+
+      {/* Organisation Employee Portal (Task 14.3) — branded, slug-addressed
+          staff portal. Cookie-authenticated (not the staff-app JWT), so these
+          sit OUTSIDE RequireAuth/GuestOnly. Declared immediately above the
+          marketing PublicPageRenderer catch-all so React Router v7 score-based
+          matching resolves them before the catch-all (R8.4). The static-prefix
+          /e/:slug login scores above /e/:slug/* for the exact login path.
+          PublicPageRenderer is left unchanged (R17.3). */}
+      <Route path="/e/:slug" element={<EmployeePortalLogin />} />
+      <Route path="/e/:slug/*" element={<EmployeePortalApp />} />
 
       {/* Public catch-all (Task 62) — replaces the old
           `<Navigate to="/dashboard" replace />` placeholder. Mirrors the

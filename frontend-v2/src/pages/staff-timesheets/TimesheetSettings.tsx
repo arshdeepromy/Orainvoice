@@ -51,6 +51,26 @@ export default function TimesheetSettings() {
   const [successMsg, setSuccessMsg] = useState<string | null>(null)
   const [form, setForm] = useState<SettingsForm>({ ...DEFAULT_SETTINGS })
 
+  // Attendance alerts (org clock_in_policy) — enable/disable + delivery channel
+  // per alert. Sent to the staff member's manager (late) / the staff member
+  // (missed clock-out). Stored on organisations.clock_in_policy.
+  const [alertForm, setAlertForm] = useState({
+    late_clock_in_alert_enabled: true,
+    late_clock_in_alert_channels: ['sms'] as string[],
+    missed_clock_out_alert_enabled: true,
+    missed_clock_out_alert_channels: ['sms'] as string[],
+  })
+
+  // Automatic clock-out (org clock_in_policy) — opt-in, OFF by default because
+  // auto-closing a stale open shift affects pay. The numeric controls only take
+  // effect while the toggle is on. Stored on organisations.clock_in_policy and
+  // independent of the missed-clock-out reminder above.
+  const [autoForm, setAutoForm] = useState({
+    auto_clock_out_enabled: false,
+    auto_clock_out_after_hours: 14,
+    auto_clock_out_grace_minutes: 15,
+  })
+
   // Read-only mode for non-org_admin users
   const readOnly = !!user && user.role !== 'org_admin' && user.role !== 'global_admin'
 
@@ -65,7 +85,7 @@ export default function TimesheetSettings() {
     const fetchSettings = async () => {
       try {
         setLoading(true)
-        const [settingsRes, cyclesRes] = await Promise.all([
+        const [settingsRes, cyclesRes, policyRes] = await Promise.all([
           apiClient.get<TimesheetSettingsResponse>(
             '/api/v2/timesheet-settings/',
             { signal: controller.signal },
@@ -74,9 +94,27 @@ export default function TimesheetSettings() {
             '/api/v2/pay-cycles/',
             { signal: controller.signal },
           ),
+          apiClient.get<{ clock_in_policy?: any }>(
+            '/api/v2/org/clock-in-policy',
+            { signal: controller.signal },
+          ),
         ])
         setData(settingsRes.data)
         setPayCycles(cyclesRes.data?.items ?? [])
+        const cip = policyRes.data?.clock_in_policy
+        if (cip) {
+          setAlertForm({
+            late_clock_in_alert_enabled: cip.late_clock_in_alert_enabled ?? true,
+            late_clock_in_alert_channels: cip.late_clock_in_alert_channels ?? ['sms'],
+            missed_clock_out_alert_enabled: cip.missed_clock_out_alert_enabled ?? true,
+            missed_clock_out_alert_channels: cip.missed_clock_out_alert_channels ?? ['sms'],
+          })
+          setAutoForm({
+            auto_clock_out_enabled: cip.auto_clock_out_enabled ?? false,
+            auto_clock_out_after_hours: cip.auto_clock_out_after_hours ?? 14,
+            auto_clock_out_grace_minutes: cip.auto_clock_out_grace_minutes ?? 15,
+          })
+        }
         if (settingsRes.data?.org_default) {
           const d = settingsRes.data.org_default
           setForm({
@@ -110,6 +148,17 @@ export default function TimesheetSettings() {
       setSaving(true)
       setSuccessMsg(null)
       await apiClient.put('/api/v2/timesheet-settings/', form)
+      await apiClient.put('/api/v2/org/clock-in-policy', {
+        clock_in_policy: {
+          late_clock_in_alert_enabled: alertForm.late_clock_in_alert_enabled,
+          late_clock_in_alert_channels: alertForm.late_clock_in_alert_channels,
+          missed_clock_out_alert_enabled: alertForm.missed_clock_out_alert_enabled,
+          missed_clock_out_alert_channels: alertForm.missed_clock_out_alert_channels,
+          auto_clock_out_enabled: autoForm.auto_clock_out_enabled,
+          auto_clock_out_after_hours: clampInt(autoForm.auto_clock_out_after_hours, 1, 48, 14),
+          auto_clock_out_grace_minutes: clampInt(autoForm.auto_clock_out_grace_minutes, 0, 240, 15),
+        },
+      })
       setSuccessMsg('Settings saved successfully')
       setTimeout(() => setSuccessMsg(null), 3000)
     } catch {
@@ -117,6 +166,27 @@ export default function TimesheetSettings() {
     } finally {
       setSaving(false)
     }
+  }
+
+  // Map the channel array <-> a single select value (sms / email / both).
+  const channelsToValue = (ch: string[]): 'sms' | 'email' | 'both' => {
+    const hasSms = ch.includes('sms')
+    const hasEmail = ch.includes('email')
+    if (hasSms && hasEmail) return 'both'
+    if (hasEmail) return 'email'
+    return 'sms'
+  }
+  const valueToChannels = (v: string): string[] =>
+    v === 'both' ? ['sms', 'email'] : v === 'email' ? ['email'] : ['sms']
+
+  // Clamp a numeric input to an inclusive integer range, falling back when the
+  // field is left empty / non-numeric. Used for the auto clock-out cap + grace.
+  const clampInt = (n: number, min: number, max: number, fallback: number): number => {
+    if (!Number.isFinite(n)) return fallback
+    const i = Math.trunc(n)
+    if (i < min) return min
+    if (i > max) return max
+    return i
   }
 
   // Break rules helpers
@@ -613,6 +683,185 @@ export default function TimesheetSettings() {
               <p className="mt-0.5 text-xs text-muted">All branches use the organisation defaults above</p>
             </div>
           )}
+        </div>
+      </section>
+
+      {/* Attendance Alerts Section */}
+      <section className="rounded-card border border-border bg-card shadow-card">
+        <div className="border-b border-border px-6 py-4">
+          <h2 className="text-base font-semibold text-text">Attendance Alerts</h2>
+          <p className="mt-0.5 text-xs text-muted">
+            Automatic alerts for late clock-ins and forgotten clock-outs. Late alerts go to the
+            staff member&rsquo;s manager (or the org owner if no manager is set); missed clock-out
+            reminders go to the staff member.
+          </p>
+        </div>
+        <div className="space-y-5 px-6 py-5">
+          {/* Late clock-in */}
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="min-w-[200px] flex-1">
+              <p className="text-sm font-medium text-text">Late clock-in alert</p>
+              <p className="text-xs text-muted">
+                When a staff member hasn&rsquo;t clocked in 15+ minutes after their shift starts.
+              </p>
+            </div>
+            <div className="flex items-center gap-4">
+              <select
+                value={channelsToValue(alertForm.late_clock_in_alert_channels)}
+                onChange={(e) =>
+                  setAlertForm({ ...alertForm, late_clock_in_alert_channels: valueToChannels(e.target.value) })
+                }
+                disabled={readOnly || !alertForm.late_clock_in_alert_enabled}
+                className="h-9 rounded-lg border border-border bg-canvas px-3 text-sm text-text focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <option value="sms">SMS only</option>
+                <option value="email">Email only</option>
+                <option value="both">SMS &amp; Email</option>
+              </select>
+              <button
+                type="button"
+                onClick={() => !readOnly && setAlertForm({ ...alertForm, late_clock_in_alert_enabled: !alertForm.late_clock_in_alert_enabled })}
+                disabled={readOnly}
+                aria-pressed={alertForm.late_clock_in_alert_enabled}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors disabled:opacity-60 disabled:cursor-not-allowed ${
+                  alertForm.late_clock_in_alert_enabled ? 'bg-accent' : 'bg-muted/30'
+                }`}
+              >
+                <span className={`inline-block h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${
+                  alertForm.late_clock_in_alert_enabled ? 'translate-x-6' : 'translate-x-1'
+                }`} />
+              </button>
+            </div>
+          </div>
+
+          {/* Missed clock-out */}
+          <div className="flex flex-wrap items-center justify-between gap-4 border-t border-border pt-5">
+            <div className="min-w-[200px] flex-1">
+              <p className="text-sm font-medium text-text">Forgotten clock-out reminder</p>
+              <p className="text-xs text-muted">
+                When a shift has been open for 12+ hours without clocking out.
+              </p>
+            </div>
+            <div className="flex items-center gap-4">
+              <select
+                value={channelsToValue(alertForm.missed_clock_out_alert_channels)}
+                onChange={(e) =>
+                  setAlertForm({ ...alertForm, missed_clock_out_alert_channels: valueToChannels(e.target.value) })
+                }
+                disabled={readOnly || !alertForm.missed_clock_out_alert_enabled}
+                className="h-9 rounded-lg border border-border bg-canvas px-3 text-sm text-text focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <option value="sms">SMS only</option>
+                <option value="email">Email only</option>
+                <option value="both">SMS &amp; Email</option>
+              </select>
+              <button
+                type="button"
+                onClick={() => !readOnly && setAlertForm({ ...alertForm, missed_clock_out_alert_enabled: !alertForm.missed_clock_out_alert_enabled })}
+                disabled={readOnly}
+                aria-pressed={alertForm.missed_clock_out_alert_enabled}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors disabled:opacity-60 disabled:cursor-not-allowed ${
+                  alertForm.missed_clock_out_alert_enabled ? 'bg-accent' : 'bg-muted/30'
+                }`}
+              >
+                <span className={`inline-block h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${
+                  alertForm.missed_clock_out_alert_enabled ? 'translate-x-6' : 'translate-x-1'
+                }`} />
+              </button>
+            </div>
+          </div>
+
+          <p className="text-xs text-muted">
+            Note: SMS requires the recipient to have a mobile number; Email requires an email address.
+            If the chosen channel isn&rsquo;t available for a recipient, that alert is skipped.
+          </p>
+        </div>
+      </section>
+
+      {/* Automatic Clock-Out Section */}
+      <section className="rounded-card border border-border bg-card shadow-card">
+        <div className="border-b border-border px-6 py-4">
+          <h2 className="text-base font-semibold text-text">Automatic Clock-Out</h2>
+          <p className="mt-0.5 text-xs text-muted">
+            Automatically close shifts left open past a cap so timesheets and pay aren&rsquo;t skewed
+            by a forgotten clock-out. Off by default because it affects pay &mdash; auto-closed entries
+            are flagged for review, and the staff member and their manager are notified.
+          </p>
+        </div>
+        <div className="space-y-5 px-6 py-5">
+          {/* Enable toggle */}
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="min-w-[200px] flex-1">
+              <p className="text-sm font-medium text-text">Enable automatic clock-out</p>
+              <p className="text-xs text-muted">
+                When on, stale open shifts are closed automatically at a sensible end time.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => !readOnly && setAutoForm({ ...autoForm, auto_clock_out_enabled: !autoForm.auto_clock_out_enabled })}
+              disabled={readOnly}
+              aria-pressed={autoForm.auto_clock_out_enabled}
+              aria-label="Enable automatic clock-out"
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors disabled:opacity-60 disabled:cursor-not-allowed ${
+                autoForm.auto_clock_out_enabled ? 'bg-accent' : 'bg-muted/30'
+              }`}
+            >
+              <span className={`inline-block h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${
+                autoForm.auto_clock_out_enabled ? 'translate-x-6' : 'translate-x-1'
+              }`} />
+            </button>
+          </div>
+
+          {/* Numeric controls — disabled while the toggle is off */}
+          <div className="grid grid-cols-1 gap-5 border-t border-border pt-5 sm:grid-cols-2">
+            <div>
+              <label htmlFor="auto-clock-out-after-hours" className="mb-1.5 block text-sm font-medium text-text">
+                Auto clock-out after (hours)
+              </label>
+              <input
+                id="auto-clock-out-after-hours"
+                type="number"
+                min={1}
+                max={48}
+                value={autoForm.auto_clock_out_after_hours}
+                onChange={(e) =>
+                  setAutoForm({
+                    ...autoForm,
+                    auto_clock_out_after_hours: clampInt(Number(e.target.value), 1, 48, 14),
+                  })
+                }
+                disabled={readOnly || !autoForm.auto_clock_out_enabled}
+                className="h-10 w-full max-w-[200px] rounded-lg border border-border bg-canvas px-3 text-sm text-text focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20 disabled:opacity-50 disabled:cursor-not-allowed"
+              />
+              <p className="mt-1 text-xs text-muted">
+                Safety-net cap (1&ndash;48). A shift open longer than this is eligible to be auto-closed.
+              </p>
+            </div>
+            <div>
+              <label htmlFor="auto-clock-out-grace-minutes" className="mb-1.5 block text-sm font-medium text-text">
+                Grace after rostered end (minutes)
+              </label>
+              <input
+                id="auto-clock-out-grace-minutes"
+                type="number"
+                min={0}
+                max={240}
+                value={autoForm.auto_clock_out_grace_minutes}
+                onChange={(e) =>
+                  setAutoForm({
+                    ...autoForm,
+                    auto_clock_out_grace_minutes: clampInt(Number(e.target.value), 0, 240, 15),
+                  })
+                }
+                disabled={readOnly || !autoForm.auto_clock_out_enabled}
+                className="h-10 w-full max-w-[200px] rounded-lg border border-border bg-canvas px-3 text-sm text-text focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20 disabled:opacity-50 disabled:cursor-not-allowed"
+              />
+              <p className="mt-1 text-xs text-muted">
+                Buffer (0&ndash;240) added after a rostered or fixed shift end before the auto clock-out time.
+              </p>
+            </div>
+          </div>
         </div>
       </section>
 

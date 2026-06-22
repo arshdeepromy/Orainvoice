@@ -1582,6 +1582,396 @@ async def update_adp_snapshots() -> dict:
 # ---------------------------------------------------------------------------
 
 
+# Defaults mirror app.modules.organisations.service._CLOCK_IN_POLICY_DEFAULTS
+# for the attendance-alert keys (always-on, SMS-only) so a missing/empty
+# clock_in_policy preserves the prior behaviour.
+_ALERT_POLICY_FALLBACK = {
+    "late_clock_in_alert_enabled": True,
+    "late_clock_in_alert_channels": ["sms"],
+    "missed_clock_out_alert_enabled": True,
+    "missed_clock_out_alert_channels": ["sms"],
+    # Auto clock-out fails safe: OFF when clock_in_policy is missing/empty.
+    "auto_clock_out_enabled": False,
+    "auto_clock_out_after_hours": 14,
+    "auto_clock_out_grace_minutes": 15,
+}
+
+
+async def _load_org_clock_in_policy(session, org_id, cache: dict) -> dict:
+    """Return the org's ``clock_in_policy`` JSONB merged over the alert
+    fallback, memoised in ``cache`` for the duration of one task run.
+    """
+    from sqlalchemy import text as _sa_text
+
+    if org_id in cache:
+        return cache[org_id]
+    policy: dict = {}
+    try:
+        row = (
+            await session.execute(
+                _sa_text(
+                    "SELECT clock_in_policy FROM organisations WHERE id = :oid",
+                ),
+                {"oid": str(org_id)},
+            )
+        ).scalar_one_or_none()
+        if isinstance(row, dict):
+            policy = row
+    except Exception:  # noqa: BLE001 — a read failure falls back to defaults
+        policy = {}
+    merged = {**_ALERT_POLICY_FALLBACK, **policy}
+    cache[org_id] = merged
+    return merged
+
+
+def _resolve_auto_clock_out_end(
+    *,
+    clock_in_at: datetime,            # tz-aware UTC
+    now: datetime,                    # tz-aware UTC
+    after_hours: int,                 # policy.auto_clock_out_after_hours
+    grace_minutes: int,               # policy.auto_clock_out_grace_minutes
+    scheduled_end: datetime | None,   # schedule_entries.end_time, or None
+    fixed_end_minutes: int | None,    # minutes-since-midnight for that weekday, or None
+) -> datetime:
+    """Resolve the clock-out timestamp for an auto-closed entry using the
+    basis hierarchy. Pure / deterministic — all DB reads happen in the caller.
+
+    Hierarchy:
+      1. scheduled_end + grace            (when scheduled_end is not None)
+      2. fixed day's end + grace          (when fixed_end_minutes is not None)
+      3. clock_in_at + after_hours        (safety-net cap)
+
+    Always clamped to [clock_in_at, now] so the result is never before
+    clock-in and never in the future.
+    """
+    if scheduled_end is not None:
+        end = scheduled_end + timedelta(minutes=grace_minutes)
+    elif fixed_end_minutes is not None:
+        day_start = clock_in_at.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = day_start + timedelta(minutes=fixed_end_minutes + grace_minutes)
+        # Overnight / wrapped fixed shift: if the configured end is at or before
+        # clock-in time-of-day, it belongs to the next calendar day.
+        if end <= clock_in_at:
+            end = end + timedelta(days=1)
+    else:
+        end = clock_in_at + timedelta(hours=after_hours)
+
+    # Clamp — never before clock_in, never in the future.
+    if end < clock_in_at:
+        end = clock_in_at
+    if end > now:
+        end = now
+    return end
+
+
+def _fixed_end_minutes_for_date(availability_schedule: dict | None, on_date) -> int | None:
+    """Derive the fixed-arrangement configured end time (minutes-since-midnight)
+    for ``on_date``'s weekday, reusing the timesheets parsing helpers so the
+    weekday mapping + ``"HH:MM"`` parsing stay a single source of truth.
+    """
+    from app.modules.timesheets.service import _WEEKDAY_KEYS, _parse_hhmm
+
+    if not availability_schedule:
+        return None
+    entry = availability_schedule.get(_WEEKDAY_KEYS[on_date.weekday()])
+    if not isinstance(entry, dict):
+        return None
+    return _parse_hhmm(entry.get("end"))   # minutes-since-midnight, or None
+
+
+async def _resolve_manager(session, staff):
+    """Walk the ``reporting_to`` chain and return the first reachable manager
+    with a contactable channel (phone or email), mirroring the manager
+    resolution in :func:`check_late_arrivals_task`.
+
+    Returns ``None`` when ``staff`` is ``None`` or no contactable manager is
+    reachable (broken/cyclic chain, manager missing, or no manager on file).
+    The ``seen`` set guards against a cyclic ``reporting_to`` graph.
+    """
+    from app.modules.staff.models import StaffMember
+
+    if staff is None:
+        return None
+    cursor = staff
+    seen: set = set()
+    while cursor.reporting_to and cursor.reporting_to not in seen:
+        seen.add(cursor.id)
+        m = await session.get(StaffMember, cursor.reporting_to)
+        if m is None:
+            break
+        # Accept the first manager reachable on any configured channel
+        # (phone for SMS, email for Email).
+        if m.phone or m.email:
+            return m
+        cursor = m
+    return None
+
+
+async def _notify_staff_auto_clock_out(
+    session, *, entry, staff, end, channels,
+) -> bool:
+    """Notify the staff member that their shift was auto clocked out.
+
+    Sends over the org's configured ``missed_clock_out_alert_channels`` using
+    the existing DLQ-backed senders. This notification GATES the closure
+    (REQ 4.1/4.2): returns ``True`` only when a notification was actually
+    dispatched over a contactable channel, and ``False`` on a send failure or
+    when the staff member has no contactable channel — in which case the caller
+    DEFERS the closure (leaves the entry open, no dedupe) and retries on a later
+    run rather than closing it un-notified.
+
+    The message states both the shift's clock-in time and the auto clock-out
+    time and directs the staff member to have it corrected if wrong (REQ 4.4).
+    """
+    from app.integrations.email_sender import EmailMessage, send_email
+    from app.integrations.sms_sender import send_sms
+
+    if staff is None:
+        return False
+
+    body = (
+        f"Your shift from {entry.clock_in_at.strftime('%H:%M')} was "
+        f"automatically clocked out at {end.strftime('%H:%M')} and flagged for "
+        "review. If that's wrong, please contact your manager to correct it."
+    )
+    dispatched = False
+    if "sms" in channels and staff.phone:
+        try:
+            await send_sms(
+                session,
+                to_phone=staff.phone,
+                body=body,
+                dlq_task_name="auto_clock_out_alert",
+                dlq_task_args={"time_clock_entry_id": str(entry.id)},
+                org_id=entry.org_id,
+            )
+            dispatched = True
+        except Exception as exc:
+            logger.warning(
+                "auto_clock_out: entry=%s staff_sms_failed=%s", entry.id, exc,
+            )
+    if "email" in channels and staff.email:
+        try:
+            await send_email(
+                session,
+                EmailMessage(
+                    to_email=staff.email.strip(),
+                    to_name=staff.first_name or staff.name or "",
+                    subject="Your shift was automatically clocked out",
+                    html_body=f"<p>{body}</p>",
+                    text_body=body,
+                    org_id=entry.org_id,
+                ),
+                dlq_task_name="auto_clock_out_alert_email",
+                dlq_task_args={"time_clock_entry_id": str(entry.id)},
+            )
+            dispatched = True
+        except Exception as exc:
+            logger.warning(
+                "auto_clock_out: entry=%s staff_email_failed=%s", entry.id, exc,
+            )
+    return dispatched
+
+
+async def _notify_manager_auto_clock_out(
+    session, *, entry, staff, manager, end, channels,
+) -> None:
+    """Best-effort notify the staff member's manager that the shift was auto
+    clocked out (REQ 4.3/4.5).
+
+    Each send is wrapped so a failure is logged and swallowed — a manager-notify
+    failure never reverts the (already staff-notified) closure nor poisons the
+    rest of the batch. Both the SMS and the email state the shift's clock-in
+    time and the auto clock-out time and direct the manager to correct it if the
+    hours are wrong (REQ 4.4).
+    """
+    from app.integrations.email_sender import EmailMessage, send_email
+    from app.integrations.sms_sender import send_sms
+
+    if manager is None:
+        return
+
+    staff_label = (staff.first_name or staff.name) if staff else None
+    staff_label = staff_label or "A staff member"
+    body = (
+        f"{staff_label}'s shift from {entry.clock_in_at.strftime('%H:%M')} was "
+        f"automatically clocked out at {end.strftime('%H:%M')} and flagged for "
+        "review. Please correct it if the hours are wrong."
+    )
+    if "sms" in channels and manager.phone:
+        try:
+            await send_sms(
+                session,
+                to_phone=manager.phone,
+                body=body,
+                dlq_task_name="auto_clock_out_manager_alert",
+                dlq_task_args={"time_clock_entry_id": str(entry.id)},
+                org_id=entry.org_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "auto_clock_out: entry=%s manager_sms_failed=%s",
+                entry.id, exc,
+            )
+    if "email" in channels and manager.email:
+        try:
+            await send_email(
+                session,
+                EmailMessage(
+                    to_email=manager.email.strip(),
+                    to_name=manager.first_name or manager.name or "",
+                    subject="A staff member's shift was automatically clocked out",
+                    html_body=f"<p>{body}</p>",
+                    text_body=body,
+                    org_id=entry.org_id,
+                ),
+                dlq_task_name="auto_clock_out_manager_alert_email",
+                dlq_task_args={"time_clock_entry_id": str(entry.id)},
+            )
+        except Exception as exc:
+            logger.warning(
+                "auto_clock_out: entry=%s manager_email_failed=%s",
+                entry.id, exc,
+            )
+
+
+async def _auto_close_entry(session, entry, policy, now) -> bool:
+    """Auto-close a single stale open ``time_clock_entries`` row.
+
+    Resolves the clock-out timestamp via the basis hierarchy
+    (:func:`_resolve_auto_clock_out_end`), notifies the STAFF member FIRST
+    — that notification GATES the closure (REQ 4.1/4.2) — and only then
+    finalises the close: sets ``clock_out_at`` + ``worked_minutes``, writes
+    the ``flags`` review marker, audits the closure, and best-effort notifies
+    the manager.
+
+    Returns
+    -------
+    bool
+        ``True`` when the entry was finalised (closed). ``False`` when it was
+        DEFERRED because the staff notification could not be dispatched — in
+        which case nothing is written (the entry is left open, no dedupe) and
+        the caller retries on a later run.
+
+    Reuses :func:`app.modules.time_clock.service._compute_worked_minutes` and
+    ``_entry_to_dict`` so the close columns + audit snapshots match the manual
+    admin-force-clock-out path exactly.
+    """
+    from app.core.audit import write_audit_log
+    from app.modules.scheduling_v2.models import ScheduleEntry
+    from app.modules.staff.models import StaffMember
+    from app.modules.time_clock.service import (
+        _compute_worked_minutes,
+        _entry_to_dict,
+    )
+
+    grace = int(policy.get("auto_clock_out_grace_minutes", 15))
+    after_hours = int(policy.get("auto_clock_out_after_hours", 14))
+
+    # --- Basis 1: linked scheduled shift end_time ---
+    scheduled_end = None
+    if entry.scheduled_entry_id is not None:
+        sched = await session.get(ScheduleEntry, entry.scheduled_entry_id)
+        scheduled_end = getattr(sched, "end_time", None) if sched else None
+
+    # --- Basis 2: fixed-arrangement configured end for that weekday ---
+    staff = await session.get(StaffMember, entry.staff_id)
+    fixed_end_minutes = None
+    if (
+        scheduled_end is None
+        and staff is not None
+        and staff.working_arrangement == "fixed"
+    ):
+        fixed_end_minutes = _fixed_end_minutes_for_date(
+            staff.availability_schedule, entry.clock_in_at.date(),
+        )
+
+    # --- Resolve + clamp (no DB write yet) ---
+    end = _resolve_auto_clock_out_end(
+        clock_in_at=entry.clock_in_at,
+        now=now,
+        after_hours=after_hours,
+        grace_minutes=grace,
+        scheduled_end=scheduled_end,
+        fixed_end_minutes=fixed_end_minutes,
+    )
+    basis = (
+        "scheduled_shift" if scheduled_end is not None
+        else "fixed_schedule" if fixed_end_minutes is not None
+        else "safety_net_cap"
+    )
+    channels = policy.get("missed_clock_out_alert_channels") or ["sms"]
+
+    # --- STAFF notification GATES the closure (REQ 4.1, 4.2) ---
+    # Attempt the staff notify BEFORE finalising. If it cannot be dispatched
+    # (send failure, or no contactable channel) DEFER: write nothing, no
+    # dedupe, leave the entry open and retry on a later run.
+    staff_notified = await _notify_staff_auto_clock_out(
+        session, entry=entry, staff=staff, end=end, channels=channels,
+    )
+    if not staff_notified:
+        return False   # deferred
+
+    # --- Close the entry (staff has been notified) ---
+    before = _entry_to_dict(entry)
+    entry.clock_out_at = end
+    entry.worked_minutes = _compute_worked_minutes(
+        clock_in_at=entry.clock_in_at,
+        clock_out_at=end,
+        break_minutes=entry.break_minutes or 0,
+    )
+    await session.flush()   # close columns committed within the task txn
+
+    # --- Flag for review — NON-FATAL (REQ 3.4) ---
+    # A marker-write failure must NOT leave the entry open/un-closed, so the
+    # marker is written in a SAVEPOINT; on failure we roll back ONLY the
+    # marker and log it, keeping the clock_out_at / worked_minutes intact.
+    try:
+        async with session.begin_nested():
+            flags = dict(entry.flags or {})
+            flags.update({
+                "auto_clocked_out": True,
+                "auto_clock_out_reason": basis,
+                "auto_clock_out_at": end.isoformat(),
+                "needs_review": True,
+            })
+            entry.flags = flags
+            await session.flush()
+    except Exception as exc:   # marker is best-effort
+        logger.warning(
+            "auto_clock_out: marker write failed entry=%s err=%s",
+            entry.id, exc,
+        )
+
+    # --- Audit (system-attributable, user_id=None) ---
+    await write_audit_log(
+        session=session,
+        org_id=entry.org_id,
+        user_id=None,
+        action="time_clock.auto_clock_out",
+        entity_type="time_clock_entry",
+        entity_id=entry.id,
+        before_value=before,
+        after_value={**_entry_to_dict(entry), "basis": basis},
+    )
+
+    # --- Manager notification — BEST-EFFORT (REQ 4.3, 4.5) ---
+    manager = await _resolve_manager(session, staff)   # reporting_to chain
+    if manager is not None:
+        try:
+            await _notify_manager_auto_clock_out(
+                session, entry=entry, staff=staff, manager=manager,
+                end=end, channels=channels,
+            )
+        except Exception as exc:   # never reverts the closure
+            logger.warning(
+                "auto_clock_out: manager notify failed entry=%s err=%s",
+                entry.id, exc,
+            )
+
+    return True
+
+
 async def check_late_arrivals_task() -> dict:
     """Every 5 min: find scheduled shifts that started 15+ minutes ago
     where the staff hasn't clocked in yet, and SMS the manager (R14).
@@ -1600,12 +1990,14 @@ async def check_late_arrivals_task() -> dict:
 
     from app.core.database import async_session_factory
     from app.core.redis import redis_pool
+    from app.integrations.email_sender import EmailMessage, send_email
     from app.integrations.sms_sender import send_sms
     from app.modules.scheduling_v2.models import ScheduleEntry
     from app.modules.staff.models import StaffMember
     from app.modules.time_clock.models import TimeClockEntry
 
     summary = {"shifts_checked": 0, "sms_sent": 0, "skipped": 0, "errors": 0}
+    policy_cache: dict = {}
 
     try:
         now_utc = datetime.now(timezone.utc)
@@ -1669,6 +2061,20 @@ async def check_late_arrivals_task() -> dict:
                     if staff is None:
                         summary["skipped"] += 1
                         continue
+
+                    # Org policy gate (enable/disable + channels).
+                    policy = await _load_org_clock_in_policy(
+                        session, shift.org_id, policy_cache,
+                    )
+                    if not policy.get("late_clock_in_alert_enabled", True):
+                        summary["skipped"] += 1
+                        try:
+                            await redis_pool.set(redis_key, "1", ex=28800)
+                        except Exception:
+                            pass
+                        continue
+                    channels = policy.get("late_clock_in_alert_channels") or ["sms"]
+
                     manager = None
                     cursor = staff
                     seen: set = set()
@@ -1680,12 +2086,14 @@ async def check_late_arrivals_task() -> dict:
                         m = await session.get(StaffMember, cursor.reporting_to)
                         if m is None:
                             break
-                        if m.phone:
+                        # Accept the first manager reachable on any configured
+                        # channel (phone for SMS, email for Email).
+                        if m.phone or m.email:
                             manager = m
                             break
                         cursor = m
 
-                    if manager is None or not manager.phone:
+                    if manager is None or not (manager.phone or manager.email):
                         summary["skipped"] += 1
                         # Still set the dedupe key so we don't re-check
                         # this shift every 5 minutes.
@@ -1700,27 +2108,59 @@ async def check_late_arrivals_task() -> dict:
                         f"clocked in for shift starting "
                         f"{shift.start_time.strftime('%H:%M')}."
                     )
-                    try:
-                        await send_sms(
-                            session,
-                            to_phone=manager.phone,
-                            body=body,
-                            dlq_task_name="late_arrival_alert",
-                            dlq_task_args={
-                                "schedule_entry_id": str(shift.id),
-                                "staff_id": str(staff.id),
-                            },
-                            org_id=shift.org_id,
+                    sent_any = False
+                    if "sms" in channels and manager.phone:
+                        try:
+                            await send_sms(
+                                session,
+                                to_phone=manager.phone,
+                                body=body,
+                                dlq_task_name="late_arrival_alert",
+                                dlq_task_args={
+                                    "schedule_entry_id": str(shift.id),
+                                    "staff_id": str(staff.id),
+                                },
+                                org_id=shift.org_id,
+                            )
+                            sent_any = True
+                        except Exception as exc:
+                            summary["errors"] += 1
+                            logger.warning(
+                                "check_late_arrivals: shift=%s sms_failed=%s",
+                                shift.id, exc,
+                            )
+                    if "email" in channels and manager.email:
+                        subject = (
+                            f"Late clock-in: {staff.first_name or staff.name}"
                         )
+                        try:
+                            await send_email(
+                                session,
+                                EmailMessage(
+                                    to_email=manager.email.strip(),
+                                    to_name=manager.first_name or manager.name or "",
+                                    subject=subject,
+                                    html_body=f"<p>{body}</p>",
+                                    text_body=body,
+                                    org_id=shift.org_id,
+                                ),
+                                dlq_task_name="late_arrival_alert_email",
+                                dlq_task_args={
+                                    "schedule_entry_id": str(shift.id),
+                                    "staff_id": str(staff.id),
+                                },
+                            )
+                            sent_any = True
+                        except Exception as exc:
+                            summary["errors"] += 1
+                            logger.warning(
+                                "check_late_arrivals: shift=%s email_failed=%s",
+                                shift.id, exc,
+                            )
+                    if sent_any:
                         summary["sms_sent"] += 1
-                    except Exception as exc:
-                        summary["errors"] += 1
-                        logger.warning(
-                            "check_late_arrivals: shift=%s sms_failed=%s",
-                            shift.id, exc,
-                        )
 
-                    # Dedupe so we don't SMS the manager again for this shift.
+                    # Dedupe so we don't alert the manager again for this shift.
                     try:
                         await redis_pool.set(redis_key, "1", ex=28800)  # 8h
                     except Exception:
@@ -1740,43 +2180,131 @@ async def check_late_arrivals_task() -> dict:
 
 
 async def check_missed_clock_outs_task() -> dict:
-    """Hourly: find ``time_clock_entries`` with ``clock_out_at IS NULL
-    AND clock_in_at < now() - 12h`` and send the staff a "Did you
-    forget to clock out?" SMS, plus notify the manager.
+    """Hourly: scan open ``time_clock_entries`` and, per the org's
+    ``clock_in_policy``, either AUTO-CLOSE a stale entry (opt-in) or send the
+    staff a "Did you forget to clock out?" reminder.
 
-    Per-entry dedupe via Redis key ``missed_clockout:{entry_id}``
-    (24h TTL).
+    For each open entry the org policy is loaded (memoised) and:
 
-    **Validates: Requirement R14.2 — Phase 3 task C2.**
+    * **Auto-close branch** (when ``auto_clock_out_enabled``): an entry open
+      ``>= auto_clock_out_after_hours`` is closed via :func:`_auto_close_entry`.
+      A ``auto_clockout:{entry_id}`` Redis dedupe key (24h TTL) is set ONLY
+      after a finalised closure; a deferred close (staff notify undispatched)
+      leaves the entry open with no dedupe so it retries next run. A
+      closed/deferred entry skips the reminder branch.
+    * **Reminder branch** (existing behaviour): an entry open
+      ``>= missed_clock_out_reminder_hours`` (default 12h, previously a
+      hardcoded threshold) gets the staff reminder, gated by
+      ``missed_clock_out_alert_enabled`` and deduped via
+      ``missed_clockout:{entry_id}`` (24h TTL).
+
+    A disabled org (``auto_clock_out_enabled`` false, the default) follows the
+    unchanged alert-only path. Per-entry/per-org failures are isolated so one
+    org's error never blocks the others.
+
+    **Validates: Requirements 1.4, 2.1, 2.6, 2.7, 4.6 — Phase 3 task C2.**
     """
-    from sqlalchemy import and_, select
+    from sqlalchemy import select
 
     from app.core.database import async_session_factory
     from app.core.redis import redis_pool
+    from app.integrations.email_sender import EmailMessage, send_email
     from app.integrations.sms_sender import send_sms
     from app.modules.staff.models import StaffMember
     from app.modules.time_clock.models import TimeClockEntry
 
-    summary = {"entries_checked": 0, "sms_sent": 0, "skipped": 0, "errors": 0}
+    summary = {
+        "entries_checked": 0,
+        "reminders_sent": 0,
+        "auto_closed": 0,
+        "deferred": 0,
+        "skipped": 0,
+        "errors": 0,
+    }
+    policy_cache: dict = {}
 
     try:
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=12)
-
         async with async_session_factory() as session:
             async with session.begin():
+                # Widen the candidate scan to ANY open entry — per-entry
+                # eligibility (auto-close cap vs reminder threshold) is decided
+                # below from the org policy, since the auto-close cap can be
+                # shorter than the 12h reminder threshold.
                 stmt = (
                     select(TimeClockEntry)
-                    .where(
-                        and_(
-                            TimeClockEntry.clock_out_at.is_(None),
-                            TimeClockEntry.clock_in_at < cutoff,
-                        ),
-                    )
+                    .where(TimeClockEntry.clock_out_at.is_(None))
                 )
                 entries = (await session.execute(stmt)).scalars().all()
 
                 for entry in entries:
                     summary["entries_checked"] += 1
+
+                    # Org policy (enable/disable + channels + thresholds),
+                    # memoised per-org for the duration of this run.
+                    policy = await _load_org_clock_in_policy(
+                        session, entry.org_id, policy_cache,
+                    )
+                    now = datetime.now(timezone.utc)
+                    open_hours = (
+                        now - entry.clock_in_at
+                    ).total_seconds() / 3600.0
+
+                    # ---- AUTO-CLOSE branch (opt-in, OFF by default) ----
+                    if policy.get("auto_clock_out_enabled", False):
+                        cap = int(policy.get("auto_clock_out_after_hours", 14))
+                        if open_hours >= cap:
+                            dedupe = f"auto_clockout:{entry.id}"
+                            try:
+                                seen = await redis_pool.get(dedupe)
+                            except Exception:
+                                seen = None
+                            if seen:
+                                # Already closed in a prior run — idempotent
+                                # (REQ 2.6): never re-close or re-notify.
+                                summary["skipped"] += 1
+                                continue
+                            try:
+                                closed = await _auto_close_entry(
+                                    session, entry, policy, now,
+                                )
+                            except Exception as exc:
+                                # Per-entry isolation (REQ 2.7): one entry's
+                                # (or org's) failure never blocks the batch.
+                                summary["errors"] += 1
+                                logger.warning(
+                                    "auto_clock_out: entry=%s failed=%s",
+                                    entry.id, exc,
+                                )
+                                continue   # leave open; retry next run
+                            if closed:
+                                summary["auto_closed"] += 1
+                                # Dedupe ONLY after a finalised closure so a
+                                # deferred entry is naturally retried and a
+                                # closed entry is never re-closed (REQ 2.6/4.6).
+                                try:
+                                    await redis_pool.set(
+                                        dedupe, "1", ex=86400,
+                                    )
+                                except Exception:
+                                    pass
+                            else:
+                                # Deferred: staff notification not dispatched
+                                # (REQ 4.2). Leave the entry open, set NO
+                                # dedupe, retry on a later run.
+                                summary["deferred"] += 1
+                            # Closed or deferred → no "did you forget?" reminder.
+                            continue
+
+                    # ---- REMINDER branch (existing behaviour) ----
+                    # The previously-hardcoded 12h threshold now comes from
+                    # policy (default 12h).
+                    reminder_hours = int(
+                        policy.get("missed_clock_out_reminder_hours", 12)
+                    )
+                    if open_hours < reminder_hours:
+                        summary["skipped"] += 1
+                        continue
+
                     redis_key = f"missed_clockout:{entry.id}"
                     try:
                         existing = await redis_pool.get(redis_key)
@@ -1787,7 +2315,7 @@ async def check_missed_clock_outs_task() -> dict:
                         pass
 
                     staff = await session.get(StaffMember, entry.staff_id)
-                    if staff is None or not staff.phone:
+                    if staff is None or not (staff.phone or staff.email):
                         summary["skipped"] += 1
                         try:
                             await redis_pool.set(
@@ -1797,29 +2325,64 @@ async def check_missed_clock_outs_task() -> dict:
                             pass
                         continue
 
+                    if not policy.get("missed_clock_out_alert_enabled", True):
+                        summary["skipped"] += 1
+                        try:
+                            await redis_pool.set(redis_key, "1", ex=86400)
+                        except Exception:
+                            pass
+                        continue
+                    channels = (
+                        policy.get("missed_clock_out_alert_channels") or ["sms"]
+                    )
+
                     body = (
                         "Did you forget to clock out? Your shift from "
                         f"{entry.clock_in_at.strftime('%H:%M')} is still open. "
                         "Open the app to close it."
                     )
-                    try:
-                        await send_sms(
-                            session,
-                            to_phone=staff.phone,
-                            body=body,
-                            dlq_task_name="missed_clockout_alert",
-                            dlq_task_args={
-                                "time_clock_entry_id": str(entry.id),
-                            },
-                            org_id=entry.org_id,
-                        )
-                        summary["sms_sent"] += 1
-                    except Exception as exc:
-                        summary["errors"] += 1
-                        logger.warning(
-                            "check_missed_clock_outs: entry=%s sms_failed=%s",
-                            entry.id, exc,
-                        )
+                    if "sms" in channels and staff.phone:
+                        try:
+                            await send_sms(
+                                session,
+                                to_phone=staff.phone,
+                                body=body,
+                                dlq_task_name="missed_clockout_alert",
+                                dlq_task_args={
+                                    "time_clock_entry_id": str(entry.id),
+                                },
+                                org_id=entry.org_id,
+                            )
+                            summary["reminders_sent"] += 1
+                        except Exception as exc:
+                            summary["errors"] += 1
+                            logger.warning(
+                                "check_missed_clock_outs: entry=%s sms_failed=%s",
+                                entry.id, exc,
+                            )
+                    if "email" in channels and staff.email:
+                        try:
+                            await send_email(
+                                session,
+                                EmailMessage(
+                                    to_email=staff.email.strip(),
+                                    to_name=staff.first_name or staff.name or "",
+                                    subject="Did you forget to clock out?",
+                                    html_body=f"<p>{body}</p>",
+                                    text_body=body,
+                                    org_id=entry.org_id,
+                                ),
+                                dlq_task_name="missed_clockout_alert_email",
+                                dlq_task_args={
+                                    "time_clock_entry_id": str(entry.id),
+                                },
+                            )
+                        except Exception as exc:
+                            summary["errors"] += 1
+                            logger.warning(
+                                "check_missed_clock_outs: entry=%s email_failed=%s",
+                                entry.id, exc,
+                            )
 
                     try:
                         await redis_pool.set(redis_key, "1", ex=86400)
@@ -1830,9 +2393,12 @@ async def check_missed_clock_outs_task() -> dict:
         return {"error": str(exc)}
 
     logger.info(
-        "check_missed_clock_outs: entries=%d sms=%d skipped=%d errors=%d",
+        "check_missed_clock_outs: entries=%d reminders=%d auto_closed=%d "
+        "deferred=%d skipped=%d errors=%d",
         summary["entries_checked"],
-        summary["sms_sent"],
+        summary["reminders_sent"],
+        summary["auto_closed"],
+        summary["deferred"],
         summary["skipped"],
         summary["errors"],
     )
@@ -1842,6 +2408,12 @@ async def check_missed_clock_outs_task() -> dict:
 # ---------------------------------------------------------------------------
 # 18. Roll pay periods — Staff Management Phase 4 task C1
 # ---------------------------------------------------------------------------
+
+# How far ahead of `today` the roll task maintains open pay periods. The task
+# tops up to (but never past) this horizon, so re-running it is idempotent and
+# bounded — preventing the unbounded future-period accumulation that produced
+# pay periods dated decades out (e.g. 2080).
+_ROLL_HORIZON_DAYS = 90
 
 
 async def roll_pay_periods_task() -> dict:
@@ -1931,12 +2503,24 @@ async def roll_pay_periods_task() -> dict:
                         )
                     ).scalar_one_or_none()
 
-                    # Roll forward up to 4 periods, ON CONFLICT DO
-                    # NOTHING for idempotency. We carry our own
-                    # latest_end forward across the loop iterations
-                    # so the next compute call chains end-to-start
-                    # even when the prior INSERT silently no-op'd.
+                    # Roll forward, ON CONFLICT DO NOTHING for
+                    # idempotency. We carry our own latest_end forward
+                    # across the loop iterations so the next compute call
+                    # chains end-to-start even when the prior INSERT
+                    # silently no-op'd.
+                    #
+                    # BOUNDED HORIZON (bugfix): only maintain coverage up
+                    # to ~`_ROLL_HORIZON_DAYS` past today. Without this cap
+                    # the task added 4 fresh future periods on EVERY run,
+                    # so the latest_end watermark marched unboundedly into
+                    # the future (observed: periods out to 2080). Stopping
+                    # once latest_end already reaches the horizon keeps the
+                    # task idempotent AND bounded — it tops up to a few
+                    # periods ahead of today and no further.
+                    horizon = today + timedelta(days=_ROLL_HORIZON_DAYS)
                     for _ in range(4):
+                        if latest_end is not None and latest_end >= horizon:
+                            break
                         try:
                             start, end, pay_dt = compute_next_period_dates(
                                 cadence=cadence,
@@ -1955,26 +2539,50 @@ async def roll_pay_periods_task() -> dict:
                             break
 
                         new_id = uuid.uuid4()
-                        result = await session.execute(
-                            sql_text(
-                                "INSERT INTO pay_periods "
-                                "(id, org_id, start_date, end_date, "
-                                " pay_date, status) "
-                                "VALUES (:id, :org_id, :start, :end, "
-                                "        :pay, 'open') "
-                                "ON CONFLICT (org_id, start_date) "
-                                "DO NOTHING "
-                                "RETURNING id"
-                            ),
-                            {
-                                "id": str(new_id),
-                                "org_id": str(org_id),
-                                "start": start,
-                                "end": end,
-                                "pay": pay_dt,
-                            },
-                        )
-                        inserted_id = result.scalar_one_or_none()
+                        # Idempotency recovery is now cycle-scoped (Decision 5).
+                        # The 0225 migration replaced the
+                        # (org_id, start_date) unique key with
+                        # (org_id, pay_cycle_id, start_date), so an
+                        # ``ON CONFLICT (org_id, start_date)`` no longer has a
+                        # matching unique constraint. Roll-task periods carry a
+                        # NULL pay_cycle_id (this task is cycle-agnostic and
+                        # predates per-staff cycles), and NULLs are distinct in
+                        # a unique index — so ON CONFLICT would not protect us
+                        # anyway. We therefore look the existing row up
+                        # explicitly by (org_id, pay_cycle_id IS NULL,
+                        # start_date) and only INSERT when it is absent.
+                        existing_id = (
+                            await session.execute(
+                                sql_text(
+                                    "SELECT id FROM pay_periods "
+                                    "WHERE org_id = :org_id "
+                                    "  AND pay_cycle_id IS NULL "
+                                    "  AND start_date = :start"
+                                ),
+                                {"org_id": str(org_id), "start": start},
+                            )
+                        ).scalar_one_or_none()
+
+                        if existing_id is None:
+                            await session.execute(
+                                sql_text(
+                                    "INSERT INTO pay_periods "
+                                    "(id, org_id, start_date, end_date, "
+                                    " pay_date, status) "
+                                    "VALUES (:id, :org_id, :start, :end, "
+                                    "        :pay, 'open')"
+                                ),
+                                {
+                                    "id": str(new_id),
+                                    "org_id": str(org_id),
+                                    "start": start,
+                                    "end": end,
+                                    "pay": pay_dt,
+                                },
+                            )
+                            inserted_id = new_id
+                        else:
+                            inserted_id = None
                         if inserted_id is not None:
                             summary["periods_created"] += 1
                             # G12-compliant audit: dates only, no PII /
@@ -2043,6 +2651,9 @@ from app.modules.backup_restore.service import (
     run_rehearsal_task,
     run_scheduled_backup_task,
 )
+# Leave Balances & Eligibility — daily eligibility sweep (vests entitlements +
+# writes onset notes/notifications). WRITE task; primary-only.
+from app.modules.leave.rules.sweep import evaluate_leave_eligibility_task
 
 # Tasks that write to the database and must be skipped on standby nodes.
 # ALL tasks that INSERT, UPDATE, or DELETE rows must be listed here.
@@ -2076,6 +2687,7 @@ WRITE_TASKS: set[str] = {
     "cleanup_bounce_rows",         # cleanup_expired_bounce_rows_task — deletes expired soft bounces (Phase 8c)
     "weekly_roster_broadcast",     # weekly_roster_broadcast — sends roster email/SMS, writes audit_log + notification_log (Staff Phase 1, R10)
     "accrue_leave",                # accrue_leave — writes leave_ledger + leave_balance updates (Staff Phase 2, C1)
+    "evaluate_leave_eligibility",  # evaluate_leave_eligibility_task — vests leave entitlements + writes eligibility notes/notifications (Leave Balances & Eligibility)
     "process_public_holidays",     # process_public_holidays — writes leave_ledger + schedule_entries notes (Staff Phase 2, C2)
     "update_adp_snapshots",        # update_adp_snapshots — UPDATEs staff_members.average_daily_pay_snapshot + writes staff.adp_snapshot_updated audit row (Staff Phase 2 C3 → Phase 4 C2 swapped in real payslip data per R13)
     "check_late_arrivals",         # check_late_arrivals_task — sends late-arrival SMS, sets Redis dedupe (Staff Phase 3, C1)
@@ -2123,6 +2735,9 @@ _DAILY_TASKS: list[tuple] = [
     # public-holiday helpers; same-key UPDATE for ADP) make a same-day
     # re-run a no-op (e.g. after a crash + restart).
     (accrue_leave, 86400, "accrue_leave"),
+    # Leave Balances & Eligibility — daily eligibility sweep (vests entitlements,
+    # writes onset notes + notifications). Idempotent via the note/ledger guards.
+    (evaluate_leave_eligibility_task, 86400, "evaluate_leave_eligibility"),
     (process_public_holidays, 86400, "process_public_holidays"),
     (update_adp_snapshots, 86400, "update_adp_snapshots"),
     # Staff Phase 3 C1/C2 — operational alerts. The scheduler-lock +

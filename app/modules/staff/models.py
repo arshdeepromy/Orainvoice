@@ -40,6 +40,7 @@ __all__ = [
     "StaffLocationAssignment",
     "StaffPayRate",
     "StaffRosterViewToken",
+    "StaffOnboardingToken",
 ]
 
 
@@ -111,6 +112,12 @@ class StaffMember(Base):
     )
     standard_hours_per_week: Mapped[Decimal | None] = mapped_column(
         Numeric(5, 2), nullable=True,
+    )
+    # Leave Balances & Eligibility (migration 0226). Single-active annual-holiday
+    # pay method (R11.6): 'accrued' | 'casual_payg'. Casual staff resolve to
+    # 'casual_payg'. DB CHECK ck_staff_holiday_pay_method enforces the domain.
+    holiday_pay_method: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="accrued",
     )
     tax_code: Mapped[str | None] = mapped_column(Text, nullable=True)
     ird_number_encrypted: Mapped[bytes | None] = mapped_column(
@@ -262,4 +269,66 @@ class StaffRosterViewToken(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )
+
+
+class StaffOnboardingToken(Base):
+    """Single-use, token-gated self-service onboarding link.
+
+    Mirrors ``StaffRosterViewToken`` (org-scoped, RLS, ON DELETE CASCADE)
+    but stores a SHA-256 hash of the URL token rather than the raw value,
+    and carries an explicit status lifecycle.
+
+    Maps to the ``staff_onboarding_tokens`` table created by migration 0223.
+
+    Validates: Requirements 2.1, 2.2, 2.5, 12.6.
+    """
+
+    __tablename__ = "staff_onboarding_tokens"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4,
+    )
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organisations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    staff_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("staff_members.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # SHA-256 hex digest of the URL-safe token (64 chars). The raw token
+    # is never persisted; it lives only in the emailed URL.
+    token_hash: Mapped[str] = mapped_column(
+        String(64), nullable=False, unique=True,
+    )
+    # pending | consumed | revoked  (expiry is derived from expires_at,
+    # not a stored status, so a row can be pending-but-expired).
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default="pending",
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+    )
+    consumed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    # --- Draft (R12) — the partial form payload, stored ON the token row ---
+    # The ENTIRE partial form payload is serialized to JSON and stored
+    # envelope-encrypted here (reusing core.encryption). Encrypting the whole
+    # blob means partial IRD/bank values are encrypted at rest with no
+    # field-by-field handling (R12.6). NULL until the first draft is saved;
+    # NULLed again on submit / revoke / expiry-purge (R12.8, R12.9).
+    draft_data_encrypted: Mapped[bytes | None] = mapped_column(
+        LargeBinary, nullable=True,
+    )
+    # "last saved" timestamp surfaced to the admin (R13.2). NULL => no draft
+    # has been saved yet (the not_started <-> in_progress discriminator, R13.1).
+    draft_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
     )

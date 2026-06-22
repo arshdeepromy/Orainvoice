@@ -191,6 +191,7 @@ const NAV_GROUPS: NavGroup[] = [
       { id: 'customers', to: '/customers', label: 'Customers', icon: ICON.cust },
       { id: 'staff', to: '/staff', label: 'Staff', icon: ICON.staff, module: 'staff', flagKey: 'staff' },
       { id: 'leave-approvals', to: '/leave/approvals', label: 'Leave Approvals', icon: ICON.staff, module: 'staff_management', adminOnly: true },
+      { id: 'leave-balances', to: '/leave/balances', label: 'Leave Balances', icon: ICON.staff, module: 'staff_management' },
       { id: 'shift-swaps', to: '/shift-swaps', label: 'Shift swaps', icon: ICON.schedule, module: 'staff_management' },
       { id: 'shift-cover', to: '/shift-cover', label: 'Open shifts', icon: ICON.schedule, module: 'staff_management' },
       { id: 'payroll', to: '/payroll/run', label: 'Payroll', icon: ICON.payroll, module: 'payroll' },

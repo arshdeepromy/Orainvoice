@@ -43,6 +43,7 @@ __all__ = [
     "LeaveBalance",
     "LeaveRequest",
     "LeaveLedger",
+    "LeaveEligibilityNote",
 ]
 
 
@@ -258,6 +259,52 @@ class LeaveLedger(Base):
         ForeignKey("users.id"),
         nullable=True,
     )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )
+
+
+class LeaveEligibilityNote(Base):
+    """Append-only vesting record + Eligibility_Note store (migration 0226).
+
+    One row per (staff, leave_type) onset — the ``UNIQUE(staff_id,
+    leave_type_id)`` constraint enforces "one onset note ever" (R12.4 /
+    R13.1) and underpins notification de-dup. ``rule_set_version`` stamps the
+    rule-set that produced the vesting (R6.6). Service code MUST NEVER UPDATE
+    or DELETE these rows (append-only, R13.4).
+    """
+
+    __tablename__ = "leave_eligibility_notes"
+    __table_args__ = (
+        UniqueConstraint(
+            "staff_id", "leave_type_id",
+            name="uq_leave_eligibility_notes_staff_type",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4,
+    )
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organisations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    staff_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("staff_members.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    leave_type_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("leave_types.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    rule_set_version: Mapped[str] = mapped_column(Text, nullable=False)
+    milestone_key: Mapped[str] = mapped_column(Text, nullable=False)
+    hours_test_met: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    condition_text: Mapped[str] = mapped_column(Text, nullable=False)
+    vested_on: Mapped[date] = mapped_column(Date, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False,
     )

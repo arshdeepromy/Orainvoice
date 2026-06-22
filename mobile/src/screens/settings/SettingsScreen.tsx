@@ -4,6 +4,7 @@ import { useTenant } from '@/contexts/TenantContext'
 import { MobileCard, MobileButton, MobileInput } from '@/components/ui'
 import { ModuleGate } from '@/components/common/ModuleGate'
 import apiClient from '@/api/client'
+import { APP_VERSION } from '@/utils/appVersion'
 
 import { useBiometric } from '@/contexts/BiometricContext'
 
@@ -186,6 +187,19 @@ function SettingsContent() {
         </SettingsSection>
       )}
 
+      {/* About */}
+      <SettingsSection title="About">
+        <div className="flex min-h-[44px] items-center justify-between py-2 text-sm">
+          <span className="text-gray-500 dark:text-gray-400">App Version</span>
+          <span
+            className="font-mono tabular-nums text-gray-900 dark:text-gray-100"
+            data-testid="app-version"
+          >
+            {APP_VERSION}
+          </span>
+        </div>
+      </SettingsSection>
+
       {/* Save result */}
       {saveResult && (
         <div
@@ -209,10 +223,11 @@ function SettingsContent() {
 }
 
 /**
- * Settings screen — profile, organisation, notifications, biometric toggle.
+ * Settings screen — profile, organisation, notifications, biometric toggle,
+ * and an About section surfacing the app semantic version.
  * Restricted to org_admin/global_admin roles.
  *
- * Requirements: 41.1, 41.2, 41.3, 41.4, 4.1, 4.4
+ * Requirements: 41.1, 41.2, 41.3, 41.4, 4.1, 4.4, 19.4
  */
 export default function SettingsScreen() {
   return (

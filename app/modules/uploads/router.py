@@ -146,38 +146,28 @@ def _compress_passport_photo(content: bytes) -> tuple:
     return buf.getvalue(), ".jpg"
 
 
-@router.post("/staff-photos", summary="Upload staff profile (passport-size) photo")
-async def upload_staff_photo(request: Request, file: UploadFile = File(...), db: AsyncSession = Depends(get_db_session)):
-    """Upload a staff passport-size profile photo.
+async def store_staff_photo(
+    db: AsyncSession, org_id: str, content: bytes, filename: str | None,
+) -> dict:
+    """Store a staff passport-size profile photo and return
+    ``{ file_key, file_name, file_size }``.
 
-    Re-uses the encryption + storage pipeline from :func:`_store` but
-    with a tighter compression profile (``_compress_passport_photo``,
-    ≤ 512 px on the long edge, JPEG quality 78). Files land at
-    ``/app/uploads/staff_photos/<org_id>/<uuid>.jpg``.
+    Shared by the authenticated ``/staff-photos`` endpoint and the public
+    onboarding submit so both paths produce an identical
+    ``on_file_photo_url`` file_key (``staff_photos/<org_id>/<uuid>.jpg``)
+    using the same compression + envelope-encryption pipeline.
 
-    Returns ``{ file_key, file_name, file_size }``. The ``file_key``
-    is the value the staff-update endpoint accepts as
-    ``on_file_photo_url`` so the same field name keeps working with
-    its existing kiosk-lookup consumers.
+    Validates size (413) / emptiness (400) / image type (415). Does NOT
+    commit — the caller owns the transaction boundary (the onboarding
+    submit runs inside ``session.begin()``; the upload endpoint commits
+    explicitly).
     """
-    org_id = _get_org_id(request)
-    content = await file.read()
     if len(content) > MAX_FILE_SIZE:
         raise HTTPException(413, "File too large")
     if not content:
         raise HTTPException(400, "Empty file")
-
-    # Always run the passport compressor — staff photos are rendered
-    # exclusively at avatar size so we pay the resize cost on the
-    # write path, not on every read. Falls back to the generic
-    # zlib path on PIL failure (corrupt upload, unsupported format)
-    # so the upload is never lost — same shape as ``_store`` does
-    # for non-image files.
-    ext = Path(file.filename or "photo.jpg").suffix.lower() or ".jpg"
+    ext = Path(filename or "photo.jpg").suffix.lower() or ".jpg"
     if ext not in IMAGE_EXTS:
-        # Non-image upload — refuse rather than store binary garbage
-        # against the staff record (the frontend gates the file picker
-        # to image/* but the backend is the security boundary).
         raise HTTPException(415, "Unsupported file type — image required")
     try:
         processed, ext = _compress_passport_photo(content)
@@ -194,8 +184,27 @@ async def upload_staff_photo(request: Request, file: UploadFile = File(...), db:
     sm = StorageManager(db)
     await sm.enforce_quota(org_id, sz)
     await sm.increment_usage(org_id, sz)
+    return {"file_key": fk, "file_name": filename or "photo.jpg", "file_size": sz}
+
+
+@router.post("/staff-photos", summary="Upload staff profile (passport-size) photo")
+async def upload_staff_photo(request: Request, file: UploadFile = File(...), db: AsyncSession = Depends(get_db_session)):
+    """Upload a staff passport-size profile photo.
+
+    Re-uses the encryption + storage pipeline from :func:`store_staff_photo`
+    (≤ 512 px on the long edge, JPEG quality 78). Files land at
+    ``/app/uploads/staff_photos/<org_id>/<uuid>.jpg``.
+
+    Returns ``{ file_key, file_name, file_size }``. The ``file_key``
+    is the value the staff-update endpoint accepts as
+    ``on_file_photo_url`` so the same field name keeps working with
+    its existing kiosk-lookup consumers.
+    """
+    org_id = _get_org_id(request)
+    content = await file.read()
+    r = await store_staff_photo(db, org_id, content, file.filename)
     await db.commit()
-    return {"file_key": fk, "file_name": file.filename or "photo.jpg", "file_size": sz}
+    return r
 
 @router.get("/{category}/{org_path}/{file_id}", summary="Download file")
 async def download_file(category: str, org_path: str, file_id: str, request: Request):

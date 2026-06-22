@@ -34,7 +34,7 @@ import {
   useState,
   type ReactNode,
 } from 'react'
-import { useParams } from 'react-router-dom'
+import { useParams, useNavigate } from 'react-router-dom'
 import { ModuleGate } from '@/components/common/ModuleGate'
 import { Button, Spinner, AlertBanner, Badge } from '@/components/ui'
 import {
@@ -45,6 +45,7 @@ import {
   updatePayslip,
   voidPayslip,
 } from '@/api/payslips'
+import { listStaffBalances, type LeaveBalance } from '@/api/leave'
 import type {
   AllowanceUnit,
   Payslip,
@@ -180,11 +181,16 @@ interface PayslipDetailInnerProps {
 function PayslipDetailInner({
   payslipId,
   onClose,
-  embedded: _embedded,
+  embedded,
 }: PayslipDetailInnerProps) {
+  const navigate = useNavigate()
   const [data, setData] = useState<PayslipDetailType | null>(null)
   const [loading, setLoading] = useState<boolean>(true)
   const [loadError, setLoadError] = useState<string | null>(null)
+
+  // Annual-leave (and other paid-leave) balances for the staff member —
+  // shown so the admin can see how much leave has accrued so far.
+  const [leaveBalances, setLeaveBalances] = useState<LeaveBalance[]>([])
 
   // Editable hours / rates (only meaningful when status='draft')
   const [form, setForm] = useState<PayslipUpdatePayload>({})
@@ -229,6 +235,22 @@ function PayslipDetailInner({
     })()
     return () => controller.abort()
   }, [payslipId, refreshTick])
+
+  // ── Fetch leave balances for the staff member ──
+  const staffIdForLeave = data?.staff_id
+  useEffect(() => {
+    if (!staffIdForLeave) return
+    const controller = new AbortController()
+    ;(async () => {
+      try {
+        const res = await listStaffBalances(staffIdForLeave, controller.signal)
+        if (!controller.signal.aborted) setLeaveBalances(res.items ?? [])
+      } catch {
+        /* non-fatal — leave section just stays empty */
+      }
+    })()
+    return () => controller.abort()
+  }, [staffIdForLeave])
 
   const status: PayslipStatus | string = data?.status ?? 'draft'
   const isDraft = status === 'draft'
@@ -279,6 +301,15 @@ function PayslipDetailInner({
 
     const gross = wages + allowanceTotal + leaveTotal
     const net = gross - employeeDeductionTotal + reimbursementTotal
+    // Total remitted to Inland Revenue: PAYE income tax + ACC earner levy +
+    // student loan + KiwiSaver (employee + employer) + child support.
+    const irdKinds = [
+      'paye', 'acc_levy', 'student_loan',
+      'kiwisaver_employee', 'kiwisaver_employer', 'child_support',
+    ]
+    const irdRemittance = deductions
+      .filter((d) => irdKinds.includes(d?.kind ?? ''))
+      .reduce((acc, d) => acc + num(d?.amount), 0)
     return {
       gross,
       net,
@@ -286,6 +317,7 @@ function PayslipDetailInner({
       reimbursementTotal,
       employeeDeductionTotal,
       wages,
+      irdRemittance,
     }
   }, [
     allowances,
@@ -317,6 +349,14 @@ function PayslipDetailInner({
     [],
   )
 
+  // ── Navigate back / close ──
+  // In a drawer (embedded) close it; as a standalone route go back to the
+  // previous page (the Payroll console / Pay Runs list).
+  const goBack = useCallback(() => {
+    if (onClose) onClose()
+    else navigate(-1)
+  }, [onClose, navigate])
+
   // ── Save (draft only) ──
   const handleSave = useCallback(async () => {
     if (!isDraft) return
@@ -324,13 +364,13 @@ function PayslipDetailInner({
     setSaveError(null)
     try {
       await updatePayslip(payslipId, form)
-      setRefreshTick((t) => t + 1)
+      // Save then return to where the user came from.
+      goBack()
     } catch (err) {
       setSaveError(readErrorMessage(err))
-    } finally {
       setSaving(false)
     }
-  }, [isDraft, payslipId, form])
+  }, [isDraft, payslipId, form, goBack])
 
   // ── Finalise ──
   const handleFinalise = useCallback(async () => {
@@ -422,6 +462,19 @@ function PayslipDetailInner({
         data-testid="payslip-header"
       >
         <div>
+          {!embedded && (
+            <button
+              type="button"
+              onClick={goBack}
+              className="mb-2 inline-flex items-center gap-1 text-sm font-medium text-muted hover:text-text transition-colors"
+              data-testid="payslip-back-button"
+            >
+              <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" />
+              </svg>
+              Back
+            </button>
+          )}
           <h1 className="text-xl font-semibold text-text">
             {data.staff_name ?? 'Payslip'}
           </h1>
@@ -445,7 +498,7 @@ function PayslipDetailInner({
             loading={saving}
             data-testid="payslip-save-button"
           >
-            Save
+            Save &amp; Close
           </Button>
           <Button
             variant="ghost"
@@ -664,6 +717,56 @@ function PayslipDetailInner({
         )}
       </Section>
 
+      {/* Leave accrued (read-only — current balances) */}
+      <Section title="Leave accrued (to date)" testId="payslip-leave-accrued-section">
+        {leaveBalances.length === 0 ? (
+          <EmptyHint>No leave balances recorded for this employee.</EmptyHint>
+        ) : (
+          <table className="min-w-full text-sm">
+            <thead>
+              <tr>
+                <th className="border-b border-border px-3 py-2 text-left text-[10.5px] font-medium uppercase tracking-[0.08em] text-muted-2">
+                  Leave type
+                </th>
+                <th className="mono border-b border-border px-3 py-2 text-right text-[10.5px] font-medium uppercase tracking-[0.08em] text-muted-2">
+                  Accrued
+                </th>
+                <th className="mono border-b border-border px-3 py-2 text-right text-[10.5px] font-medium uppercase tracking-[0.08em] text-muted-2">
+                  Used
+                </th>
+                <th className="mono border-b border-border px-3 py-2 text-right text-[10.5px] font-medium uppercase tracking-[0.08em] text-muted-2">
+                  Available
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {leaveBalances.map((b) => {
+                const fmtHrs = (s: string | null | undefined) => {
+                  const n = Number(s)
+                  return Number.isFinite(n) ? `${n.toFixed(2)} h` : '—'
+                }
+                return (
+                  <tr key={b.id}>
+                    <td className="border-b border-border px-3 py-2 text-text">
+                      {b.leave_type_name ?? b.leave_type_code ?? 'Leave'}
+                    </td>
+                    <td className="mono border-b border-border px-3 py-2 text-right text-text">
+                      {fmtHrs(b.accrued_hours)}
+                    </td>
+                    <td className="mono border-b border-border px-3 py-2 text-right text-muted">
+                      {fmtHrs(b.used_hours)}
+                    </td>
+                    <td className="mono border-b border-border px-3 py-2 text-right font-semibold text-text">
+                      {fmtHrs(b.available_hours)}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        )}
+      </Section>
+
       {/* Computed totals */}
       <Section title="Totals (live)" testId="payslip-totals-section">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -683,6 +786,11 @@ function PayslipDetailInner({
             label="KiwiSaver employer (info)"
             value={formatMoney(computed.employerKiwi)}
             testId="totals-employer-kiwi"
+          />
+          <ReadonlyRow
+            label="Total remitted to IRD"
+            value={formatMoney(computed.irdRemittance)}
+            testId="totals-ird-remittance"
           />
         </div>
         {data?.gross_pay && (

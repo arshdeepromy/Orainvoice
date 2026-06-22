@@ -48,6 +48,14 @@ export interface StaffMember {
   name: string
   position: string | null
   is_active: boolean
+  /**
+   * Working arrangement (`rostered` | `fixed` | `casual` | ...). When
+   * `fixed`, the staff member's recurring hours are defined by
+   * `availability_schedule` and the roster grid renders them read-only —
+   * they can only be changed by editing the staff member's working
+   * arrangement under Staff.
+   */
+  working_arrangement?: string
   location_assignments?: Array<{
     id: string
     staff_id: string

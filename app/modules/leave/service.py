@@ -1065,6 +1065,138 @@ async def list_balances(
 
 
 # ---------------------------------------------------------------------------
+# list_org_balances — org-wide Leave Balances list (Leave Balances & Eligibility)
+# ---------------------------------------------------------------------------
+
+
+async def list_org_balances(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    employment_type: str | None = None,
+    group_by: str | None = None,
+    offset: int = 0,
+    limit: int = 50,
+) -> tuple[list[dict[str, Any]], int]:
+    """Org-wide list of staff with their **vested** leave balances.
+
+    A leave type is included for a staff member only when it is vested — there
+    is an eligibility note for it OR its balance carries a non-zero figure
+    (R1.6). Eligibility is computed independently of employment type; the
+    ``employment_type`` filter and ``group_by`` apply *after* eligibility so
+    engine independence is preserved (R2.4). ``group_by='employment_type'``
+    orders rows by employment type then name (R2.2).
+    """
+    from app.modules.leave.models import LeaveEligibilityNote
+    from app.modules.staff.models import StaffMember
+
+    base = select(StaffMember).where(
+        StaffMember.org_id == org_id,
+        StaffMember.is_active.is_(True),
+    )
+    if employment_type:
+        base = base.where(StaffMember.employment_type == employment_type)
+
+    total = (
+        await db.execute(
+            select(func.count()).select_from(base.subquery())
+        )
+    ).scalar_one()
+
+    if group_by == "employment_type":
+        ordered = base.order_by(StaffMember.employment_type, StaffMember.name)
+    else:
+        ordered = base.order_by(StaffMember.name)
+    ordered = ordered.offset(offset).limit(limit)
+
+    staff_rows = list((await db.execute(ordered)).scalars().all())
+    if not staff_rows:
+        return [], total
+
+    staff_ids = [s.id for s in staff_rows]
+
+    # Balances + their leave types for the page's staff.
+    bal_rows = (
+        await db.execute(
+            select(LeaveBalance, LeaveType)
+            .join(LeaveType, LeaveBalance.leave_type_id == LeaveType.id)
+            .where(
+                LeaveBalance.org_id == org_id,
+                LeaveBalance.staff_id.in_(staff_ids),
+            )
+            .order_by(LeaveType.display_order)
+        )
+    ).all()
+
+    # Eligibility notes + their leave-type codes for the page's staff.
+    note_rows = (
+        await db.execute(
+            select(LeaveEligibilityNote, LeaveType.code)
+            .join(LeaveType, LeaveEligibilityNote.leave_type_id == LeaveType.id)
+            .where(LeaveEligibilityNote.staff_id.in_(staff_ids))
+        )
+    ).all()
+
+    notes_by_staff: dict[uuid.UUID, list[dict[str, Any]]] = {}
+    vested_types_by_staff: dict[uuid.UUID, set[uuid.UUID]] = {}
+    for note, lt_code in note_rows:
+        notes_by_staff.setdefault(note.staff_id, []).append(
+            {
+                "leave_type_id": note.leave_type_id,
+                "leave_type_code": lt_code,
+                "rule_set_version": note.rule_set_version,
+                "milestone_key": note.milestone_key,
+                "hours_test_met": note.hours_test_met,
+                "condition_text": note.condition_text,
+                "vested_on": note.vested_on,
+            }
+        )
+        vested_types_by_staff.setdefault(note.staff_id, set()).add(note.leave_type_id)
+
+    balances_by_staff: dict[uuid.UUID, list[dict[str, Any]]] = {}
+    for balance, leave_type in bal_rows:
+        accrued = Decimal(balance.accrued_hours)
+        used = Decimal(balance.used_hours)
+        pending = Decimal(balance.pending_hours)
+        has_note = balance.leave_type_id in vested_types_by_staff.get(
+            balance.staff_id, set()
+        )
+        non_zero = accrued != 0 or used != 0 or pending != 0
+        if not (has_note or non_zero):
+            continue  # not vested — omit (R1.6)
+        balances_by_staff.setdefault(balance.staff_id, []).append(
+            {
+                "id": balance.id,
+                "leave_type_id": balance.leave_type_id,
+                "leave_type_code": leave_type.code,
+                "leave_type_name": leave_type.name,
+                "accrued_hours": accrued,
+                "used_hours": used,
+                "pending_hours": pending,
+                "available_hours": accrued - used - pending,
+                "anniversary_date": balance.anniversary_date,
+                "last_accrual_at": balance.last_accrual_at,
+                "updated_at": balance.updated_at,
+            }
+        )
+
+    items: list[dict[str, Any]] = []
+    for staff in staff_rows:
+        items.append(
+            {
+                "staff_id": staff.id,
+                "staff_name": staff.name,
+                "employment_type": staff.employment_type,
+                "holiday_pay_method": getattr(staff, "holiday_pay_method", "accrued"),
+                "balances": balances_by_staff.get(staff.id, []),
+                "eligibility_notes": notes_by_staff.get(staff.id, []),
+            }
+        )
+
+    return items, total
+
+
+# ---------------------------------------------------------------------------
 # list_ledger
 # ---------------------------------------------------------------------------
 
@@ -1286,3 +1418,163 @@ async def list_requests(
         )
 
     return items, total
+
+
+async def mark_day_leave(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    staff_id: uuid.UUID,
+    leave_type_id: uuid.UUID,
+    on_date: date,
+    requested_by_user_id: uuid.UUID,
+    request: "Request",
+    publish_to_open_shifts: bool = True,
+) -> dict:
+    """Admin action: mark a staff member on leave for a single day and
+    (optionally) publish their displaced shift(s) to Open Shifts.
+
+    Performed in the request transaction:
+      1. Find the staff's work shifts on ``on_date`` (``entry_type != 'leave'``,
+         not cancelled).
+      2. Submit + auto-approve a single-day ``LeaveRequest`` for the chosen
+         leave type (hours = the displaced shift hours, else the staff's
+         standard daily hours) — reusing :func:`submit_request` /
+         :func:`approve_request` so balances, the ledger, and notifications
+         stay consistent. Approval is what makes the leave appear on the grid
+         overlay (which reads approved requests).
+      3. For each displaced work shift, open a ``ShiftCoverRequest`` (requester
+         = the on-leave staff) so the shift appears in Open Shifts — skipping
+         any shift that already has an open cover request.
+
+    Returns a summary dict. Raises :class:`LeaveServiceError` on validation
+    failures (the router maps these to HTTP 422).
+    """
+    from datetime import datetime, time as _time, timedelta
+
+    from app.modules.leave.schemas import LeaveRequestCreate
+    from app.modules.scheduling_v2.models import ScheduleEntry
+    from app.modules.time_clock import cover as cover_service
+    from app.modules.time_clock.models import ShiftCoverRequest
+
+    staff = await db.get(StaffMember, staff_id)
+    if staff is None or staff.org_id != org_id:
+        raise LeaveServiceError("staff_not_found")
+
+    day_start = datetime.combine(on_date, _time.min, tzinfo=timezone.utc)
+    day_end = datetime.combine(
+        on_date + timedelta(days=1), _time.min, tzinfo=timezone.utc
+    )
+
+    # 1. Displaced work shifts on that date (capture BEFORE approval so the
+    #    new leave schedule row approve() may insert is never picked up here).
+    displaced_res = await db.execute(
+        select(ScheduleEntry).where(
+            ScheduleEntry.org_id == org_id,
+            ScheduleEntry.staff_id == staff_id,
+            ScheduleEntry.start_time >= day_start,
+            ScheduleEntry.start_time < day_end,
+            ScheduleEntry.entry_type != "leave",
+            ScheduleEntry.status != "cancelled",
+        )
+    )
+    displaced = list(displaced_res.scalars().all())
+
+    total_minutes = sum(
+        int((e.end_time - e.start_time).total_seconds() // 60)
+        for e in displaced
+        if e.end_time is not None and e.start_time is not None
+    )
+    if total_minutes > 0:
+        hours = Decimal(str(round(total_minutes / 60, 2)))
+    else:
+        hours = _std_daily_hours(staff)
+
+    # 2. Submit + auto-approve the single-day leave request.
+    #
+    # ``submit_request`` requires a LeaveBalance row to exist for the
+    # (staff, leave_type) pair (it raises ``leave_balance_not_found``
+    # otherwise) — even for non-accruing types. Ensure a zero-balance row
+    # exists so an admin can mark leave without a prior accrual run. This is
+    # benign: non-accruing types (unpaid / event_based) never decrement it,
+    # and accruing types (annual / sick) still correctly enforce sufficient
+    # balance via ``submit_request``.
+    balance = (
+        await db.execute(
+            select(LeaveBalance).where(
+                LeaveBalance.staff_id == staff_id,
+                LeaveBalance.leave_type_id == leave_type_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if balance is None:
+        # Validate the leave type belongs to the org before creating a row.
+        leave_type = await db.get(LeaveType, leave_type_id)
+        if leave_type is None or leave_type.org_id != org_id:
+            raise LeaveServiceError("leave_type_not_found")
+        db.add(
+            LeaveBalance(
+                org_id=org_id,
+                staff_id=staff_id,
+                leave_type_id=leave_type_id,
+                accrued_hours=Decimal("0"),
+                used_hours=Decimal("0"),
+                pending_hours=Decimal("0"),
+            )
+        )
+        await db.flush()
+
+    payload = LeaveRequestCreate(
+        leave_type_id=leave_type_id,
+        start_date=on_date,
+        end_date=on_date,
+        hours_requested=hours,
+    )
+    leave_request = await submit_request(
+        db,
+        org_id=org_id,
+        staff_id=staff_id,
+        payload=payload,
+        requested_by_user_id=requested_by_user_id,
+    )
+    leave_request = await approve_request(
+        db,
+        org_id=org_id,
+        request_id=leave_request.id,
+        decided_by_user_id=requested_by_user_id,
+        request=request,
+    )
+
+    # 3. Publish each displaced shift to Open Shifts (best-effort per shift).
+    open_shift_ids: list[uuid.UUID] = []
+    if publish_to_open_shifts and displaced:
+        for entry in displaced:
+            already_open = await db.execute(
+                select(ShiftCoverRequest.id).where(
+                    ShiftCoverRequest.org_id == org_id,
+                    ShiftCoverRequest.schedule_entry_id == entry.id,
+                    ShiftCoverRequest.status == "open",
+                )
+            )
+            if already_open.first() is not None:
+                continue
+            try:
+                cover = await cover_service.create_cover_request(
+                    db,
+                    org_id=org_id,
+                    schedule_entry_id=entry.id,
+                    requester_staff_id=staff_id,
+                    user_id=requested_by_user_id,
+                )
+                open_shift_ids.append(cover.id)
+            except cover_service.ShiftCoverServiceError:
+                # A single shift failing to open must not abort the
+                # already-approved leave — skip and continue.
+                continue
+
+    return {
+        "leave_request_id": leave_request.id,
+        "status": leave_request.status,
+        "displaced_shift_count": len(displaced),
+        "open_shift_ids": open_shift_ids,
+    }

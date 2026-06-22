@@ -25,6 +25,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import axios from 'axios'
 
 import apiClient from '@/api/client'
+import { useAuth } from '@/contexts/AuthContext'
 
 /* ─────────────────────────────────────────────── Types ── */
 
@@ -49,6 +50,19 @@ interface ShiftCoverListResponse {
   items: ShiftCover[]
   total: number
 }
+
+interface EligibleStaffItem {
+  id: string
+  name: string
+  position: string | null
+}
+
+interface EligibleStaffListResponse {
+  items: EligibleStaffItem[]
+  total: number
+}
+
+const ASSIGN_ROLES = ['org_admin', 'branch_admin', 'location_manager', 'global_admin']
 
 const FILTER_OPTIONS: { value: CoverStatus | 'all'; label: string }[] = [
   { value: 'all', label: 'All' },
@@ -139,6 +153,14 @@ export default function ShiftCoverPage() {
   const [actionError, setActionError] = useState<{ id: string; message: string } | null>(null)
   const [claimedIds, setClaimedIds] = useState<Set<string>>(new Set())
 
+  // Admin "Assign to staff" state.
+  const { user } = useAuth()
+  const canAssign = ASSIGN_ROLES.includes(user?.role ?? '')
+  const [assignOpenId, setAssignOpenId] = useState<string | null>(null)
+  const [eligible, setEligible] = useState<Record<string, EligibleStaffItem[]>>({})
+  const [eligibleLoadingId, setEligibleLoadingId] = useState<string | null>(null)
+  const [selectedStaff, setSelectedStaff] = useState<Record<string, string>>({})
+
   const refresh = useCallback(() => setRefreshKey((k) => k + 1), [])
 
   const setRowBusy = useCallback((id: string, busy: boolean) => {
@@ -221,6 +243,74 @@ export default function ShiftCoverPage() {
       }
     },
     [refresh, setRowBusy],
+  )
+
+  /* Admin: open the assign picker for a cover and lazy-load eligible staff. */
+  const openAssign = useCallback(
+    async (coverId: string) => {
+      setActionError(null)
+      setAssignOpenId(coverId)
+      if (eligible[coverId]) return
+      setEligibleLoadingId(coverId)
+      try {
+        const res = await apiClient.get<EligibleStaffListResponse>(
+          `/api/v2/shift-cover/${coverId}/eligible`,
+        )
+        setEligible((prev) => ({ ...prev, [coverId]: res.data?.items ?? [] }))
+      } catch (err) {
+        if (!isAbortError(err)) {
+          setActionError({
+            id: coverId,
+            message: readErrorDetail(err) ?? 'Could not load eligible staff.',
+          })
+        }
+      } finally {
+        setEligibleLoadingId(null)
+      }
+    },
+    [eligible],
+  )
+
+  /* Admin: assign the open cover to the chosen staff member. */
+  const handleAssign = useCallback(
+    async (coverId: string) => {
+      const staffId = selectedStaff[coverId]
+      if (!staffId) {
+        setActionError({ id: coverId, message: 'Choose a staff member first.' })
+        return
+      }
+      setActionError(null)
+      setRowBusy(coverId, true)
+      try {
+        await apiClient.post(`/api/v2/shift-cover/${coverId}/assign`, {
+          staff_id: staffId,
+        })
+        setAssignOpenId(null)
+        refresh()
+      } catch (err) {
+        if (isAbortError(err)) return
+        const detail = readErrorDetail(err)
+        const status = (err as { response?: { status?: number } })?.response
+          ?.status
+        let message = 'Could not assign this shift. Please try again.'
+        if (status === 409 && detail === 'scheduling_conflict_at_claim') {
+          message =
+            'That staff member now has a conflicting shift. Pick someone else.'
+        } else if (status === 409 && detail === 'invalid_state') {
+          message = 'This shift is no longer open for cover.'
+        } else if (status === 403) {
+          message = "You don't have permission to assign shifts."
+        } else if (detail === 'ineligible_for_cover') {
+          message = 'That staff member is not eligible for this shift.'
+        } else if (detail) {
+          message = detail
+        }
+        setActionError({ id: coverId, message })
+      } finally {
+        setRowBusy(coverId, false)
+      }
+    },
+    [selectedStaff, refresh, setRowBusy],
   )
 
   const openCount = useMemo(
@@ -352,7 +442,7 @@ export default function ShiftCoverPage() {
                   <StatusBadge status={cover.status} />
                 </div>
 
-                <div className="mt-3 flex flex-wrap gap-2">
+                <div className="mt-3 flex flex-wrap items-center gap-2">
                   {cover.status === 'open' && !justClaimed && (
                     <button
                       type="button"
@@ -364,6 +454,72 @@ export default function ShiftCoverPage() {
                       {isBusy ? 'Claiming…' : 'Claim shift'}
                     </button>
                   )}
+
+                  {/* Admin: assign to a staff member with no conflicting shift */}
+                  {cover.status === 'open' && !justClaimed && canAssign && (
+                    assignOpenId === cover.id ? (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <select
+                          value={selectedStaff[cover.id] ?? ''}
+                          onChange={(e) =>
+                            setSelectedStaff((prev) => ({
+                              ...prev,
+                              [cover.id]: e.target.value,
+                            }))
+                          }
+                          disabled={isBusy || eligibleLoadingId === cover.id}
+                          className="min-h-[44px] rounded-ctl border border-border bg-canvas px-3 text-sm text-text focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20"
+                          data-testid={`cover-assign-select-${cover.id}`}
+                        >
+                          <option value="">
+                            {eligibleLoadingId === cover.id
+                              ? 'Loading…'
+                              : 'Select staff…'}
+                          </option>
+                          {(eligible[cover.id] ?? []).map((s) => (
+                            <option key={s.id} value={s.id}>
+                              {s.name}
+                              {s.position ? ` — ${s.position}` : ''}
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          onClick={() => void handleAssign(cover.id)}
+                          disabled={isBusy || !selectedStaff[cover.id]}
+                          className="min-h-[44px] rounded-ctl bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-press disabled:cursor-not-allowed disabled:opacity-50"
+                          data-testid={`cover-assign-confirm-${cover.id}`}
+                        >
+                          {isBusy ? 'Assigning…' : 'Assign'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setAssignOpenId(null)}
+                          disabled={isBusy}
+                          className="min-h-[44px] rounded-ctl border border-border bg-card px-3 py-2 text-sm font-medium text-text hover:bg-canvas disabled:opacity-50"
+                        >
+                          Cancel
+                        </button>
+                        {eligibleLoadingId !== cover.id &&
+                          (eligible[cover.id]?.length ?? 0) === 0 && (
+                            <span className="text-xs text-muted">
+                              No staff are free for this time.
+                            </span>
+                          )}
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => void openAssign(cover.id)}
+                        disabled={isBusy}
+                        className="min-h-[44px] rounded-ctl border border-border bg-card px-4 py-2 text-sm font-medium text-text hover:bg-canvas disabled:cursor-not-allowed disabled:opacity-50"
+                        data-testid={`cover-assign-${cover.id}`}
+                      >
+                        Assign to staff
+                      </button>
+                    )
+                  )}
+
                   {justClaimed && (
                     <span
                       className="text-sm font-medium text-ok"

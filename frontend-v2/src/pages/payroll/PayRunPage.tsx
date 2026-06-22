@@ -33,10 +33,12 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
+import apiClient from '@/api/client'
 import { ModuleGate } from '@/components/common/ModuleGate'
 import {
   Button,
@@ -106,6 +108,17 @@ function formatDateRange(period: PayPeriod | null | undefined): string {
       year: 'numeric',
     })
   return `${fmt(period.start_date)} – ${fmt(period.end_date)}`
+}
+
+/**
+ * Period label that surfaces the pay cycle when known — e.g.
+ * `Weekly · 8 – 14 Jun 2026`. Falls back to the bare date range for legacy
+ * periods with no `pay_cycle_name` (per-staff-pay-cycle feature).
+ */
+function formatPeriodLabel(period: PayPeriod | null | undefined): string {
+  if (!period) return '—'
+  const range = formatDateRange(period)
+  return period.pay_cycle_name ? `${period.pay_cycle_name} · ${range}` : range
 }
 
 function formatShortDate(iso: string | null | undefined): string {
@@ -525,6 +538,8 @@ const STATUS_FILTERS: { id: StatusFilter; label: string }[] = [
 
 function PayRunPageInner() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const periodParam = searchParams.get('period')
 
   // Period state
   const [periods, setPeriods] = useState<PayPeriod[]>([])
@@ -542,9 +557,24 @@ function PayRunPageInner() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [page, setPage] = useState<number>(1)
 
+  // Cycle filter — for multi-cycle orgs the loaded periods can span several
+  // distinct pay cycles; this lets an admin focus the navigator/selector on a
+  // single cycle. 'all' (the default) shows every cycle's periods.
+  const [cycleFilter, setCycleFilter] = useState<string>('all')
+  // Tracks whether we've already seeded the cycle filter from a ?period= deep
+  // link so a later periods re-fetch (e.g. after finalise) doesn't clobber a
+  // filter the admin has since changed by hand.
+  const deepLinkCycleApplied = useRef<boolean>(false)
+
   // Mutations
   const [generating, setGenerating] = useState<boolean>(false)
   const [generateError, setGenerateError] = useState<string | null>(null)
+
+  // Whether this org uses the Staff Timesheets → Pay Runs workflow (signalled
+  // by having a pay cycle configured). When true, draft payslips are created
+  // from locked timesheets in the Timesheets module, so the Payroll console's
+  // own "Generate drafts" button is hidden to avoid a redundant/parallel path.
+  const [usesTimesheets, setUsesTimesheets] = useState<boolean>(false)
 
   const [bulkOpen, setBulkOpen] = useState<boolean>(false)
   const [bulkBusy, setBulkBusy] = useState<boolean>(false)
@@ -564,6 +594,17 @@ function PayRunPageInner() {
   // ── Load all pay periods (open + finalised + paid) ──
   useEffect(() => {
     const controller = new AbortController()
+    // Detect whether the org runs the Timesheets → Pay Runs workflow.
+    apiClient
+      .get<{ items: unknown[]; total: number }>('/api/v2/pay-cycles/', { signal: controller.signal })
+      .then((res) => setUsesTimesheets((res.data?.items?.length ?? 0) > 0))
+      .catch(() => setUsesTimesheets(false))
+    return () => controller.abort()
+  }, [])
+
+  // ── Load all pay periods (open + finalised + paid) ──
+  useEffect(() => {
+    const controller = new AbortController()
     setPeriodsLoading(true)
     setPeriodsError(null)
     ;(async () => {
@@ -573,8 +614,11 @@ function PayRunPageInner() {
         const items = res.items ?? []
         setPeriods(items)
 
-        // Auto-select the first 'open' period if no selection yet.
+        // Auto-select: a ?period= deep link wins (e.g. arriving from the
+        // Timesheets → Pay Runs "Review in Payroll" link), else keep the
+        // current selection, else the first 'open' period.
         setSelectedPeriodId((prev) => {
+          if (periodParam && items.some((p) => p.id === periodParam)) return periodParam
           if (prev && items.some((p) => p.id === prev)) return prev
           const firstOpen = items.find((p) => p.status === 'open')
           return firstOpen?.id ?? items[0]?.id ?? null
@@ -587,7 +631,7 @@ function PayRunPageInner() {
       }
     })()
     return () => controller.abort()
-  }, [])
+  }, [periodParam])
 
   // ── Load payslips for the selected period ──
   useEffect(() => {
@@ -616,14 +660,60 @@ function PayRunPageInner() {
     return () => controller.abort()
   }, [selectedPeriodId, refreshTick])
 
+  // Distinct pay-cycle names across the loaded periods. The cycle filter is
+  // only useful (and only shown) when the periods span more than one cycle.
+  const cycleNames = useMemo<string[]>(() => {
+    const set = new Set<string>()
+    for (const p of periods ?? []) {
+      if (p?.pay_cycle_name) set.add(p.pay_cycle_name)
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b))
+  }, [periods])
+
+  const showCycleFilter = cycleNames.length > 1
+
+  // Seed the cycle filter from a ?period= deep link once: if the deep-linked
+  // period belongs to a cycle, default the filter to that cycle so the period
+  // stays visible/selectable in the navigator (rather than letting the filter
+  // hide it).
+  useEffect(() => {
+    if (deepLinkCycleApplied.current) return
+    if (!periodParam) return
+    const target = (periods ?? []).find((p) => p.id === periodParam)
+    if (!target) return
+    if (target.pay_cycle_name) setCycleFilter(target.pay_cycle_name)
+    deepLinkCycleApplied.current = true
+  }, [periodParam, periods])
+
+  // Periods visible after applying the cycle filter (the navigator + selector
+  // operate on this set). 'all' passes everything through.
+  const visiblePeriods = useMemo<PayPeriod[]>(
+    () =>
+      cycleFilter === 'all'
+        ? (periods ?? [])
+        : (periods ?? []).filter(
+            (p) => (p?.pay_cycle_name ?? null) === cycleFilter,
+          ),
+    [periods, cycleFilter],
+  )
+
   // Periods sorted newest-first for the navigator + selector.
   const sortedPeriods = useMemo<PayPeriod[]>(
     () =>
-      [...(periods ?? [])].sort((a, b) =>
+      [...visiblePeriods].sort((a, b) =>
         b.start_date.localeCompare(a.start_date),
       ),
-    [periods],
+    [visiblePeriods],
   )
+
+  // If an active cycle filter hides the currently selected period, fall back
+  // to the first visible period so the navigator never points at a hidden row.
+  useEffect(() => {
+    if (cycleFilter === 'all') return
+    if (!selectedPeriodId) return
+    if (visiblePeriods.some((p) => p.id === selectedPeriodId)) return
+    setSelectedPeriodId(visiblePeriods[0]?.id ?? null)
+  }, [cycleFilter, visiblePeriods, selectedPeriodId])
 
   const selectedPeriod = useMemo<PayPeriod | null>(
     () => (periods ?? []).find((p) => p.id === selectedPeriodId) ?? null,
@@ -848,17 +938,28 @@ function PayRunPageInner() {
           >
             Pay run history
           </Button>
-          <Button
-            variant="primary"
-            size="sm"
-            onClick={handleGenerate}
-            loading={generating}
-            disabled={!selectedPeriodId || periodIsLocked || generating}
-            data-testid="generate-drafts-button"
-          >
-            <PlusIcon className="h-4 w-4" />
-            Generate drafts
-          </Button>
+          {usesTimesheets ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => navigate('/timesheets?tab=pay-runs')}
+              title="This org creates payslip drafts from locked timesheets in Staff Timesheets → Pay Runs"
+            >
+              Create in Pay Runs
+            </Button>
+          ) : (
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={handleGenerate}
+              loading={generating}
+              disabled={!selectedPeriodId || periodIsLocked || generating}
+              data-testid="generate-drafts-button"
+            >
+              <PlusIcon className="h-4 w-4" />
+              Generate drafts
+            </Button>
+          )}
         </div>
       </div>
 
@@ -887,7 +988,7 @@ function PayRunPageInner() {
                 : 'No period'}
             </div>
             <div className="mono text-[13px] font-semibold text-text">
-              {selectedPeriod ? formatDateRange(selectedPeriod) : '—'}
+              {selectedPeriod ? formatPeriodLabel(selectedPeriod) : '—'}
             </div>
           </div>
           <button
@@ -918,10 +1019,41 @@ function PayRunPageInner() {
           )}
           {sortedPeriods.map((p) => (
             <option key={p.id} value={p.id}>
-              {formatDateRange(p)} · {periodStatusLabel(p.status)}
+              {formatPeriodLabel(p)} · {periodStatusLabel(p.status)}
             </option>
           ))}
         </select>
+
+        {/* Cycle filter — only when the loaded periods span >1 pay cycle. */}
+        {showCycleFilter && (
+          <div
+            className="inline-flex gap-0.5 rounded-ctl border border-border bg-card p-[3px]"
+            role="group"
+            aria-label="Filter by pay cycle"
+            data-testid="cycle-filter"
+          >
+            {[
+              { id: 'all', label: 'All cycles' },
+              ...cycleNames.map((n) => ({ id: n, label: n })),
+            ].map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                aria-pressed={cycleFilter === c.id}
+                onClick={() => setCycleFilter(c.id)}
+                className={cx(
+                  'rounded-[7px] px-[13px] py-1.5 text-[12.5px] font-medium transition-colors',
+                  cycleFilter === c.id
+                    ? 'bg-accent-soft text-accent'
+                    : 'text-muted hover:text-text',
+                )}
+                data-testid={`cycle-filter-option-${c.id}`}
+              >
+                {c.label}
+              </button>
+            ))}
+          </div>
+        )}
 
         <Stepper activeIdx={activeIdx} />
       </div>
@@ -1042,21 +1174,33 @@ function PayRunPageInner() {
               : 'Select a pay period to begin'}
           </p>
           <p className="mt-1 text-[13px] text-muted-2">
-            {selectedPeriodId
-              ? 'Click “Generate drafts” to create one payslip per active staff member.'
-              : 'Pay periods are created under Settings → People → Pay periods.'}
+            {!selectedPeriodId
+              ? 'Pay periods are created under Settings → People → Pay periods.'
+              : usesTimesheets
+                ? 'This org creates payslip drafts from locked timesheets. Go to Staff Timesheets → Pay Runs to generate them.'
+                : 'Click “Generate drafts” to create one payslip per active staff member.'}
           </p>
           {selectedPeriodId && !periodIsLocked && (
             <div className="mt-4 flex justify-center">
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={handleGenerate}
-                loading={generating}
-              >
-                <PlusIcon className="h-4 w-4" />
-                Generate drafts
-              </Button>
+              {usesTimesheets ? (
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={() => navigate('/timesheets?tab=pay-runs')}
+                >
+                  Go to Pay Runs
+                </Button>
+              ) : (
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={handleGenerate}
+                  loading={generating}
+                >
+                  <PlusIcon className="h-4 w-4" />
+                  Generate drafts
+                </Button>
+              )}
             </div>
           )}
         </div>

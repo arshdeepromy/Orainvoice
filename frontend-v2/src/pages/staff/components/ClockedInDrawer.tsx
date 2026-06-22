@@ -225,13 +225,20 @@ export default function ClockedInDrawer({
       })?.response?.data?.detail
       const detailStr =
         typeof detail === 'string' ? detail : detail?.detail ?? ''
-      if (status === 409 && detailStr === 'already_clocked_out') {
+      if (status === 403 && detailStr === 'forbidden_scope') {
+        setSubmitError(
+          "This staff member is outside your branch scope — you can't clock them out.",
+        )
+      } else if (status === 409 && detailStr === 'already_clocked_out') {
         setSubmitError('This entry was already clocked out by someone else.')
       } else if (status === 409 && detailStr === 'timesheet_locked') {
         setSubmitError(
           "Can't close — this shift's week is already approved. Reopen the timesheet first.",
         )
-      } else if (status === 404) {
+      } else if (
+        status === 404 ||
+        detailStr === 'time_clock_entry_not_found'
+      ) {
         setSubmitError('That entry could not be found. It may have been deleted.')
       } else {
         setSubmitError("Couldn't clock the user out. Please try again.")

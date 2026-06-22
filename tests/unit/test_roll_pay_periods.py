@@ -4,8 +4,9 @@ Covers task C1 from ``.kiro/specs/staff-management-p4`` plus its
 verify list:
 
   1. Fresh org with no history → 4 periods created.
-  2. Same call again → 0 created (idempotency via ON CONFLICT DO NOTHING
-     against ``uq_pay_periods_org_start``).
+  2. Same call again → 0 created (idempotency via the cycle-scoped
+     existence-check SELECT against ``uq_pay_periods_org_cycle_start``;
+     roll-task periods carry a NULL ``pay_cycle_id``).
   3. Cadence change is non-retroactive (G14) — the next tick rolls
      forward from the existing watermark using the new cadence rules
      without rewriting any existing period.
@@ -18,9 +19,10 @@ verify list:
 
 The function is exercised against an in-memory fake session that
 records every ``INSERT`` it sees, so we can assert idempotency
-without a real Postgres ON CONFLICT engine — the fake matches the
-production semantics by tracking ``(org_id, start_date)`` keys and
-returning ``None`` from the RETURNING column on conflict.
+without a real Postgres engine — the fake matches the production
+semantics by tracking ``(org_id, start_date)`` keys and returning the
+existing row id from the cycle-scoped existence-check SELECT when a
+NULL-cycle period already covers that key.
 
 **Validates: Requirements R1.5, R1.6 (G5 + G14) — Staff Management
 Phase 4 task C1.**
@@ -53,8 +55,15 @@ class _FakeSession:
       2. A ``_set_rls_org_id`` call that issues a ``SET`` statement on
          the per-org session.
       3. A SELECT for ``MAX(pay_periods.end_date)`` for the org.
-      4. An INSERT ... ON CONFLICT (org_id, start_date) DO NOTHING
-         RETURNING id, repeated four times.
+      4. A cycle-scoped existence-check SELECT
+         (``SELECT id FROM pay_periods WHERE org_id=:org_id AND
+         pay_cycle_id IS NULL AND start_date=:start``) followed by a
+         plain INSERT when the row is absent, repeated four times.
+         (Decision 5 / 0225 migration: the old
+         ``ON CONFLICT (org_id, start_date) DO NOTHING`` is replaced by
+         this explicit lookup because the unique key is now
+         ``(org_id, pay_cycle_id, start_date)`` and roll-task periods
+         carry a NULL ``pay_cycle_id``.)
       5. ``write_audit_log`` issues an INSERT into ``audit_log`` for
          every successful INSERT.
 
@@ -117,15 +126,28 @@ class _FakeSession:
             latest = max(ends) if ends else None
             return _Result(scalar=latest)
 
-        # 4. INSERT INTO pay_periods ... ON CONFLICT DO NOTHING RETURNING id
+        # 4a. Cycle-scoped existence check (Decision 5 / 0225). Returns the
+        # existing row id when a NULL-cycle period already covers this
+        # (org_id, start_date), else None — driving the idempotency skip.
+        if "SELECT id FROM pay_periods" in sql:
+            assert params is not None
+            org_id = str(params["org_id"])
+            start = params["start"]
+            for row in self.pay_periods:
+                if str(row["org_id"]) == org_id and row["start_date"] == start:
+                    return _Result(scalar=row["id"])
+            return _Result(scalar=None)
+
+        # 4b. INSERT INTO pay_periods (plain INSERT — the task only reaches
+        # here after the existence check above found no row).
         if "INSERT INTO pay_periods" in sql:
             assert params is not None
             org_id = str(params["org_id"])
             start = params["start"]
-            # Idempotency: skip when (org_id, start_date) already exists.
+            # Defensive dedupe (the production existence check already guards).
             for row in self.pay_periods:
                 if str(row["org_id"]) == org_id and row["start_date"] == start:
-                    return _Result(scalar=None)  # ON CONFLICT path
+                    return _Result(scalar=None)
             new_id = params["id"]
             self.pay_periods.append({
                 "id": new_id,
@@ -245,7 +267,7 @@ async def test_fresh_org_no_history_creates_four_periods():
 async def test_idempotent_second_run_creates_zero():
     """Idempotency — running the task twice on the same org with no
     cadence change creates zero new periods on the second run, with
-    every INSERT hitting the ``ON CONFLICT DO NOTHING`` branch.
+    every iteration hitting the cycle-scoped existence-check skip.
     """
     from app.tasks.scheduled import roll_pay_periods_task
 
