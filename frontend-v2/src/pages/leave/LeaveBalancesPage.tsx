@@ -14,7 +14,8 @@
  * AbortController cleanup).
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
+import type { ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import {
@@ -24,7 +25,7 @@ import {
   type StaffLeaveContext,
 } from '@/api/leave'
 import { useAuth } from '@/contexts/AuthContext'
-import { AlertBanner, Badge, Button, Card, Modal, Spinner } from '@/components/ui'
+import { AlertBanner, Badge, Button, Card, Spinner } from '@/components/ui'
 import LeaveTab from '@/pages/staff/leave/LeaveTab'
 import type { Staff } from '@/pages/staff/leave/types'
 
@@ -45,6 +46,32 @@ function availableHours(b: { accrued_hours: string; used_hours: string; pending_
   return a - u - p
 }
 
+/**
+ * ExpandRow — a full-width table row whose content smoothly expands from
+ * collapsed (0fr) to open (1fr) using a CSS grid-rows transition. Mounts
+ * collapsed, then opens on the next animation frame so the transition runs.
+ */
+function ExpandRow({ colSpan, children }: { colSpan: number; children: ReactNode }) {
+  const [open, setOpen] = useState(false)
+  useEffect(() => {
+    const id = requestAnimationFrame(() => setOpen(true))
+    return () => cancelAnimationFrame(id)
+  }, [])
+  return (
+    <tr>
+      <td colSpan={colSpan} className="border-b border-border bg-canvas/40 p-0">
+        <div
+          className={`grid transition-[grid-template-rows] duration-300 ease-out ${
+            open ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'
+          }`}
+        >
+          <div className="overflow-hidden">{children}</div>
+        </div>
+      </td>
+    </tr>
+  )
+}
+
 export default function LeaveBalancesPage() {
   const navigate = useNavigate()
   const { isOrgAdmin } = useAuth()
@@ -59,9 +86,10 @@ export default function LeaveBalancesPage() {
   const [offset, setOffset] = useState<number>(0)
   const [reloadKey, setReloadKey] = useState<number>(0)
 
-  // Drill-in state.
-  const [drillStaff, setDrillStaff] = useState<Staff | null>(null)
-  const [drillLoading, setDrillLoading] = useState<boolean>(false)
+  // Inline drill-in state (one row open at a time; staff records cached).
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [loadingId, setLoadingId] = useState<string | null>(null)
+  const [ctxById, setCtxById] = useState<Record<string, Staff>>({})
 
   useEffect(() => {
     const controller = new AbortController()
@@ -89,26 +117,38 @@ export default function LeaveBalancesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [employmentType, groupBy, offset, reloadKey])
 
-  const openDrillIn = useCallback(async (staffId: string) => {
-    setDrillLoading(true)
-    try {
-      const ctx: StaffLeaveContext = await getStaffLeaveContext(staffId)
-      const staff: Staff = {
-        id: ctx.id,
-        name: ctx.name,
-        employment_type: ctx.employment_type,
-        standard_hours_per_week: ctx.standard_hours_per_week,
-        shift_start: ctx.shift_start,
-        shift_end: ctx.shift_end,
-        availability_schedule: ctx.availability_schedule,
+  const toggleDrillIn = useCallback(
+    async (staffId: string) => {
+      // Collapse if this row is already open.
+      if (expandedId === staffId) {
+        setExpandedId(null)
+        return
       }
-      setDrillStaff(staff)
-    } catch {
-      setError('Could not open that staff member.')
-    } finally {
-      setDrillLoading(false)
-    }
-  }, [])
+      // Open immediately; fetch the full record only if not cached.
+      setExpandedId(staffId)
+      if (ctxById[staffId]) return
+      setLoadingId(staffId)
+      try {
+        const ctx: StaffLeaveContext = await getStaffLeaveContext(staffId)
+        const staff: Staff = {
+          id: ctx.id,
+          name: ctx.name,
+          employment_type: ctx.employment_type,
+          standard_hours_per_week: ctx.standard_hours_per_week,
+          shift_start: ctx.shift_start,
+          shift_end: ctx.shift_end,
+          availability_schedule: ctx.availability_schedule,
+        }
+        setCtxById((prev) => ({ ...prev, [staffId]: staff }))
+      } catch {
+        setError('Could not open that staff member.')
+        setExpandedId((cur) => (cur === staffId ? null : cur))
+      } finally {
+        setLoadingId((cur) => (cur === staffId ? null : cur))
+      }
+    },
+    [expandedId, ctxById],
+  )
 
   const groupedRows = useMemo(() => items ?? [], [items])
 
@@ -221,45 +261,63 @@ export default function LeaveBalancesPage() {
             </thead>
             <tbody>
               {groupedRows.map((row) => (
-                <tr key={row.staff_id} className="border-b last:border-0 hover:bg-muted/5">
-                  <td className="p-3 font-medium">{row.staff_name}</td>
-                  <td className="p-3 capitalize">
-                    {(row.employment_type ?? '').replace('_', ' ')}
-                  </td>
-                  <td className="p-3">
-                    {row.holiday_pay_method === 'casual_payg' ? (
-                      <Badge variant="warn">8% pay-as-you-go</Badge>
-                    ) : (
-                      <Badge variant="neutral">Accrued</Badge>
-                    )}
-                  </td>
-                  <td className="p-3">
-                    {(row.balances ?? []).length === 0 ? (
-                      <span className="text-muted">—</span>
-                    ) : (
-                      <div className="flex flex-wrap gap-2">
-                        {(row.balances ?? []).map((b) => (
-                          <span
-                            key={b.id}
-                            className="rounded bg-muted/10 px-2 py-0.5 text-xs"
-                            title={b.leave_type_name ?? undefined}
-                          >
-                            {b.leave_type_code}: {availableHours(b).toFixed(1)}h
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </td>
-                  <td className="p-3 text-right">
-                    <Button
-                      variant="ghost"
-                      onClick={() => openDrillIn(row.staff_id)}
-                      disabled={drillLoading}
-                    >
-                      View
-                    </Button>
-                  </td>
-                </tr>
+                <Fragment key={row.staff_id}>
+                  <tr className="border-b last:border-0 hover:bg-muted/5">
+                    <td className="p-3 font-medium">{row.staff_name}</td>
+                    <td className="p-3 capitalize">
+                      {(row.employment_type ?? '').replace('_', ' ')}
+                    </td>
+                    <td className="p-3">
+                      {row.holiday_pay_method === 'casual_payg' ? (
+                        <Badge variant="warn">8% pay-as-you-go</Badge>
+                      ) : (
+                        <Badge variant="neutral">Accrued</Badge>
+                      )}
+                    </td>
+                    <td className="p-3">
+                      {(row.balances ?? []).length === 0 ? (
+                        <span className="text-muted">—</span>
+                      ) : (
+                        <div className="flex flex-wrap gap-2">
+                          {(row.balances ?? []).map((b) => (
+                            <span
+                              key={b.id}
+                              className="rounded bg-muted/10 px-2 py-0.5 text-xs"
+                              title={b.leave_type_name ?? undefined}
+                            >
+                              {b.leave_type_code}: {availableHours(b).toFixed(1)}h
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </td>
+                    <td className="p-3 text-right">
+                      <Button
+                        variant="ghost"
+                        onClick={() => toggleDrillIn(row.staff_id)}
+                        disabled={loadingId === row.staff_id}
+                        aria-expanded={expandedId === row.staff_id}
+                      >
+                        {loadingId === row.staff_id
+                          ? 'Loading…'
+                          : expandedId === row.staff_id
+                            ? 'Hide'
+                            : 'View'}
+                      </Button>
+                    </td>
+                  </tr>
+                  {expandedId === row.staff_id && (
+                    <ExpandRow colSpan={5}>
+                      {ctxById[row.staff_id] ? (
+                        <LeaveTab staff={ctxById[row.staff_id]} canAdjust={isOrgAdmin} />
+                      ) : (
+                        <div className="flex justify-center py-8">
+                          <Spinner />
+                        </div>
+                      )}
+                    </ExpandRow>
+                  )}
+                </Fragment>
               ))}
             </tbody>
           </table>
@@ -288,24 +346,6 @@ export default function LeaveBalancesPage() {
               Next
             </Button>
           </div>
-        </div>
-      )}
-
-      {/* Drill-in */}
-      {drillStaff && (
-        <Modal
-          open
-          onClose={() => setDrillStaff(null)}
-          title={`Leave — ${drillStaff.name ?? ''}`}
-          className="max-w-3xl"
-        >
-          <LeaveTab staff={drillStaff} canAdjust={isOrgAdmin} />
-        </Modal>
-      )}
-
-      {drillLoading && !drillStaff && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/20">
-          <Spinner />
         </div>
       )}
     </div>
