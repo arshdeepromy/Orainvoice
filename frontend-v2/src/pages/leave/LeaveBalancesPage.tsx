@@ -297,6 +297,7 @@ export default function LeaveBalancesPage() {
           open
           onClose={() => setDrillStaff(null)}
           title={`Leave — ${drillStaff.name ?? ''}`}
+          className="max-w-3xl"
         >
           <LeaveTab staff={drillStaff} canAdjust={isOrgAdmin} />
         </Modal>
