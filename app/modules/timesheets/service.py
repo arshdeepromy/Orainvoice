@@ -815,6 +815,8 @@ async def compute_attendance(
 
     by_staff: dict[UUID, list] = {}
     for e in entries:
+        if (e.flags or {}).get("voided"):
+            continue  # soft-voided manual entries don't count
         by_staff.setdefault(e.staff_id, []).append(e)
     if not by_staff:
         return _empty()
@@ -1033,6 +1035,8 @@ async def compute_attendance_detail(
     entries = (
         await db.execute(entry_q.order_by(TimeClockEntry.clock_in_at))
     ).scalars().all()
+    # Voided manual entries are soft-deleted — exclude from the drill-in.
+    entries = [e for e in entries if not (e.flags or {}).get("voided")]
 
     # Resolve branch names.
     branch_id_set = {e.branch_id for e in entries if e.branch_id}
@@ -1104,6 +1108,20 @@ async def compute_attendance_detail(
                 reviewed_count += 1
             else:
                 pending_review_count += 1
+        adj = flags.get("adjustment") if isinstance(flags.get("adjustment"), dict) else None
+        orig = adj.get("original") if isinstance(adj, dict) else None
+        orig_worked = orig.get("worked_minutes") if isinstance(orig, dict) else None
+
+        def _parse_dt(v):
+            if not v:
+                return None
+            try:
+                return datetime.fromisoformat(v)
+            except (ValueError, TypeError):
+                return None
+
+        corrected_in = _parse_dt(adj.get("corrected_clock_in_at")) if isinstance(adj, dict) else None
+        corrected_out = _parse_dt(adj.get("corrected_clock_out_at")) if isinstance(adj, dict) else None
         shifts.append(
             AttendanceShift(
                 id=e.id,
@@ -1123,6 +1141,14 @@ async def compute_attendance_detail(
                 reviewed_at=flags.get("reviewed_at"),
                 flagged_for_review=bool(flags.get("flagged_for_review")),
                 review_reason=flags.get("review_reason"),
+                edited=adj is not None,
+                edit_reason=adj.get("reason") if isinstance(adj, dict) else None,
+                original_worked_hours=_minutes_to_hours(orig_worked) if isinstance(orig_worked, int) else None,
+                corrected_clock_in_at=corrected_in,
+                corrected_clock_out_at=corrected_out,
+                is_manual=bool(flags.get("manual_entry")),
+                is_manual_hours=bool(flags.get("manual_hours")),
+                break_minutes=e.break_minutes or 0,
             )
         )
 
@@ -1164,6 +1190,7 @@ async def compute_attendance_detail(
         staff_id=staff_id,
         staff_name=staff_name,
         position=getattr(staff, "position", None),
+        working_arrangement=getattr(staff, "working_arrangement", None),
         date_from=start_date.isoformat(),
         date_to=end_date.isoformat(),
         worked_hours=_minutes_to_hours(worked),
@@ -1315,3 +1342,430 @@ async def review_all_shifts(
         )
 
     return {"affected_count": affected, "pending_review_count": pending}
+
+
+# ---------------------------------------------------------------------------
+# Day-level corrections (per-shift edit / manual add) + timesheet recompute.
+#
+# Adjustment is symmetric with approval: it happens at the shift (day) level on
+# the Attendance tab, not as a blunt whole-period override. Clock-based staff
+# correct clock times (worked recomputed); fixed/casual staff get a direct
+# "set hours" override or an admin-added day. Every change preserves the
+# original on ``flags.adjustment``, is audited, resets the shift's review
+# sign-off, and triggers a recompute of any covering (non-locked) timesheet so
+# the corrected hours flow to payroll. Locked pay periods are immutable.
+# ---------------------------------------------------------------------------
+
+
+async def _org_zoneinfo(db: AsyncSession, org_id: UUID):
+    from zoneinfo import ZoneInfo
+    from sqlalchemy import text as _sql_text
+
+    row = (
+        await db.execute(
+            _sql_text("SELECT timezone FROM organisations WHERE id = :oid"),
+            {"oid": str(org_id)},
+        )
+    ).first()
+    name = (row[0] if row else None) or "Pacific/Auckland"
+    try:
+        return ZoneInfo(name)
+    except Exception:
+        return ZoneInfo("UTC")
+
+
+async def _is_locked_for(db: AsyncSession, org_id: UUID, staff_id: UUID, work_date) -> bool:
+    """True when a LOCKED timesheet for this staff covers ``work_date``."""
+    from app.modules.payslips.models import PayPeriod
+
+    row = (
+        await db.execute(
+            select(Timesheet.id)
+            .join(PayPeriod, PayPeriod.id == Timesheet.pay_period_id)
+            .where(
+                Timesheet.org_id == org_id,
+                Timesheet.staff_id == staff_id,
+                Timesheet.status == "locked",
+                PayPeriod.start_date <= work_date,
+                PayPeriod.end_date >= work_date,
+            )
+        )
+    ).first()
+    return row is not None
+
+
+async def recompute_timesheets_for_staff_date(
+    db: AsyncSession, *, org_id: UUID, staff_id: UUID, work_date
+) -> None:
+    """Re-derive actual/ordinary minutes for any non-locked timesheet whose pay
+    period covers ``work_date``.
+
+    Source of truth:
+      * clock-based staff → sum of ``TimeClockEntry.worked_minutes`` in period;
+      * fixed staff → per-day schedule, with admin ``manual_hours`` entries
+        overriding that specific day.
+    Overtime / public-holiday minutes are preserved; ordinary is the remainder.
+    """
+    from datetime import timedelta
+
+    from app.modules.payslips.models import PayPeriod
+    from app.modules.staff.models import StaffMember
+    from app.modules.time_clock.models import TimeClockEntry
+
+    staff = await db.get(StaffMember, staff_id)
+    is_fixed = getattr(staff, "working_arrangement", None) == "fixed"
+    avail = getattr(staff, "availability_schedule", None)
+    tz = await _org_zoneinfo(db, org_id)
+
+    periods = (
+        await db.execute(
+            select(PayPeriod).where(
+                PayPeriod.org_id == org_id,
+                PayPeriod.start_date <= work_date,
+                PayPeriod.end_date >= work_date,
+            )
+        )
+    ).scalars().all()
+
+    touched = False
+    for period in periods:
+        ts = (
+            await db.execute(
+                select(Timesheet).where(
+                    Timesheet.org_id == org_id,
+                    Timesheet.staff_id == staff_id,
+                    Timesheet.pay_period_id == period.id,
+                )
+            )
+        ).scalar_one_or_none()
+        if ts is None or ts.status == "locked":
+            continue
+
+        entries = (
+            await db.execute(
+                select(TimeClockEntry).where(
+                    TimeClockEntry.org_id == org_id,
+                    TimeClockEntry.staff_id == staff_id,
+                    TimeClockEntry.clock_in_at >= period.start_date,
+                    TimeClockEntry.clock_in_at < period.end_date + timedelta(days=1),
+                )
+            )
+        ).scalars().all()
+
+        if is_fixed:
+            manual_by_date: dict = {}
+            for e in entries:
+                ef = e.flags or {}
+                if ef.get("manual_hours") and not ef.get("voided"):
+                    d = e.clock_in_at.astimezone(tz).date()
+                    manual_by_date[d] = manual_by_date.get(d, 0) + (e.worked_minutes or 0)
+            total = 0
+            cursor = period.start_date
+            while cursor <= period.end_date:
+                if cursor in manual_by_date:
+                    total += manual_by_date[cursor]
+                else:
+                    total += compute_fixed_rostered_minutes(avail, cursor, cursor)
+                cursor += timedelta(days=1)
+            actual = total
+        else:
+            actual = sum(
+                (e.worked_minutes or 0)
+                for e in entries
+                if e.clock_out_at is not None and not (e.flags or {}).get("voided")
+            )
+
+        ts.actual_minutes = actual
+        ts.ordinary_minutes = max(
+            0, actual - (ts.overtime_minutes or 0) - (ts.public_holiday_minutes or 0)
+        )
+        ts.updated_at = datetime.now(timezone.utc)
+        touched = True
+
+    if touched:
+        await db.flush()
+
+
+async def edit_shift(
+    db: AsyncSession,
+    *,
+    org_id: UUID,
+    entry_id: UUID,
+    reason: str,
+    actor_id: UUID,
+    clock_in_at=None,
+    clock_out_at=None,
+    break_minutes: int | None = None,
+    worked_minutes: int | None = None,
+    branch_ids: list[UUID] | None = None,
+):
+    """Correct a single shift's effective hours.
+
+    The raw clock punch (``clock_in_at`` / ``clock_out_at``) is **immutable
+    evidence** (enforced by a DB trigger), so corrections are stored as an
+    overlay: the corrected effective times live on ``flags.adjustment`` and the
+    computed/overridden ``worked_minutes`` is updated. Provide corrected clock
+    times (worked is recomputed from them) OR a direct ``worked_minutes``
+    override. Preserves the original, audits, resets the review sign-off, and
+    recomputes covering timesheets."""
+    from app.modules.time_clock.models import TimeClockEntry
+
+    entry = (
+        await db.execute(
+            select(TimeClockEntry).where(
+                TimeClockEntry.id == entry_id,
+                TimeClockEntry.org_id == org_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if entry is None:
+        raise ValueError("shift_not_found")
+    if branch_ids is not None and entry.branch_id not in branch_ids:
+        raise ValueError("branch_access_denied")
+    if entry.clock_out_at is None:
+        # Open shifts have no settled duration to correct yet.
+        raise ValueError("shift_still_open")
+
+    tz = await _org_zoneinfo(db, org_id)
+    old_date = entry.clock_in_at.astimezone(tz).date()
+    if await _is_locked_for(db, org_id, entry.staff_id, old_date):
+        raise ValueError("shift_locked")
+
+    flags = dict(entry.flags or {})
+    if not isinstance(flags.get("adjustment"), dict):
+        flags["adjustment"] = {
+            "original": {
+                "clock_in_at": entry.clock_in_at.isoformat() if entry.clock_in_at else None,
+                "clock_out_at": entry.clock_out_at.isoformat() if entry.clock_out_at else None,
+                "break_minutes": entry.break_minutes,
+                "worked_minutes": entry.worked_minutes,
+            }
+        }
+
+    before_worked = entry.worked_minutes
+    adj = flags["adjustment"]
+
+    if worked_minutes is not None:
+        # Direct hours override (fixed/casual). Raw punch untouched.
+        if break_minutes is not None:
+            entry.break_minutes = break_minutes
+        entry.worked_minutes = worked_minutes
+        adj["mode"] = "hours"
+        adj.pop("corrected_clock_in_at", None)
+        adj.pop("corrected_clock_out_at", None)
+    else:
+        # Time correction (clock staff): compute worked from the corrected
+        # times, store them as an overlay (NOT on the immutable columns).
+        if clock_in_at is None or clock_out_at is None:
+            raise ValueError("times_required")
+        if clock_out_at <= clock_in_at:
+            raise ValueError("invalid_times")
+        bm = break_minutes if break_minutes is not None else (entry.break_minutes or 0)
+        worked = int((clock_out_at - clock_in_at).total_seconds() // 60) - bm
+        if worked < 0:
+            raise ValueError("break_exceeds_shift")
+        entry.break_minutes = bm
+        entry.worked_minutes = worked
+        adj["mode"] = "times"
+        adj["corrected_clock_in_at"] = clock_in_at.isoformat()
+        adj["corrected_clock_out_at"] = clock_out_at.isoformat()
+
+    adj["by"] = str(actor_id)
+    adj["at"] = datetime.now(timezone.utc).isoformat()
+    adj["reason"] = reason
+    flags["adjustment"] = adj
+    for k in ("reviewed", "reviewed_by", "reviewed_at"):
+        flags.pop(k, None)
+    entry.flags = flags
+    flag_modified(entry, "flags")
+    await db.flush()
+    await db.refresh(entry)
+
+    await write_audit_log(
+        db,
+        action="timesheet.shift_edited",
+        entity_type="time_clock_entry",
+        org_id=org_id,
+        user_id=actor_id,
+        entity_id=entry.id,
+        before_value={"worked_minutes": before_worked},
+        after_value={"worked_minutes": entry.worked_minutes, "reason": reason},
+    )
+
+    await recompute_timesheets_for_staff_date(
+        db, org_id=org_id, staff_id=entry.staff_id, work_date=old_date
+    )
+    return entry
+
+
+async def add_manual_shift(
+    db: AsyncSession,
+    *,
+    org_id: UUID,
+    staff_id: UUID,
+    work_date,
+    reason: str,
+    actor_id: UUID,
+    clock_in_at=None,
+    clock_out_at=None,
+    break_minutes: int = 0,
+    worked_minutes: int | None = None,
+    branch_id: UUID | None = None,
+    branch_ids: list[UUID] | None = None,
+):
+    """Add a worked day for a staff member who didn't clock (fixed/casual).
+    Provide clock times OR a direct ``worked_minutes`` hours value."""
+    from datetime import time, timedelta
+
+    from app.modules.organisations.models import Branch
+    from app.modules.staff.models import StaffMember
+    from app.modules.time_clock.models import TimeClockEntry
+
+    staff = await db.get(StaffMember, staff_id)
+    if staff is None or staff.org_id != org_id:
+        raise ValueError("staff_not_found")
+
+    # Resolve a branch (new time_clock_entries rows require branch_id).
+    if branch_id is None:
+        branch = (
+            await db.execute(
+                select(Branch).where(Branch.org_id == org_id, Branch.is_default == True)  # noqa: E712
+            )
+        ).scalars().first()
+        if branch is None:
+            branch = (
+                await db.execute(select(Branch).where(Branch.org_id == org_id))
+            ).scalars().first()
+        branch_id = branch.id if branch else None
+    if branch_id is None:
+        raise ValueError("no_branch")
+    if branch_ids is not None and branch_id not in branch_ids:
+        raise ValueError("branch_access_denied")
+    if await _is_locked_for(db, org_id, staff_id, work_date):
+        raise ValueError("shift_locked")
+
+    tz = await _org_zoneinfo(db, org_id)
+    manual_hours = worked_minutes is not None
+    if manual_hours:
+        ci = datetime.combine(work_date, time(9, 0), tzinfo=tz).astimezone(timezone.utc)
+        co = ci + timedelta(minutes=worked_minutes + (break_minutes or 0))
+        worked = worked_minutes
+    else:
+        if clock_in_at is None or clock_out_at is None:
+            raise ValueError("times_required")
+        if clock_out_at <= clock_in_at:
+            raise ValueError("invalid_times")
+        bm = break_minutes or 0
+        worked = int((clock_out_at - clock_in_at).total_seconds() // 60) - bm
+        if worked < 0:
+            raise ValueError("break_exceeds_shift")
+        ci, co = clock_in_at, clock_out_at
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    new_flags: dict = {
+        "manual_entry": True,
+        "adjustment": {"by": str(actor_id), "at": now_iso, "reason": reason},
+    }
+    if manual_hours:
+        new_flags["manual_hours"] = True
+
+    entry = TimeClockEntry(
+        org_id=org_id,
+        staff_id=staff_id,
+        clock_in_at=ci,
+        clock_out_at=co,
+        source="admin_manual",
+        break_minutes=break_minutes or 0,
+        worked_minutes=worked,
+        branch_id=branch_id,
+        created_by=actor_id,
+        flags=new_flags,
+    )
+    db.add(entry)
+    await db.flush()
+    await db.refresh(entry)
+
+    await write_audit_log(
+        db,
+        action="timesheet.shift_added",
+        entity_type="time_clock_entry",
+        org_id=org_id,
+        user_id=actor_id,
+        entity_id=entry.id,
+        before_value={},
+        after_value={
+            "work_date": work_date.isoformat(),
+            "worked_minutes": worked,
+            "manual_hours": manual_hours,
+            "reason": reason,
+        },
+    )
+
+    await recompute_timesheets_for_staff_date(
+        db, org_id=org_id, staff_id=staff_id, work_date=work_date
+    )
+    return entry
+
+
+async def void_manual_shift(
+    db: AsyncSession,
+    *,
+    org_id: UUID,
+    entry_id: UUID,
+    actor_id: UUID,
+    branch_ids: list[UUID] | None = None,
+):
+    """Remove an admin-added manual shift.
+
+    ``time_clock_entries`` rows cannot be deleted (DB trigger), so removal is a
+    soft-void: the row is flagged ``voided`` and its ``worked_minutes`` zeroed
+    so it no longer counts. Only admin-added manual entries can be voided —
+    never a real clock punch."""
+    from app.modules.time_clock.models import TimeClockEntry
+
+    entry = (
+        await db.execute(
+            select(TimeClockEntry).where(
+                TimeClockEntry.id == entry_id,
+                TimeClockEntry.org_id == org_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if entry is None:
+        raise ValueError("shift_not_found")
+    if not (entry.flags or {}).get("manual_entry"):
+        raise ValueError("not_manual")
+    if branch_ids is not None and entry.branch_id not in branch_ids:
+        raise ValueError("branch_access_denied")
+
+    tz = await _org_zoneinfo(db, org_id)
+    work_date = entry.clock_in_at.astimezone(tz).date()
+    if await _is_locked_for(db, org_id, entry.staff_id, work_date):
+        raise ValueError("shift_locked")
+
+    staff_id = entry.staff_id
+    flags = dict(entry.flags or {})
+    flags["voided"] = True
+    flags["voided_by"] = str(actor_id)
+    flags["voided_at"] = datetime.now(timezone.utc).isoformat()
+    for k in ("reviewed", "reviewed_by", "reviewed_at"):
+        flags.pop(k, None)
+    entry.flags = flags
+    entry.worked_minutes = 0
+    flag_modified(entry, "flags")
+    await db.flush()
+
+    await write_audit_log(
+        db,
+        action="timesheet.shift_voided",
+        entity_type="time_clock_entry",
+        org_id=org_id,
+        user_id=actor_id,
+        entity_id=entry_id,
+        before_value={"work_date": work_date.isoformat()},
+        after_value={"voided": True},
+    )
+
+    await recompute_timesheets_for_staff_date(
+        db, org_id=org_id, staff_id=staff_id, work_date=work_date
+    )

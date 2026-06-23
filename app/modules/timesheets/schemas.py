@@ -284,12 +284,26 @@ class AttendanceShift(BaseModel):
     reviewed_at: datetime | None = None
     flagged_for_review: bool = False     # follow-up marker (G10)
     review_reason: str | None = None
+    # Day-level correction state (R: per-day adjust). ``edited`` is set once a
+    # shift's effective hours have been corrected. The raw punch (clock_in_at /
+    # clock_out_at) is immutable evidence; corrections are an overlay, so the
+    # corrected effective times are surfaced separately and worked_hours always
+    # reflects the corrected value.
+    edited: bool = False
+    edit_reason: str | None = None
+    original_worked_hours: Decimal | None = None
+    corrected_clock_in_at: datetime | None = None
+    corrected_clock_out_at: datetime | None = None
+    is_manual: bool = False
+    is_manual_hours: bool = False        # admin "set hours" override (no real times)
+    break_minutes: int = 0
 
 
 class AttendanceDetailResponse(BaseModel):
     staff_id: UUID
     staff_name: str
     position: str | None = None
+    working_arrangement: str | None = None  # fixed | rostered | casual | …
     date_from: str
     date_to: str
     worked_hours: Decimal
@@ -317,3 +331,35 @@ class ShiftReviewResponse(BaseModel):
 class AttendanceReviewAllResponse(BaseModel):
     affected_count: int
     pending_review_count: int
+
+
+class ShiftEditRequest(BaseModel):
+    """Correct a single shift. Provide EITHER corrected clock times
+    (``clock_in_at`` + ``clock_out_at`` [+ ``break_minutes``]) for clock-based
+    staff, OR a direct ``worked_minutes`` hours override (fixed/casual)."""
+
+    clock_in_at: datetime | None = None
+    clock_out_at: datetime | None = None
+    break_minutes: int | None = Field(default=None, ge=0, le=24 * 60)
+    worked_minutes: int | None = Field(default=None, ge=0, le=24 * 60)
+    reason: str = Field(..., min_length=1, max_length=500)
+
+
+class ShiftCreateRequest(BaseModel):
+    """Add a worked day for a staff member who didn't clock (fixed/casual).
+    Provide EITHER clock times OR a direct ``worked_minutes`` hours value."""
+
+    work_date: date
+    clock_in_at: datetime | None = None
+    clock_out_at: datetime | None = None
+    break_minutes: int = Field(default=0, ge=0, le=24 * 60)
+    worked_minutes: int | None = Field(default=None, ge=0, le=24 * 60)
+    branch_id: UUID | None = None
+    reason: str = Field(..., min_length=1, max_length=500)
+
+
+class ShiftMutationResponse(BaseModel):
+    id: UUID
+    work_date: str
+    worked_minutes: int | None = None
+    is_manual: bool = False

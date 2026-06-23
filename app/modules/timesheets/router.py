@@ -31,6 +31,9 @@ from app.modules.timesheets.schemas import (
     BulkActionResponse,
     ClockedInResponse,
     PeriodSummary,
+    ShiftCreateRequest,
+    ShiftEditRequest,
+    ShiftMutationResponse,
     ShiftReviewRequest,
     ShiftReviewResponse,
     TimesheetDetailResponse,
@@ -42,17 +45,20 @@ from app.modules.timesheets.schemas import (
     WeeklyBreakdownResponse,
 )
 from app.modules.timesheets.service import (
+    add_manual_shift,
     adjust_timesheet,
     bulk_approve,
     bulk_lock,
     compute_attendance,
     compute_attendance_detail,
     compute_weekly_breakdown,
+    edit_shift,
     get_or_create_timesheet,
     get_settings_for_branch,
     review_all_shifts,
     set_shift_review,
     transition_status,
+    void_manual_shift,
 )
 
 # ---------------------------------------------------------------------------
@@ -361,6 +367,140 @@ async def review_all_staff_shifts(
         affected_count=result["affected_count"],
         pending_review_count=result["pending_review_count"],
     )
+
+
+def _shift_mutation_error(exc: ValueError) -> HTTPException:
+    """Map shift edit/add/delete ValueError codes to HTTP responses."""
+    msg = str(exc)
+    if msg in ("shift_not_found", "staff_not_found"):
+        return HTTPException(status_code=404, detail="Not found")
+    if msg == "branch_access_denied":
+        return HTTPException(status_code=403, detail="Branch access denied")
+    if msg == "shift_locked":
+        return HTTPException(
+            status_code=409,
+            detail={"detail": "shift_locked", "message": "This pay period is locked and can no longer be changed."},
+        )
+    if msg == "not_manual":
+        return HTTPException(
+            status_code=409,
+            detail={"detail": "not_manual", "message": "Only admin-added days can be deleted. Edit a real clock shift instead."},
+        )
+    friendly = {
+        "times_required": "Provide both a clock-in and clock-out time.",
+        "invalid_times": "Clock-out must be after clock-in.",
+        "break_exceeds_shift": "The break is longer than the shift.",
+        "no_branch": "No branch is configured for this organisation.",
+    }
+    return HTTPException(status_code=422, detail={"detail": msg, "message": friendly.get(msg, msg)})
+
+
+@timesheets_router.patch("/attendance/shifts/{entry_id}")
+async def edit_attendance_shift(
+    entry_id: UUID,
+    body: ShiftEditRequest,
+    request: Request,
+    scope: BranchScopedTimesheets = Depends(),
+    db: AsyncSession = Depends(get_db_session),
+) -> ShiftMutationResponse:
+    """Correct one shift: clock times (recomputes worked) or an hours override.
+
+    Requires ``timesheet.approve``. Resets the shift's review sign-off and
+    recomputes covering (non-locked) timesheets so payroll reflects the change.
+    """
+    org_id = _get_org_id(request)
+    user_id = _get_user_id(request)
+    _check_permission(request, "timesheet.approve")
+    branch_ids = scope.branch_ids if scope.should_filter else None
+    try:
+        entry = await edit_shift(
+            db,
+            org_id=org_id,
+            entry_id=entry_id,
+            reason=body.reason,
+            actor_id=user_id,
+            clock_in_at=body.clock_in_at,
+            clock_out_at=body.clock_out_at,
+            break_minutes=body.break_minutes,
+            worked_minutes=body.worked_minutes,
+            branch_ids=branch_ids,
+        )
+    except ValueError as e:
+        raise _shift_mutation_error(e)
+
+    return ShiftMutationResponse(
+        id=entry.id,
+        work_date=entry.clock_in_at.date().isoformat(),
+        worked_minutes=entry.worked_minutes,
+        is_manual=bool((entry.flags or {}).get("manual_entry")),
+    )
+
+
+@timesheets_router.post("/attendance/{staff_id}/shifts")
+async def add_attendance_shift(
+    staff_id: UUID,
+    body: ShiftCreateRequest,
+    request: Request,
+    scope: BranchScopedTimesheets = Depends(),
+    db: AsyncSession = Depends(get_db_session),
+) -> ShiftMutationResponse:
+    """Add a worked day for a staff member who didn't clock (fixed/casual).
+
+    Requires ``timesheet.approve``. Accepts clock times or an hours value, and
+    recomputes covering timesheets.
+    """
+    org_id = _get_org_id(request)
+    user_id = _get_user_id(request)
+    _check_permission(request, "timesheet.approve")
+    branch_ids = scope.branch_ids if scope.should_filter else None
+    try:
+        entry = await add_manual_shift(
+            db,
+            org_id=org_id,
+            staff_id=staff_id,
+            work_date=body.work_date,
+            reason=body.reason,
+            actor_id=user_id,
+            clock_in_at=body.clock_in_at,
+            clock_out_at=body.clock_out_at,
+            break_minutes=body.break_minutes,
+            worked_minutes=body.worked_minutes,
+            branch_id=body.branch_id,
+            branch_ids=branch_ids,
+        )
+    except ValueError as e:
+        raise _shift_mutation_error(e)
+
+    return ShiftMutationResponse(
+        id=entry.id,
+        work_date=body.work_date.isoformat(),
+        worked_minutes=entry.worked_minutes,
+        is_manual=True,
+    )
+
+
+@timesheets_router.delete("/attendance/shifts/{entry_id}")
+async def delete_attendance_shift(
+    entry_id: UUID,
+    request: Request,
+    scope: BranchScopedTimesheets = Depends(),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Remove an admin-added manual shift (soft-void; never a real clock punch).
+
+    Requires ``timesheet.approve``. Recomputes covering timesheets.
+    """
+    org_id = _get_org_id(request)
+    user_id = _get_user_id(request)
+    _check_permission(request, "timesheet.approve")
+    branch_ids = scope.branch_ids if scope.should_filter else None
+    try:
+        await void_manual_shift(
+            db, org_id=org_id, entry_id=entry_id, actor_id=user_id, branch_ids=branch_ids,
+        )
+    except ValueError as e:
+        raise _shift_mutation_error(e)
+    return JSONResponse(content={"message": "Shift removed"}, status_code=200)
 
 
 @timesheets_router.get("/{id}")

@@ -28,6 +28,7 @@ import uuid
 from datetime import date, datetime, time, timezone
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -74,19 +75,28 @@ from app.modules.timesheets import models as _timesheet_models  # noqa: F401
 from app.modules.timesheets import pay_cycles as _pay_cycle_models  # noqa: F401
 
 from app.modules.admin.models import Organisation, SubscriptionPlan
+from app.modules.auth.models import User
 from app.modules.organisations.models import Branch
+from app.modules.payslips.models import PayPeriod
 from app.modules.staff.models import StaffMember
 from app.modules.time_clock.models import TimeClockEntry
+from app.modules.timesheets.models import Timesheet
 from app.modules.timesheets.service import (
+    add_manual_shift,
     compute_attendance,
     compute_attendance_detail,
+    edit_shift,
     review_all_shifts,
     set_shift_review,
+    void_manual_shift,
 )
 
 
-_DAY1 = date(2026, 6, 2)
-_DAY2 = date(2026, 6, 3)
+_DAY1 = date(2026, 6, 2)   # Tuesday
+_DAY2 = date(2026, 6, 3)   # Wednesday
+_WEEK_START = date(2026, 6, 1)   # Monday
+_WEEK_END = date(2026, 6, 7)     # Sunday
+_PAY_DATE = date(2026, 6, 10)
 
 
 async def _make_engine_and_factory():
@@ -488,3 +498,268 @@ def test_fixed_staff_show_pattern_times_per_shift():
     **Validates: Attendance review — fixed-pattern fallback in shift drill-in.**
     """
     asyncio.run(_run_fixed_pattern_in_detail())
+
+
+# ---------------------------------------------------------------------------
+# Helpers for the day-level correction tests (need a PayPeriod + Timesheet).
+# ---------------------------------------------------------------------------
+
+
+async def _new_period(session, *, org_id, start, end, status="open") -> PayPeriod:
+    period = PayPeriod(
+        org_id=org_id, start_date=start, end_date=end,
+        pay_date=_PAY_DATE, status=status,
+    )
+    session.add(period)
+    await session.flush()
+    return period
+
+
+async def _new_timesheet(session, *, org_id, staff_id, period_id, branch_id=None,
+                         status="open", rostered=0, actual=0) -> Timesheet:
+    ts = Timesheet(
+        org_id=org_id, staff_id=staff_id, pay_period_id=period_id,
+        branch_id=branch_id, status=status,
+        rostered_minutes=rostered, actual_minutes=actual, ordinary_minutes=actual,
+    )
+    session.add(ts)
+    await session.flush()
+    return ts
+
+
+async def _reload_ts(session, ts_id):
+    return (await session.execute(select(Timesheet).where(Timesheet.id == ts_id))).scalar_one()
+
+
+async def _new_user(session, *, org_id) -> User:
+    user = User(
+        org_id=org_id,
+        email=f"actor_{uuid.uuid4().hex[:10]}@example.com",
+        role="org_admin",
+        is_active=True,
+    )
+    session.add(user)
+    await session.flush()
+    return user
+
+
+# ---------------------------------------------------------------------------
+# Test 6: editing clock times recomputes worked, resets review, flows to the
+#         covering timesheet's actual_minutes.
+# ---------------------------------------------------------------------------
+
+
+async def _run_edit_times_flows_to_timesheet() -> None:
+    engine, factory = await _make_engine_and_factory()
+    try:
+        async with factory() as session:
+            try:
+                org_id, branch_id = await _seed_org_and_branch(session)
+                staff = await _new_staff(session, org_id=org_id, name="Clock Carl")
+                period = await _new_period(session, org_id=org_id, start=_WEEK_START, end=_WEEK_END)
+                ts = await _new_timesheet(
+                    session, org_id=org_id, staff_id=staff.id,
+                    period_id=period.id, branch_id=branch_id, actual=480,
+                )
+                entry = await _new_clock_entry(
+                    session, org_id=org_id, staff_id=staff.id, branch_id=branch_id,
+                    day=_DAY1, worked_minutes=480,  # 09:00–17:00
+                )
+                # Sign it off, then edit → sign-off must reset.
+                actor = uuid.uuid4()
+                await set_shift_review(
+                    session, org_id=org_id, entry_id=entry.id, reviewed=True, actor_id=actor,
+                )
+
+                # Correct clock-out to 18:00 → 9h worked (540 min).
+                new_out = datetime.combine(_DAY1, time(18, 0), tzinfo=timezone.utc)
+                new_in = datetime.combine(_DAY1, time(9, 0), tzinfo=timezone.utc)
+                edited = await edit_shift(
+                    session, org_id=org_id, entry_id=entry.id,
+                    clock_in_at=new_in, clock_out_at=new_out,
+                    reason="Forgot to clock out", actor_id=actor,
+                )
+                assert edited.worked_minutes == 540
+                flags = edited.flags or {}
+                # Original preserved; review sign-off reset.
+                assert flags["adjustment"]["original"]["worked_minutes"] == 480
+                assert flags["adjustment"]["reason"] == "Forgot to clock out"
+                assert "reviewed" not in flags
+
+                # Covering timesheet recomputed to the new worked total.
+                ts_after = await _reload_ts(session, ts.id)
+                assert ts_after.actual_minutes == 540
+                assert ts_after.ordinary_minutes == 540
+            finally:
+                await session.rollback()
+    finally:
+        await engine.dispose()
+
+
+def test_edit_times_recompute_and_flow_to_timesheet():
+    """Editing clock times recomputes worked, resets review, updates the timesheet.
+
+    **Validates: day-level adjust — time correction flows to payroll.**
+    """
+    asyncio.run(_run_edit_times_flows_to_timesheet())
+
+
+# ---------------------------------------------------------------------------
+# Test 7: a manual hours override for a FIXED staff member overrides just that
+#         day; other days keep their scheduled hours.
+# ---------------------------------------------------------------------------
+
+
+async def _run_fixed_manual_override_per_day() -> None:
+    engine, factory = await _make_engine_and_factory()
+    try:
+        async with factory() as session:
+            try:
+                org_id, branch_id = await _seed_org_and_branch(session)
+                # Tuesday + Wednesday 8h each = 960 min scheduled for the week.
+                staff = await _new_staff(
+                    session, org_id=org_id, name="Fixed Faye",
+                    working_arrangement="fixed",
+                    availability_schedule={
+                        "tuesday": {"start": "09:00", "end": "17:00"},
+                        "wednesday": {"start": "09:00", "end": "17:00"},
+                    },
+                )
+                period = await _new_period(session, org_id=org_id, start=_WEEK_START, end=_WEEK_END)
+                ts = await _new_timesheet(
+                    session, org_id=org_id, staff_id=staff.id,
+                    period_id=period.id, branch_id=branch_id, rostered=960, actual=960,
+                )
+
+                # Override Tuesday to 6h (360 min); Wednesday stays scheduled 8h.
+                actor = await _new_user(session, org_id=org_id)
+                await add_manual_shift(
+                    session, org_id=org_id, staff_id=staff.id, work_date=_DAY1,
+                    worked_minutes=360, reason="Left early — agreed 6h",
+                    actor_id=actor.id, branch_id=branch_id,
+                )
+
+                ts_after = await _reload_ts(session, ts.id)
+                # 360 (Tue override) + 480 (Wed scheduled) = 840.
+                assert ts_after.actual_minutes == 840
+
+                # The manual entry shows up in the detail as an hours override.
+                detail = await compute_attendance_detail(
+                    session, org_id=org_id, staff_id=staff.id,
+                    start_date=_DAY1, end_date=_DAY1,
+                )
+                assert len(detail.shifts) == 1
+                s = detail.shifts[0]
+                assert s.is_manual is True
+                assert s.is_manual_hours is True
+                assert float(s.worked_hours) == pytest.approx(6.0)
+            finally:
+                await session.rollback()
+    finally:
+        await engine.dispose()
+
+
+def test_fixed_manual_hours_override_per_day():
+    """A manual hours override replaces just that day for a fixed staff member.
+
+    **Validates: day-level adjust — fixed per-day override + recompute.**
+    """
+    asyncio.run(_run_fixed_manual_override_per_day())
+
+
+# ---------------------------------------------------------------------------
+# Test 8: locked pay period blocks edits/adds; delete guards on manual-only.
+# ---------------------------------------------------------------------------
+
+
+async def _run_locked_and_delete_guards() -> None:
+    engine, factory = await _make_engine_and_factory()
+    try:
+        async with factory() as session:
+            try:
+                org_id, branch_id = await _seed_org_and_branch(session)
+                staff = await _new_staff(session, org_id=org_id, name="Lock Lena")
+                period = await _new_period(
+                    session, org_id=org_id, start=_WEEK_START, end=_WEEK_END,
+                )
+                await _new_timesheet(
+                    session, org_id=org_id, staff_id=staff.id,
+                    period_id=period.id, branch_id=branch_id, status="locked",
+                )
+                entry = await _new_clock_entry(
+                    session, org_id=org_id, staff_id=staff.id, branch_id=branch_id,
+                    day=_DAY1, worked_minutes=480,
+                )
+
+                # Editing within a locked period is refused.
+                with pytest.raises(ValueError, match="shift_locked"):
+                    await edit_shift(
+                        session, org_id=org_id, entry_id=entry.id,
+                        clock_in_at=datetime.combine(_DAY1, time(9, 0), tzinfo=timezone.utc),
+                        clock_out_at=datetime.combine(_DAY1, time(18, 0), tzinfo=timezone.utc),
+                        reason="too late", actor_id=uuid.uuid4(),
+                    )
+
+                # A real clock punch cannot be voided (only admin-added days).
+                with pytest.raises(ValueError, match="not_manual"):
+                    await void_manual_shift(
+                        session, org_id=org_id, entry_id=entry.id, actor_id=uuid.uuid4(),
+                    )
+            finally:
+                await session.rollback()
+    finally:
+        await engine.dispose()
+
+
+def test_locked_period_and_delete_guards():
+    """Locked periods block edits; only admin-added days can be deleted.
+
+    **Validates: day-level adjust — locked immutability + delete guard.**
+    """
+    asyncio.run(_run_locked_and_delete_guards())
+
+
+# ---------------------------------------------------------------------------
+# Test 9: add then delete a manual day round-trips the timesheet actual.
+# ---------------------------------------------------------------------------
+
+
+async def _run_add_then_delete_manual() -> None:
+    engine, factory = await _make_engine_and_factory()
+    try:
+        async with factory() as session:
+            try:
+                org_id, branch_id = await _seed_org_and_branch(session)
+                staff = await _new_staff(session, org_id=org_id, name="Casual Cody")
+                period = await _new_period(session, org_id=org_id, start=_WEEK_START, end=_WEEK_END)
+                ts = await _new_timesheet(
+                    session, org_id=org_id, staff_id=staff.id,
+                    period_id=period.id, branch_id=branch_id, actual=0,
+                )
+
+                actor = await _new_user(session, org_id=org_id)
+                entry = await add_manual_shift(
+                    session, org_id=org_id, staff_id=staff.id, work_date=_DAY1,
+                    worked_minutes=300, reason="Covered a shift",
+                    actor_id=actor.id, branch_id=branch_id,
+                )
+                ts_after = await _reload_ts(session, ts.id)
+                assert ts_after.actual_minutes == 300
+
+                await void_manual_shift(
+                    session, org_id=org_id, entry_id=entry.id, actor_id=actor.id,
+                )
+                ts_final = await _reload_ts(session, ts.id)
+                assert ts_final.actual_minutes == 0
+            finally:
+                await session.rollback()
+    finally:
+        await engine.dispose()
+
+
+def test_add_then_delete_manual_roundtrip():
+    """Adding then deleting a manual day round-trips the timesheet actual.
+
+    **Validates: day-level adjust — manual add/delete recompute round-trip.**
+    """
+    asyncio.run(_run_add_then_delete_manual())

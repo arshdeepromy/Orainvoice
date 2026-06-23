@@ -187,12 +187,21 @@ export interface AttendanceShift {
   reviewed_at: string | null
   flagged_for_review: boolean
   review_reason: string | null
+  edited: boolean
+  edit_reason: string | null
+  original_worked_hours: number | null
+  corrected_clock_in_at: string | null
+  corrected_clock_out_at: string | null
+  is_manual: boolean
+  is_manual_hours: boolean
+  break_minutes: number
 }
 
 export interface AttendanceDetailResponse {
   staff_id: string
   staff_name: string
   position: string | null
+  working_arrangement: string | null
   date_from: string
   date_to: string
   worked_hours: number
