@@ -142,7 +142,10 @@ async def create_trade_family(
 ):
     """Create a new trade family (Global Admin only)."""
     svc = TradeCategoryService(db)
-    family = await svc.create_family(payload)
+    try:
+        family = await svc.create_family(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     return TradeFamilyResponse.model_validate(family)
 
 

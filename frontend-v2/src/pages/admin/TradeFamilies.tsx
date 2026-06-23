@@ -58,6 +58,14 @@ export default function TradeFamilies() {
   const [availableFeatures, setAvailableFeatures] = useState<FeatureFlag[]>([])
   const [featuresLoading, setFeaturesLoading] = useState(false)
 
+  // Create-custom-trade-family state.
+  const [creating, setCreating] = useState(false)
+  const [newName, setNewName] = useState('')
+  const [newSlug, setNewSlug] = useState('')
+  const [slugEdited, setSlugEdited] = useState(false)
+  const [newIcon, setNewIcon] = useState('')
+  const [createError, setCreateError] = useState<string | null>(null)
+
   useEffect(() => {
     fetchFamilies()
   }, [])
@@ -139,6 +147,66 @@ export default function TradeFamilies() {
     }
   }
 
+  function slugify(value: string): string {
+    return value
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+  }
+
+  function openCreateModal() {
+    setNewName('')
+    setNewSlug('')
+    setSlugEdited(false)
+    setNewIcon('')
+    setCreateError(null)
+    setCreating(true)
+  }
+
+  function closeCreateModal() {
+    setCreating(false)
+    setCreateError(null)
+  }
+
+  function onNewNameChange(value: string) {
+    setNewName(value)
+    if (!slugEdited) setNewSlug(slugify(value))
+  }
+
+  async function createFamily() {
+    const slug = slugify(newSlug || newName)
+    if (!newName.trim() || !slug) {
+      setCreateError('A name (and slug) is required.')
+      return
+    }
+    setSaving('__create__')
+    setCreateError(null)
+    try {
+      await apiClient.post('/api/v2/admin/trade-families', {
+        slug,
+        display_name: newName.trim(),
+        icon: newIcon.trim() || null,
+        display_order: families.length + 1,
+        country_codes: [],
+        gated_features: [],
+      })
+      closeCreateModal()
+      await fetchFamilies()
+    } catch (err: unknown) {
+      const detail = (
+        err as { response?: { data?: { detail?: unknown } } }
+      )?.response?.data?.detail
+      setCreateError(
+        typeof detail === 'string'
+          ? detail
+          : 'Failed to create trade family. The slug may already exist.',
+      )
+    } finally {
+      setSaving(null)
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -156,9 +224,14 @@ export default function TradeFamilies() {
             Manage business types available during signup. Disabled families won't appear in the signup form.
           </p>
         </div>
-        <Button variant="ghost" onClick={fetchFamilies}>
-          Refresh
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="ghost" onClick={fetchFamilies}>
+            Refresh
+          </Button>
+          <Button variant="primary" onClick={openCreateModal}>
+            Add Trade Family
+          </Button>
+        </div>
       </div>
 
       {error && (
@@ -255,6 +328,98 @@ export default function TradeFamilies() {
         </table>
       </div>
 
+
+      {/* Create Modal */}
+      {creating && (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+          <div className="flex min-h-full items-center justify-center p-4">
+            <div
+              className="fixed inset-0 bg-ink/50 transition-opacity"
+              onClick={closeCreateModal}
+            />
+            <div className="relative bg-card rounded-card shadow-pop max-w-lg w-full p-6">
+              <h2 className="text-lg font-semibold text-text mb-1">
+                Add Trade Family
+              </h2>
+              <p className="text-xs text-muted mb-4">
+                Create a custom business type. It will appear in the signup form
+                once enabled. Countries and gated features can be set afterwards
+                via Edit.
+              </p>
+
+              {createError && (
+                <div className="mb-4 rounded-ctl border border-danger/30 bg-danger-soft px-3 py-2 text-sm text-danger">
+                  {createError}
+                </div>
+              )}
+
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-text mb-1">
+                    Display name
+                  </label>
+                  <input
+                    type="text"
+                    value={newName}
+                    onChange={(e) => onNewNameChange(e.target.value)}
+                    placeholder="e.g. Mobile Mechanic"
+                    autoFocus
+                    className="w-full rounded-ctl border border-border bg-canvas px-3 py-2 text-sm text-text focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20"
+                  />
+                </div>
+
+                <div className="flex gap-3">
+                  <div className="flex-1">
+                    <label className="block text-sm font-medium text-text mb-1">
+                      Slug
+                    </label>
+                    <input
+                      type="text"
+                      value={newSlug}
+                      onChange={(e) => {
+                        setSlugEdited(true)
+                        setNewSlug(e.target.value)
+                      }}
+                      placeholder="mobile-mechanic"
+                      className="mono w-full rounded-ctl border border-border bg-canvas px-3 py-2 text-sm text-text focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20"
+                    />
+                    <p className="mt-1 text-xs text-muted-2">
+                      Lowercase, hyphenated. Used internally — can't be changed
+                      later.
+                    </p>
+                  </div>
+                  <div className="w-24">
+                    <label className="block text-sm font-medium text-text mb-1">
+                      Icon
+                    </label>
+                    <input
+                      type="text"
+                      value={newIcon}
+                      onChange={(e) => setNewIcon(e.target.value)}
+                      placeholder="📦"
+                      maxLength={4}
+                      className="w-full rounded-ctl border border-border bg-canvas px-3 py-2 text-center text-lg focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-6 flex justify-end gap-3">
+                <Button variant="ghost" onClick={closeCreateModal}>
+                  Cancel
+                </Button>
+                <Button
+                  variant="primary"
+                  loading={saving === '__create__'}
+                  onClick={createFamily}
+                >
+                  Create
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Edit Modal */}
       {editingFamily && (

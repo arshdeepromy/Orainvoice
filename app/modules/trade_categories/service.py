@@ -77,7 +77,10 @@ class TradeCategoryService:
         return list(result.scalars().all())
 
     async def create_family(self, data: TradeFamilyCreate) -> TradeFamily:
-        """Create a new trade family."""
+        """Create a new trade family. Raises ValueError on duplicate slug."""
+        existing = await self._get_family_by_slug(data.slug)
+        if existing is not None:
+            raise ValueError(f"Trade family slug '{data.slug}' already exists")
         family = TradeFamily(
             slug=data.slug,
             display_name=data.display_name,
