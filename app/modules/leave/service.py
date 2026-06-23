@@ -2062,3 +2062,177 @@ async def unmark_day_leave(
         "cancelled_cover_ids": cancelled_cover_ids,
         "leave_entries_removed": len(leave_entries),
     }
+
+
+# ---------------------------------------------------------------------------
+# compute_staff_leave_eligibility — per-leave-type status for one staff member
+# ---------------------------------------------------------------------------
+
+
+async def compute_staff_leave_eligibility(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    staff_id: uuid.UUID,
+    on_date: date | None = None,
+) -> dict:
+    """Return every active leave type for the org with the staff member's
+    eligibility status and current balance.
+
+    Status values:
+      * ``eligible``      — entitled now.
+      * ``pending``       — not yet; ``eligible_on`` says when.
+      * ``casual_payg``   — annual holidays paid as 8% with each pay (casual).
+      * ``always``        — non-statutory / discretionary type, available anytime.
+      * ``no_start_date`` — needs an employment start date to evaluate.
+
+    Eligibility is computed from the versioned rules engine for the gated
+    statutory types (annual, sick, bereavement, family_violence); day-one
+    entitlements and discretionary types are surfaced as available.
+    """
+    from app.modules.leave.rules.eligibility import evaluate_eligibility
+    from app.modules.leave.rules.registry import (
+        NoApplicableRuleSet,
+        resolve_rule_set,
+    )
+    from app.modules.leave.rules.service_period import compute_continuous_service
+    from app.modules.leave.rules.sweep import build_staff_snapshot
+
+    on_date = on_date or date.today()
+
+    staff = await db.get(StaffMember, staff_id)
+    if staff is None or staff.org_id != org_id:
+        raise LeaveServiceError("staff_not_found")
+
+    types = (
+        await db.execute(
+            select(LeaveType)
+            .where(LeaveType.org_id == org_id, LeaveType.active.is_(True))
+            .order_by(LeaveType.display_order)
+        )
+    ).scalars().all()
+
+    balances = {
+        b.leave_type_id: b
+        for b in (
+            await db.execute(
+                select(LeaveBalance).where(LeaveBalance.staff_id == staff_id)
+            )
+        ).scalars().all()
+    }
+
+    # Run the rules engine once.
+    results: dict[str, Any] = {}
+    rule_set = None
+    try:
+        rule_set = resolve_rule_set(on_date)
+        snapshot = await build_staff_snapshot(db, staff, evaluation_date=on_date)
+        results = {
+            r.leave_type_code: r
+            for r in evaluate_eligibility(snapshot, on_date, rule_set)
+        }
+    except NoApplicableRuleSet:
+        results = {}
+
+    start = getattr(staff, "employment_start_date", None)
+    service = compute_continuous_service(start, on_date)
+    months_completed = service.completed_months if service else None
+    days_employed = (on_date - start).days if start else None
+
+    # Casual / low-hours determines whether the hours test is a real gate.
+    weekly_hours = (
+        Decimal(staff.standard_hours_per_week)
+        if getattr(staff, "standard_hours_per_week", None)
+        else _weekly_hours_from_schedule(
+            getattr(staff, "availability_schedule", None)
+        )
+    )
+    emp = (getattr(staff, "employment_type", "") or "").lower()
+    arrangement = (getattr(staff, "working_arrangement", "") or "").lower()
+    pay_method = getattr(staff, "holiday_pay_method", "accrued") or "accrued"
+    is_casual = emp == "casual" or "casual" in arrangement or pay_method == "casual_payg"
+    hours_threshold = (
+        rule_set.hours_test.min_avg_hours_per_week if rule_set else Decimal("10")
+    )
+    hours_test_relevant = is_casual or (
+        weekly_hours is not None and weekly_hours < hours_threshold
+    )
+
+    items: list[dict[str, Any]] = []
+    for lt in types:
+        bal = balances.get(lt.id)
+        accrued = Decimal(bal.accrued_hours) if bal else Decimal("0")
+        used = Decimal(bal.used_hours) if bal else Decimal("0")
+        pending = Decimal(bal.pending_hours) if bal else Decimal("0")
+        available = accrued - used - pending
+
+        res = results.get(lt.code)
+        status = "always"
+        eligible = True
+        milestone_key: str | None = None
+        milestone_months: int | None = None
+        eligible_on: date | None = None
+        reason: str | None = None
+        hours_test_required = False
+        hours_test_met: bool | None = None
+
+        if res is not None:
+            milestone_key = res.milestone_key
+            milestone_months = _MILESTONE_MONTHS.get(res.milestone_key, 0)
+            eligible_on = _add_months(start, milestone_months) if start else None
+            hours_test_required = res.hours_test is not None and hours_test_relevant
+            hours_test_met = (
+                res.hours_test.met if res.hours_test is not None else None
+            )
+            reason = res.reason
+            if res.eligible:
+                status, eligible = "eligible", True
+            elif res.reason == "casual_payg":
+                status, eligible = "casual_payg", False
+            elif res.reason == "start_date_required":
+                status, eligible = "no_start_date", False
+            elif (
+                not hours_test_relevant
+                and service is not None
+                and milestone_months is not None
+                and service.is_milestone_reached(milestone_months)
+            ):
+                # FT/fixed staff who reached the milestone: hours test is
+                # satisfied by contracted hours (see check_mark_eligibility).
+                status, eligible = "eligible", True
+            else:
+                status, eligible = "pending", False
+
+        items.append(
+            {
+                "leave_type_id": lt.id,
+                "code": lt.code,
+                "name": lt.name,
+                "is_paid": lt.is_paid,
+                "is_statutory": lt.is_statutory,
+                "accrual_method": lt.accrual_method,
+                "confidential_visibility": lt.confidential_visibility,
+                "status": status,
+                "eligible": eligible,
+                "milestone_key": milestone_key,
+                "milestone_months": milestone_months,
+                "eligible_on": eligible_on,
+                "reason": reason,
+                "hours_test_required": hours_test_required,
+                "hours_test_met": hours_test_met,
+                "accrued_hours": accrued,
+                "used_hours": used,
+                "pending_hours": pending,
+                "available_hours": available,
+                "has_balance": bal is not None,
+            }
+        )
+
+    return {
+        "staff_id": staff_id,
+        "employment_start_date": start,
+        "months_completed": months_completed,
+        "days_employed": days_employed,
+        "rule_set_version": rule_set.version if rule_set else None,
+        "items": items,
+    }

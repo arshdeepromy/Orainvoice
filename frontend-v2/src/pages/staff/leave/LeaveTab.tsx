@@ -28,8 +28,8 @@ import {
 } from '@/api/leave'
 import { Spinner } from '@/components/ui'
 
-import BalanceCardsRow from './BalanceCardsRow'
 import CasualLeaveBanner from './CasualLeaveBanner'
+import LeaveEligibilityGrid from './LeaveEligibilityGrid'
 import LedgerTable from './LedgerTable'
 import RequestLeaveModal from './RequestLeaveModal'
 import AdjustBalanceModal from './AdjustBalanceModal'
@@ -172,11 +172,7 @@ export default function LeaveTab({ staff, canAdjust }: Props) {
         </div>
       </div>
 
-      <BalanceCardsRow
-        balances={balances ?? []}
-        leaveTypes={leaveTypes ?? []}
-        employmentType={staff?.employment_type ?? ''}
-      />
+      <LeaveEligibilityGrid staffId={staffId} />
 
       {isCasual && <CasualLeaveBanner />}
 

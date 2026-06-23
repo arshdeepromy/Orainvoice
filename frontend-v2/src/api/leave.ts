@@ -624,3 +624,66 @@ export async function getStaffLeaveContext(
     availability_schedule: d.availability_schedule ?? {},
   }
 }
+
+
+// ===========================================================================
+// Per-staff leave eligibility overview (drill-in Leave view)
+// ===========================================================================
+
+export type LeaveEligibilityStatus =
+  | 'eligible'
+  | 'pending'
+  | 'casual_payg'
+  | 'always'
+  | 'no_start_date'
+
+export interface StaffLeaveEligibilityItem {
+  leave_type_id: string
+  code: string
+  name: string
+  is_paid: boolean
+  is_statutory: boolean
+  accrual_method: string
+  confidential_visibility: boolean
+  status: LeaveEligibilityStatus
+  eligible: boolean
+  milestone_key: string | null
+  milestone_months: number | null
+  eligible_on: string | null
+  reason: string | null
+  hours_test_required: boolean
+  hours_test_met: boolean | null
+  accrued_hours: string
+  used_hours: string
+  pending_hours: string
+  available_hours: string
+  has_balance: boolean
+}
+
+export interface StaffLeaveEligibility {
+  staff_id: string
+  employment_start_date: string | null
+  months_completed: number | null
+  days_employed: number | null
+  rule_set_version: string | null
+  items: StaffLeaveEligibilityItem[]
+}
+
+export async function getStaffLeaveEligibility(
+  staffId: string,
+  signal?: AbortSignal,
+): Promise<StaffLeaveEligibility> {
+  const res = await apiClient.get<StaffLeaveEligibility>(
+    `/api/v2/leave/staff/${staffId}/eligibility`,
+    { signal },
+  )
+  const d = res.data
+  return {
+    staff_id: d?.staff_id ?? staffId,
+    employment_start_date: d?.employment_start_date ?? null,
+    months_completed: d?.months_completed ?? null,
+    days_employed: d?.days_employed ?? null,
+    rule_set_version: d?.rule_set_version ?? null,
+    items: d?.items ?? [],
+  }
+}

@@ -371,6 +371,47 @@ class UnmarkDayLeaveResponse(BaseModel):
 
 
 # ===========================================================================
+# Per-staff leave eligibility overview (drill-in Leave view)
+# ===========================================================================
+
+
+class StaffLeaveEligibilityItem(BaseModel):
+    """One leave type with the staff member's eligibility + balance."""
+
+    leave_type_id: UUID
+    code: str
+    name: str
+    is_paid: bool
+    is_statutory: bool
+    accrual_method: str
+    confidential_visibility: bool
+    status: str  # eligible | pending | casual_payg | always | no_start_date
+    eligible: bool
+    milestone_key: str | None = None
+    milestone_months: int | None = None
+    eligible_on: date | None = None
+    reason: str | None = None
+    hours_test_required: bool = False
+    hours_test_met: bool | None = None
+    accrued_hours: Decimal
+    used_hours: Decimal
+    pending_hours: Decimal
+    available_hours: Decimal
+    has_balance: bool
+
+
+class StaffLeaveEligibilityResponse(BaseModel):
+    """Per-staff eligibility overview across every active leave type."""
+
+    staff_id: UUID
+    employment_start_date: date | None = None
+    months_completed: int | None = None
+    days_employed: int | None = None
+    rule_set_version: str | None = None
+    items: list[StaffLeaveEligibilityItem] = Field(default_factory=list)
+
+
+# ===========================================================================
 # Org-wide Leave Balances view (Leave Balances & Eligibility feature)
 # ===========================================================================
 

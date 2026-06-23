@@ -74,6 +74,8 @@ from app.modules.leave.schemas import (
     MarkDayLeaveResponse,
     UnmarkDayLeaveRequest,
     UnmarkDayLeaveResponse,
+    StaffLeaveEligibilityItem,
+    StaffLeaveEligibilityResponse,
     ReferenceGuideResponse,
     ReferenceGuideSection,
     StaffLeaveBalances,
@@ -395,6 +397,41 @@ async def unmark_day_leave_endpoint(
     except LeaveServiceError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     return UnmarkDayLeaveResponse(**result)
+
+
+@router.get(
+    "/leave/staff/{staff_id}/eligibility",
+    response_model=StaffLeaveEligibilityResponse,
+    summary="Per-staff eligibility + balance across every active leave type",
+)
+async def staff_leave_eligibility(
+    staff_id: UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Return every active leave type with this staff member's eligibility
+    status and current balance — powers the drill-in Leave view.
+
+    Module-gated by ``staff_management`` and the ``leave.balance_view``
+    permission. Org-scoped via RLS.
+    """
+    await _require_staff_management_module(request, db)
+    _require_permission(request, "leave.balance_view")
+    org_id = _get_org_id(request)
+    try:
+        result = await leave_service.compute_staff_leave_eligibility(
+            db, org_id=org_id, staff_id=staff_id,
+        )
+    except LeaveServiceError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return StaffLeaveEligibilityResponse(
+        staff_id=result["staff_id"],
+        employment_start_date=result["employment_start_date"],
+        months_completed=result["months_completed"],
+        days_employed=result["days_employed"],
+        rule_set_version=result["rule_set_version"],
+        items=[StaffLeaveEligibilityItem(**it) for it in result["items"]],
+    )
 
 
 @router.get(
