@@ -11,7 +11,7 @@ from app.core.storage_manager import StorageManager
 
 router = APIRouter()
 UPLOAD_BASE = Path(os.environ.get("UPLOAD_DIR", "/app/uploads"))
-MAX_FILE_SIZE = 10 * 1024 * 1024
+MAX_FILE_SIZE = 20 * 1024 * 1024
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 COMP_ZLIB = b"\x01"
 COMP_IMAGE = b"\x02"
