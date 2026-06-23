@@ -179,6 +179,8 @@ export interface AttendanceShift {
   source: string
   scheduled_start: string | null
   scheduled_end: string | null
+  pattern_start: string | null
+  pattern_end: string | null
   is_open: boolean
   reviewed: boolean
   reviewed_by_name: string | null

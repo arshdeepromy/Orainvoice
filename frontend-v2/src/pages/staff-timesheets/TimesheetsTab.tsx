@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import apiClient from '@/api/client'
 import type {
   TimesheetListResponse,
@@ -45,8 +46,10 @@ export default function TimesheetsTab({ onPeriodSummary }: TimesheetsTabProps) {
   const [selectedPeriod, setSelectedPeriod] = useState<string>('')
   const [selectedCycleId, setSelectedCycleId] = useState<string>('')
 
-  // Filter state
-  const [searchQuery, setSearchQuery] = useState('')
+  // Filter state. The `staff` query param (set by the Attendance tab's
+  // "Adjust in Timesheets" jump) pre-seeds the staff-name search.
+  const [searchParams] = useSearchParams()
+  const [searchQuery, setSearchQuery] = useState(searchParams.get('staff') ?? '')
   const [statusFilter, setStatusFilter] = useState<string>('all')
 
   // Action loading state (per row)

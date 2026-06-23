@@ -131,14 +131,21 @@ async def _seed_org_and_branch(session: AsyncSession) -> tuple[uuid.UUID, uuid.U
     return org.id, branch.id
 
 
-async def _new_staff(session: AsyncSession, *, org_id: uuid.UUID, name: str) -> StaffMember:
+async def _new_staff(
+    session: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    name: str,
+    working_arrangement: str = "rostered",
+    availability_schedule: dict | None = None,
+) -> StaffMember:
     staff = StaffMember(
         org_id=org_id,
         name=name,
         first_name=name.split()[0],
         employment_type="permanent",
-        working_arrangement="rostered",
-        availability_schedule={},
+        working_arrangement=working_arrangement,
+        availability_schedule=availability_schedule or {},
         is_active=True,
         position="Technician",
     )
@@ -419,3 +426,65 @@ def test_review_all_shifts_idempotent():
     **Validates: Attendance review — bulk approve all + idempotency.**
     """
     asyncio.run(_run_review_all_idempotent())
+
+
+# ---------------------------------------------------------------------------
+# Test 5: fixed-hours staff show their weekly pattern times per shift even when
+#         no rostered shift exists to match against.
+# ---------------------------------------------------------------------------
+
+# Mon 1 Jun 2026 is a Monday, so _DAY1 (2 Jun) = Tuesday, _DAY2 (3 Jun) = Wed.
+_FIXED_PATTERN = {
+    "tuesday": {"start": "09:00", "end": "17:00"},
+    "wednesday": {"start": "08:30", "end": "16:30"},
+}
+
+
+async def _run_fixed_pattern_in_detail() -> None:
+    engine, factory = await _make_engine_and_factory()
+    try:
+        async with factory() as session:
+            try:
+                org_id, branch_id = await _seed_org_and_branch(session)
+                staff = await _new_staff(
+                    session, org_id=org_id, name="Fixed Fiona",
+                    working_arrangement="fixed",
+                    availability_schedule=_FIXED_PATTERN,
+                )
+                await _new_clock_entry(
+                    session, org_id=org_id, staff_id=staff.id, branch_id=branch_id,
+                    day=_DAY1, worked_minutes=480,  # Tuesday
+                )
+                await _new_clock_entry(
+                    session, org_id=org_id, staff_id=staff.id, branch_id=branch_id,
+                    day=_DAY2, worked_minutes=480,  # Wednesday
+                )
+
+                detail = await compute_attendance_detail(
+                    session, org_id=org_id, staff_id=staff.id,
+                    start_date=_DAY1, end_date=_DAY2,
+                )
+                by_date = {s.work_date: s for s in detail.shifts}
+                tue = by_date[_DAY1.isoformat()]
+                wed = by_date[_DAY2.isoformat()]
+                # No rostered shift was linked → scheduled_* stays None, but the
+                # fixed weekly pattern surfaces per weekday.
+                assert tue.scheduled_start is None
+                assert tue.pattern_start == "09:00"
+                assert tue.pattern_end == "17:00"
+                assert wed.pattern_start == "08:30"
+                assert wed.pattern_end == "16:30"
+                # Expected source for a fixed employee is the fixed pattern.
+                assert detail.expected_source == "fixed"
+            finally:
+                await session.rollback()
+    finally:
+        await engine.dispose()
+
+
+def test_fixed_staff_show_pattern_times_per_shift():
+    """Fixed-hours staff show their weekly pattern per shift (no rostered match).
+
+    **Validates: Attendance review — fixed-pattern fallback in shift drill-in.**
+    """
+    asyncio.run(_run_fixed_pattern_in_detail())

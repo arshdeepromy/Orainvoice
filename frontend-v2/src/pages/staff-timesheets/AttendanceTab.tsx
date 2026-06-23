@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import apiClient from '@/api/client'
 import { useBranch } from '@/contexts/BranchContext'
 import { useToast, ToastContainer } from '@/components/ui'
@@ -388,6 +389,7 @@ function AttendanceRowItem({ row, start, end, expanded, onToggle, onReviewed, ad
           <ExpandPanel
             open={expanded}
             staffId={row.staff_id}
+            staffName={row.staff_name}
             start={start}
             end={end}
             onReviewed={onReviewed}
@@ -402,13 +404,15 @@ function AttendanceRowItem({ row, start, end, expanded, onToggle, onReviewed, ad
 interface ExpandPanelProps {
   open: boolean
   staffId: string
+  staffName: string
   start: string
   end: string
   onReviewed: () => void
   addToast: (kind: 'success' | 'error' | 'info', msg: string) => void
 }
 
-function ExpandPanel({ open, staffId, start, end, onReviewed, addToast }: ExpandPanelProps) {
+function ExpandPanel({ open, staffId, staffName, start, end, onReviewed, addToast }: ExpandPanelProps) {
+  const navigate = useNavigate()
   const [detail, setDetail] = useState<AttendanceDetailResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -508,15 +512,27 @@ function ExpandPanel({ open, staffId, start, end, onReviewed, addToast }: Expand
                   Shifts ({detail.shifts.length})
                   {pending > 0 && <span className="ml-2 text-warn">· {pending} pending review</span>}
                 </p>
-                {pending > 0 && (
+                <div className="flex items-center gap-2">
                   <button
-                    onClick={reviewAll}
-                    disabled={busyAll}
-                    className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-accent px-3 text-xs font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+                    onClick={() => navigate(`/timesheets?tab=timesheets&staff=${encodeURIComponent(staffName)}`)}
+                    title="Adjust payable hours, approve and lock for the pay run in the Timesheets tab"
+                    className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-card px-3 text-xs font-medium text-text transition-colors hover:bg-canvas"
                   >
-                    {busyAll ? 'Approving…' : `Approve all (${pending})`}
+                    Adjust in Timesheets
+                    <svg className="h-3.5 w-3.5 text-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+                    </svg>
                   </button>
-                )}
+                  {pending > 0 && (
+                    <button
+                      onClick={reviewAll}
+                      disabled={busyAll}
+                      className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-accent px-3 text-xs font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+                    >
+                      {busyAll ? 'Approving…' : `Approve all (${pending})`}
+                    </button>
+                  )}
+                </div>
               </div>
 
               <div className="overflow-hidden rounded-lg border border-border">
@@ -544,9 +560,16 @@ function ExpandPanel({ open, staffId, start, end, onReviewed, addToast }: Expand
                         </td>
                         <td className="px-3 py-2 text-right font-mono text-text">{fmtHours(s.worked_hours)}</td>
                         <td className="px-3 py-2 text-xs text-muted">
-                          {s.scheduled_start
-                            ? `${fmtTime(s.scheduled_start)}–${fmtTime(s.scheduled_end)}`
-                            : <span className="italic">unmatched</span>}
+                          {s.scheduled_start ? (
+                            `${fmtTime(s.scheduled_start)}–${fmtTime(s.scheduled_end)}`
+                          ) : s.pattern_start ? (
+                            <span title="From this staff member's fixed weekly pattern (no rostered shift)">
+                              {s.pattern_start}–{s.pattern_end}
+                              <span className="ml-1 text-[10px] italic text-muted/70">pattern</span>
+                            </span>
+                          ) : (
+                            <span className="italic">unmatched</span>
+                          )}
                         </td>
                         <td className="px-3 py-2 text-xs text-muted">{s.branch_name ?? '—'}</td>
                         <td className="px-3 py-2 text-right">
@@ -578,12 +601,18 @@ function ExpandPanel({ open, staffId, start, end, onReviewed, addToast }: Expand
                 </table>
               </div>
 
-              <p className="text-[11px] text-muted">
+              <p className="text-[11px] leading-relaxed text-muted">
                 Approving a shift signs off its hours for payroll. Worked{' '}
                 <span className="font-mono">{fmtHours(detail.worked_hours)}</span>
                 {detail.expected_hours != null && (
                   <> of <span className="font-mono">{fmtHours(detail.expected_hours)}</span> expected</>
                 )}.
+                <br />
+                <span className="font-medium">Scheduled</span> shows the rostered shift a clock-in
+                matched; <span className="italic">pattern</span> is the fixed weekly schedule for
+                fixed-hours staff (no rostered shift to match); <span className="italic">unmatched</span>{' '}
+                means neither applies. To change payable hours, run the approve/lock pay-run flow, or
+                adjust the final figure, use <span className="font-medium">Adjust in Timesheets</span>.
               </p>
             </div>
           )}

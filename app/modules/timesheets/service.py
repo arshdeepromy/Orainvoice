@@ -1075,11 +1075,22 @@ async def compute_attendance_detail(
     worked = 0
     reviewed_count = 0
     pending_review_count = 0
+    avail = getattr(staff, "availability_schedule", None)
+    _wd_keys = (
+        "monday", "tuesday", "wednesday", "thursday",
+        "friday", "saturday", "sunday",
+    )
     for e in entries:
         flags = e.flags or {}
         is_open = e.clock_out_at is None
         reviewed = bool(flags.get("reviewed"))
         sched = sched_map.get(e.scheduled_entry_id) if e.scheduled_entry_id else None
+        local_date = e.clock_in_at.astimezone(org_tz).date()
+        # Fixed/rostered weekly pattern for this weekday (no rostered shift to
+        # match against → still show what was expected per the pattern).
+        day_pat = avail.get(_wd_keys[local_date.weekday()]) if isinstance(avail, dict) else None
+        pattern_start = day_pat.get("start") if isinstance(day_pat, dict) else None
+        pattern_end = day_pat.get("end") if isinstance(day_pat, dict) else None
         reviewer_uid = flags.get("reviewed_by")
         reviewer_name = None
         if reviewer_uid:
@@ -1096,7 +1107,7 @@ async def compute_attendance_detail(
         shifts.append(
             AttendanceShift(
                 id=e.id,
-                work_date=e.clock_in_at.astimezone(org_tz).date().isoformat(),
+                work_date=local_date.isoformat(),
                 clock_in_at=e.clock_in_at,
                 clock_out_at=e.clock_out_at,
                 worked_hours=_minutes_to_hours(e.worked_minutes or 0) if not is_open else None,
@@ -1104,6 +1115,8 @@ async def compute_attendance_detail(
                 source=e.source,
                 scheduled_start=getattr(sched, "start_time", None),
                 scheduled_end=getattr(sched, "end_time", None),
+                pattern_start=pattern_start,
+                pattern_end=pattern_end,
                 is_open=is_open,
                 reviewed=reviewed,
                 reviewed_by_name=reviewer_name,

@@ -276,6 +276,8 @@ class AttendanceShift(BaseModel):
     source: str
     scheduled_start: datetime | None = None
     scheduled_end: datetime | None = None
+    pattern_start: str | None = None     # fixed weekly pattern HH:MM for this weekday
+    pattern_end: str | None = None
     is_open: bool = False                # not yet clocked out
     reviewed: bool = False               # signed off for payroll
     reviewed_by_name: str | None = None
