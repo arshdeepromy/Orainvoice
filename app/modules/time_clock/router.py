@@ -354,6 +354,18 @@ def _raise_clock_service_error(exc: clock_service.TimeClockServiceError) -> None
         raise HTTPException(
             status_code=409, detail={"detail": str(exc) or "invalid_action"},
         )
+    if isinstance(exc, clock_service.OnLeaveError):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "detail": "on_leave",
+                "message": (
+                    f"You're on {exc.leave_type_name} today and can't clock in. "
+                    "Speak to your manager if this is wrong."
+                ),
+                "leave_type_name": exc.leave_type_name,
+            },
+        )
     if isinstance(exc, clock_service.StaffNotFoundError):
         raise HTTPException(status_code=404, detail="Staff member not found")
     if isinstance(exc, clock_service.TimeClockEntryNotFoundError):

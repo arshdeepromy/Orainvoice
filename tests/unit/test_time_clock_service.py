@@ -158,6 +158,7 @@ def _make_db(
     clock_in_policy: dict | None = None,
     branches: list[SimpleNamespace] | None = None,
     entry_by_id: dict[uuid.UUID, TimeClockEntry] | None = None,
+    on_leave_type_name: str | None = None,
 ) -> AsyncMock:
     """Build an :class:`AsyncMock` DB session covering every code path
     the service uses.
@@ -188,6 +189,10 @@ def _make_db(
 
     async def _fake_execute(stmt, params=None):
         result = MagicMock()
+        # Default .first() to None so the org-timezone lookup and the
+        # clock-in on-leave check (both use .first()) are no-ops unless a
+        # specific branch below overrides them.
+        result.first.return_value = None
         rendered = str(stmt).lower()
         # Plain text() statements expose .text — use that when set.
         try:
@@ -232,6 +237,12 @@ def _make_db(
                 result.scalar_one_or_none.return_value = uuid.uuid4()
             else:
                 result.scalar_one_or_none.return_value = None
+            return result
+        # 7. select(LeaveType.name JOIN leave_requests) — clock-in leave gate.
+        if "leave_requests" in rendered:
+            result.first.return_value = (
+                (on_leave_type_name,) if on_leave_type_name is not None else None
+            )
             return result
         # Default — empty.
         result.scalar_one_or_none.return_value = None
@@ -456,6 +467,29 @@ class TestKioskLookup:
 
 
 class TestKioskClockAction:
+
+    @pytest.mark.asyncio
+    async def test_clock_in_blocked_when_on_leave(self, captured_audit):
+        """Clock-in is refused with OnLeaveError carrying the leave type when
+        the staff member has approved leave covering today."""
+        from app.modules.time_clock.service import OnLeaveError
+
+        org_id = uuid.uuid4()
+        staff = _make_staff(org_id=org_id)
+        db = _make_db(
+            staff_by_id={staff.id: staff},
+            on_leave_type_name="Parental leave",
+        )
+
+        with pytest.raises(OnLeaveError) as exc:
+            await kiosk_clock_action(
+                db,
+                org_id=org_id,
+                staff_id=staff.id,
+                action="in",
+                photo_file_key="kiosk-photo-key",
+            )
+        assert exc.value.leave_type_name == "Parental leave"
 
     @pytest.mark.asyncio
     async def test_clock_in_inserts_kiosk_row_with_audit(self, captured_audit):

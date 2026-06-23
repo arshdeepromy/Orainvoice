@@ -34,7 +34,7 @@ import RosterGrid from './components/RosterGrid'
 import TemplatePalette from './components/TemplatePalette'
 import LeaveTypePalette, { leaveSwatch } from './components/LeaveTypePalette'
 import { Modal } from '@/components/ui/Modal'
-import { markDayLeave, type LeaveType } from '@/api/leave'
+import { markDayLeave, unmarkDayLeave, type LeaveType } from '@/api/leave'
 import CopyWeekConfirmModal from './components/CopyWeekConfirmModal'
 import ConflictBanner, {
   type ConflictBannerEntry,
@@ -259,6 +259,14 @@ export default function RosterGridPage() {
   } | null>(null)
   const [leaveSubmitting, setLeaveSubmitting] = useState(false)
   const [leaveError, setLeaveError] = useState<string | null>(null)
+
+  // Remove-leave confirmation (roster "×" on a leave cell).
+  const [removeLeave, setRemoveLeave] = useState<{
+    staffId: string
+    date: Date
+    label: string
+  } | null>(null)
+  const [removeLeaveBusy, setRemoveLeaveBusy] = useState(false)
 
   // Leave paint and template paint are mutually exclusive.
   const handleSelectLeaveType = useCallback((lt: LeaveType | null) => {
@@ -528,6 +536,50 @@ export default function RosterGridPage() {
       setLeaveSubmitting(false)
     }
   }, [leaveConfirm, selectedLeaveType, filteredStaff, addToast, refetch, setEntries])
+
+  /* Open the remove-leave confirm when the × on a leave cell is clicked. */
+  const handleRequestRemoveLeave = useCallback(
+    (staffId: string, date: Date) => {
+      const overlay = leaveByStaffDate.get(staffId)?.get(toIsoDate(date))
+      setRemoveLeave({
+        staffId,
+        date,
+        label: overlay?.leave_type_label ?? 'leave',
+      })
+    },
+    [leaveByStaffDate],
+  )
+
+  const handleConfirmRemoveLeave = useCallback(async () => {
+    if (!removeLeave) return
+    setRemoveLeaveBusy(true)
+    try {
+      await unmarkDayLeave({
+        staff_id: removeLeave.staffId,
+        date: toIsoDate(removeLeave.date),
+      })
+      const sm = filteredStaff.find((s) => s.id === removeLeave.staffId)
+      const name =
+        sm?.name ??
+        `${sm?.first_name ?? ''} ${sm?.last_name ?? ''}`.trim() ??
+        'Staff'
+      addToast('success', `Removed ${removeLeave.label} for ${name}.`)
+      setRemoveLeave(null)
+      refetch()
+    } catch (err: unknown) {
+      const detail = (
+        err as { response?: { data?: { detail?: unknown } } }
+      )?.response?.data?.detail
+      addToast(
+        'error',
+        typeof detail === 'string'
+          ? detail
+          : 'Could not remove leave. Please try again.',
+      )
+    } finally {
+      setRemoveLeaveBusy(false)
+    }
+  }, [removeLeave, filteredStaff, addToast, refetch])
 
   /* B6 — modal save / delete callbacks mutate the cache. */
   const handleModalSave = useCallback(() => {
@@ -1398,6 +1450,7 @@ export default function RosterGridPage() {
               conflictCells={conflictCellSet}
               savingEntryIds={savingEntryIds}
               ariaBusy={bulkInFlight}
+              onRemoveLeave={handleRequestRemoveLeave}
             />
           </div>
         </div>
@@ -1536,6 +1589,64 @@ export default function RosterGridPage() {
           onClose={() => setLeaveOverlap(null)}
         />
       )}
+
+      {/* Remove-leave confirmation */}
+      <Modal
+        open={!!removeLeave}
+        onClose={() => {
+          if (!removeLeaveBusy) setRemoveLeave(null)
+        }}
+        title="Remove leave"
+        className="max-w-md"
+      >
+        {removeLeave && (
+          <div className="space-y-4">
+            <p className="text-sm text-text">
+              Remove{' '}
+              <span className="font-semibold">{removeLeave.label}</span> for{' '}
+              <span className="font-semibold">
+                {(() => {
+                  const sm = filteredStaff.find(
+                    (s) => s.id === removeLeave.staffId,
+                  )
+                  return (
+                    sm?.name ??
+                    `${sm?.first_name ?? ''} ${sm?.last_name ?? ''}`.trim() ??
+                    'this staff member'
+                  )
+                })()}
+              </span>{' '}
+              on{' '}
+              <span className="font-semibold">
+                {formatShort(removeLeave.date)}
+              </span>
+              ?
+            </p>
+            <p className="text-xs text-muted">
+              Their leave balance is restored and any open shift raised for
+              that day is closed.
+            </p>
+            <div className="flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setRemoveLeave(null)}
+                disabled={removeLeaveBusy}
+                className="rounded-ctl border border-border bg-card px-4 py-2 text-sm font-medium text-text hover:bg-canvas disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmRemoveLeave}
+                disabled={removeLeaveBusy}
+                className="rounded-ctl bg-danger px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-danger"
+              >
+                {removeLeaveBusy ? 'Removing…' : 'Remove leave'}
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
     </>
   )
 }

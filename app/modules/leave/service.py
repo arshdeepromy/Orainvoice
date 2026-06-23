@@ -1919,3 +1919,146 @@ async def mark_day_leave(
         "displaced_shift_count": len(displaced),
         "open_shift_ids": open_shift_ids,
     }
+
+
+# ---------------------------------------------------------------------------
+# unmark_day_leave — reverse a roster-grid "paint leave" action
+# ---------------------------------------------------------------------------
+
+
+async def unmark_day_leave(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    staff_id: uuid.UUID,
+    on_date: date,
+    requested_by_user_id: uuid.UUID,
+    request: "Request",
+) -> dict:
+    """Admin action: remove a staff member's leave on a single day.
+
+    The inverse of :func:`mark_day_leave`. Within the request transaction:
+      1. Cancel every APPROVED leave request that covers ``on_date`` for the
+         staff member (reusing :func:`cancel_request`, which restores the
+         balance via a compensating ledger row).
+      2. Delete the ``entry_type='leave'`` schedule rows that approval created
+         for that day so no ghost leave block lingers on the grid.
+      3. Cancel any OPEN shift-cover request the staff member raised for a
+         shift on that day — they're back, so the shift no longer needs cover.
+
+    The day is resolved in the org's local timezone (so NZ-morning shifts
+    stored on the previous UTC date are matched correctly). Returns a summary.
+    """
+    from datetime import datetime, time as _time, timedelta
+    from zoneinfo import ZoneInfo
+
+    from sqlalchemy import text as _sql_text
+
+    from app.modules.scheduling_v2.models import ScheduleEntry
+    from app.modules.time_clock import cover as cover_service
+    from app.modules.time_clock.models import ShiftCoverRequest
+
+    staff = await db.get(StaffMember, staff_id)
+    if staff is None or staff.org_id != org_id:
+        raise LeaveServiceError("staff_not_found")
+
+    # Org-local day → UTC window for matching schedule rows / covers.
+    tz_row = (
+        await db.execute(
+            _sql_text("SELECT timezone FROM organisations WHERE id = :oid"),
+            {"oid": str(org_id)},
+        )
+    ).first()
+    tz_name = (tz_row[0] if tz_row else None) or "Pacific/Auckland"
+    try:
+        org_tz = ZoneInfo(tz_name)
+    except Exception:  # noqa: BLE001
+        org_tz = ZoneInfo("UTC")
+
+    day_start = datetime.combine(on_date, _time.min, tzinfo=org_tz).astimezone(
+        timezone.utc
+    )
+    day_end = datetime.combine(
+        on_date + timedelta(days=1), _time.min, tzinfo=org_tz
+    ).astimezone(timezone.utc)
+
+    # 1. Cancel approved leave requests covering this day.
+    req_rows = (
+        await db.execute(
+            select(LeaveRequest).where(
+                LeaveRequest.org_id == org_id,
+                LeaveRequest.staff_id == staff_id,
+                LeaveRequest.status == "approved",
+                LeaveRequest.start_date <= on_date,
+                LeaveRequest.end_date >= on_date,
+            )
+        )
+    ).scalars().all()
+
+    cancelled_request_ids: list[uuid.UUID] = []
+    for lr in req_rows:
+        await cancel_request(
+            db,
+            org_id=org_id,
+            request_id=lr.id,
+            user_id=requested_by_user_id,
+            request=request,
+        )
+        cancelled_request_ids.append(lr.id)
+
+    if not cancelled_request_ids:
+        raise LeaveServiceError("no_leave_to_remove")
+
+    # 2. Delete the leave schedule rows approval created for that day.
+    leave_entries = (
+        await db.execute(
+            select(ScheduleEntry).where(
+                ScheduleEntry.org_id == org_id,
+                ScheduleEntry.staff_id == staff_id,
+                ScheduleEntry.entry_type == "leave",
+                ScheduleEntry.start_time >= day_start,
+                ScheduleEntry.start_time < day_end,
+            )
+        )
+    ).scalars().all()
+    for entry in leave_entries:
+        await db.delete(entry)
+
+    # 3. Cancel any open cover the staff raised for a shift that day.
+    cover_rows = (
+        await db.execute(
+            select(ShiftCoverRequest)
+            .join(
+                ScheduleEntry,
+                ScheduleEntry.id == ShiftCoverRequest.schedule_entry_id,
+            )
+            .where(
+                ShiftCoverRequest.org_id == org_id,
+                ShiftCoverRequest.requester_staff_id == staff_id,
+                ShiftCoverRequest.status == "open",
+                ScheduleEntry.start_time >= day_start,
+                ScheduleEntry.start_time < day_end,
+            )
+        )
+    ).scalars().all()
+    cancelled_cover_ids: list[uuid.UUID] = []
+    for cover in cover_rows:
+        try:
+            await cover_service.cancel_cover_request(
+                db,
+                org_id=org_id,
+                cover_id=cover.id,
+                acting_staff_id=None,
+                user_id=requested_by_user_id,
+            )
+            cancelled_cover_ids.append(cover.id)
+        except cover_service.ShiftCoverServiceError:
+            continue
+
+    await db.flush()
+
+    return {
+        "cancelled_request_ids": cancelled_request_ids,
+        "cancelled_cover_ids": cancelled_cover_ids,
+        "leave_entries_removed": len(leave_entries),
+    }

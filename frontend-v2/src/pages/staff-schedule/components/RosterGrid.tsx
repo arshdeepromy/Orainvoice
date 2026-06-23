@@ -228,6 +228,8 @@ export interface RosterGridProps {
   conflictCells?: Set<string>
   savingEntryIds?: Set<string>
   ariaBusy?: boolean
+  /** When provided, leave cells show a remove (×) control (admin/manager). */
+  onRemoveLeave?: (staffId: string, date: Date) => void
   /**
    * When true, the grid is in "leave paint" mode: every clickable cell
    * (including fixed-hours staff rows, which are otherwise read-only)
@@ -266,6 +268,7 @@ export default function RosterGrid({
   savingEntryIds,
   ariaBusy = false,
   leaveMode = false,
+  onRemoveLeave,
 }: RosterGridProps) {
   const [paintAnchor, setPaintAnchor] = useState<{
     row: number
@@ -684,7 +687,7 @@ export default function RosterGrid({
                       onPointerEnter={() =>
                         handleCellPointerEnter(rowIndex, colIndex)
                       }
-                      className={`${baseCellClass} bg-canvas text-muted ${
+                      className={`${baseCellClass} group bg-canvas text-muted ${
                         isInPaint ? 'ring-2 ring-accent' : ''
                       } ${
                         isConflict ? 'outline outline-2 outline-danger' : ''
@@ -698,6 +701,21 @@ export default function RosterGrid({
                       <div className="text-[11px] font-medium">
                         {leave.leave_type_label}
                       </div>
+                      {onRemoveLeave && (
+                        <button
+                          type="button"
+                          onClick={(ev) => {
+                            ev.stopPropagation()
+                            onRemoveLeave(s.id, d)
+                          }}
+                          onPointerDown={(ev) => ev.stopPropagation()}
+                          title="Remove leave"
+                          aria-label={`Remove ${leave.leave_type_label} for this day`}
+                          className="absolute right-0.5 top-0.5 flex h-5 w-5 items-center justify-center rounded-full text-muted opacity-0 transition hover:bg-danger/10 hover:text-danger focus:opacity-100 group-hover:opacity-100"
+                        >
+                          ×
+                        </button>
+                      )}
                     </div>
                   )
                 }

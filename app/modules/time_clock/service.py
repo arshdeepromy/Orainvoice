@@ -133,6 +133,17 @@ class InvalidActionError(TimeClockServiceError):
     """
 
 
+class OnLeaveError(TimeClockServiceError):
+    """Raised on clock-IN when the staff member has approved leave covering
+    the current day. Carries the leave-type name so the UI can tell them
+    exactly why. Router maps to HTTP 409 ``on_leave``.
+    """
+
+    def __init__(self, leave_type_name: str | None) -> None:
+        self.leave_type_name = leave_type_name or "leave"
+        super().__init__(f"on_leave: {self.leave_type_name}")
+
+
 class LockedWeekError(TimeClockServiceError):
     """Raised by manual edit / delete paths when the entry's
     ``clock_in_at`` falls inside an approved week
@@ -833,6 +844,57 @@ async def self_service_clock_action(
 # ---------------------------------------------------------------------------
 
 
+async def _approved_leave_on_date(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    staff_id: uuid.UUID,
+    when: datetime,
+) -> str | None:
+    """Return the leave-type name if the staff member has an APPROVED leave
+    request covering the org-local calendar day of ``when``, else ``None``.
+
+    The roster day is the org's local calendar day (``organisations.timezone``,
+    default ``Pacific/Auckland``), so a UTC ``when`` is mapped to the correct
+    local date before matching against the (date-typed) leave request range.
+    """
+    from zoneinfo import ZoneInfo
+
+    from sqlalchemy import text as _sql_text
+
+    from app.modules.leave.models import LeaveRequest, LeaveType
+
+    tz_row = (
+        await db.execute(
+            _sql_text("SELECT timezone FROM organisations WHERE id = :oid"),
+            {"oid": str(org_id)},
+        )
+    ).first()
+    tz_name = (tz_row[0] if tz_row else None) or "Pacific/Auckland"
+    try:
+        org_tz = ZoneInfo(tz_name)
+    except Exception:  # noqa: BLE001 - fall back to UTC on a bad tz string
+        org_tz = ZoneInfo("UTC")
+
+    local_date = when.astimezone(org_tz).date()
+
+    row = (
+        await db.execute(
+            select(LeaveType.name)
+            .join(LeaveRequest, LeaveRequest.leave_type_id == LeaveType.id)
+            .where(
+                LeaveRequest.org_id == org_id,
+                LeaveRequest.staff_id == staff_id,
+                LeaveRequest.status == "approved",
+                LeaveRequest.start_date <= local_date,
+                LeaveRequest.end_date >= local_date,
+            )
+            .limit(1)
+        )
+    ).first()
+    return row[0] if row else None
+
+
 async def _perform_clock_action(
     db: AsyncSession,
     *,
@@ -862,6 +924,12 @@ async def _perform_clock_action(
     if action == "in":
         if open_entry is not None:
             raise InvalidActionError("already_clocked_in")
+        # Block clock-in when the staff has approved leave covering today.
+        leave_name = await _approved_leave_on_date(
+            db, org_id=org_id, staff_id=staff.id, when=now,
+        )
+        if leave_name is not None:
+            raise OnLeaveError(leave_name)
         scheduled_entry_id = await _match_scheduled_entry(
             db, staff_id=staff.id, when=now,
         )

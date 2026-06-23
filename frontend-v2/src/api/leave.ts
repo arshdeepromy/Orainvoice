@@ -498,6 +498,30 @@ export async function markDayLeave(
   return res.data
 }
 
+export interface UnmarkDayLeavePayload {
+  staff_id: string
+  /** YYYY-MM-DD */
+  date: string
+}
+
+export interface UnmarkDayLeaveResult {
+  cancelled_request_ids: string[]
+  cancelled_cover_ids: string[]
+  leave_entries_removed: number
+}
+
+export async function unmarkDayLeave(
+  payload: UnmarkDayLeavePayload,
+  signal?: AbortSignal,
+): Promise<UnmarkDayLeaveResult> {
+  const res = await apiClient.post<UnmarkDayLeaveResult>(
+    '/api/v2/leave/unmark-day',
+    payload,
+    { signal },
+  )
+  return res.data
+}
+
 // ===========================================================================
 // Org-wide Leave Balances list + reference guide (Leave Balances & Eligibility)
 // ===========================================================================

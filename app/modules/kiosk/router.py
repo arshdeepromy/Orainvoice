@@ -353,6 +353,18 @@ def _translate_clock_service_error(
             status_code=409,
             content={"detail": str(exc) or "invalid_action"},
         )
+    if isinstance(exc, clock_service.OnLeaveError):
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": "on_leave",
+                "message": (
+                    f"You're on {exc.leave_type_name} today and can't clock in. "
+                    "Please see your manager if this is wrong."
+                ),
+                "leave_type_name": exc.leave_type_name,
+            },
+        )
     if isinstance(exc, clock_service.StaffNotFoundError):
         return JSONResponse(
             status_code=404, content={"detail": "staff_not_found"},

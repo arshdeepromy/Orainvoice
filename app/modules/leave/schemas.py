@@ -349,6 +349,27 @@ class MarkDayLeaveResponse(BaseModel):
     open_shift_ids: list[UUID] = Field(default_factory=list)
 
 
+class UnmarkDayLeaveRequest(BaseModel):
+    """Inbound payload for ``POST /api/v2/leave/unmark-day``.
+
+    Admin/manager action from the Roster Grid Editor: remove ``staff_id``'s
+    leave on a single ``date`` (the inverse of mark-day). Cancels the approved
+    leave request(s), clears the leave block, and closes any open cover the
+    staff raised for that day.
+    """
+
+    staff_id: UUID
+    date: date
+
+
+class UnmarkDayLeaveResponse(BaseModel):
+    """Result of an unmark-day-leave action."""
+
+    cancelled_request_ids: list[UUID] = Field(default_factory=list)
+    cancelled_cover_ids: list[UUID] = Field(default_factory=list)
+    leave_entries_removed: int = 0
+
+
 # ===========================================================================
 # Org-wide Leave Balances view (Leave Balances & Eligibility feature)
 # ===========================================================================

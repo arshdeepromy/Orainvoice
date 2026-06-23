@@ -72,6 +72,8 @@ from app.modules.leave.schemas import (
     LeaveTypeUpdate,
     MarkDayLeaveRequest,
     MarkDayLeaveResponse,
+    UnmarkDayLeaveRequest,
+    UnmarkDayLeaveResponse,
     ReferenceGuideResponse,
     ReferenceGuideSection,
     StaffLeaveBalances,
@@ -355,6 +357,44 @@ async def mark_day_leave_endpoint(
     except LeavePermissionDenied as exc:
         raise HTTPException(status_code=403, detail=str(exc))
     return MarkDayLeaveResponse(**result)
+
+
+@router.post(
+    "/leave/unmark-day",
+    response_model=UnmarkDayLeaveResponse,
+    summary="Remove a staff member's leave on a day (inverse of mark-day)",
+)
+async def unmark_day_leave_endpoint(
+    payload: UnmarkDayLeaveRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Roster-grid "remove leave" action (admin / manager).
+
+    Cancels the approved leave request(s) covering the date (restoring the
+    balance), clears the leave block, and closes any open cover the staff
+    raised for that day. Gated by the ``staff_management`` module and a
+    management role.
+    """
+    await _require_staff_management_module(request, db)
+    if _get_user_role(request) not in _MARK_LEAVE_ROLES:
+        raise HTTPException(status_code=403, detail="forbidden")
+    org_id = _get_org_id(request)
+    user_id = _get_user_id(request)
+    try:
+        result = await leave_service.unmark_day_leave(
+            db,
+            org_id=org_id,
+            staff_id=payload.staff_id,
+            on_date=payload.date,
+            requested_by_user_id=user_id,
+            request=request,
+        )
+    except LeavePermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except LeaveServiceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return UnmarkDayLeaveResponse(**result)
 
 
 @router.get(
