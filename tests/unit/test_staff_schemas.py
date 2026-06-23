@@ -162,13 +162,18 @@ class TestStaffMemberCreateEnums:
 
 
 class TestKiwisaverRateValidation:
-    """``kiwisaver_employee_rate`` must be one of the IRD-allowed values."""
+    """``kiwisaver_employee_rate`` accepts any custom value in 0–100 (the
+    IRD-standard-only restriction was lifted per org request)."""
 
     @pytest.mark.parametrize(
         "rate",
-        [Decimal("3"), Decimal("4"), Decimal("6"), Decimal("8"), Decimal("10")],
+        [
+            Decimal("3"), Decimal("3.5"), Decimal("4"), Decimal("5"),
+            Decimal("6"), Decimal("8"), Decimal("10"), Decimal("0"),
+            Decimal("12.5"),
+        ],
     )
-    def test_valid_rates_accepted(self, rate: Decimal) -> None:
+    def test_custom_rates_accepted(self, rate: Decimal) -> None:
         m = StaffMemberCreate(
             first_name="Jane",
             kiwisaver_enrolled=True,
@@ -176,8 +181,8 @@ class TestKiwisaverRateValidation:
         )
         assert m.kiwisaver_employee_rate == rate
 
-    @pytest.mark.parametrize("rate", [Decimal("0"), Decimal("5"), Decimal("11"), Decimal("3.5")])
-    def test_invalid_rate_raises(self, rate: Decimal) -> None:
+    @pytest.mark.parametrize("rate", [Decimal("-1"), Decimal("101"), Decimal("200")])
+    def test_out_of_range_rate_raises(self, rate: Decimal) -> None:
         with pytest.raises(ValidationError):
             StaffMemberCreate(
                 first_name="Jane",

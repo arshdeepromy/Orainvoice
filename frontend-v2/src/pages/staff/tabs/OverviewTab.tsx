@@ -605,7 +605,7 @@ const TAX_CODE_OPTIONS = [
   'ND',
 ]
 
-const KIWISAVER_RATES = ['3.00', '4.00', '6.00', '8.00', '10.00']
+
 
 // ---------------------------------------------------------------------------
 // OnboardingLinkCard — staff-detail "Onboarding link" lifecycle card (R10, R13).
@@ -1762,7 +1762,11 @@ export default function OverviewTab({ staffId, onDirtyChange }: OverviewTabProps
           <div>
             <label className={labelCls}>KiwiSaver employee rate (%)</label>
             {editing ? (
-              <select
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                max="100"
                 value={form.kiwisaver_employee_rate}
                 onChange={(e) =>
                   updateForm('kiwisaver_employee_rate', e.target.value)
@@ -1770,14 +1774,8 @@ export default function OverviewTab({ staffId, onDirtyChange }: OverviewTabProps
                 className={inputCls}
                 aria-label="KiwiSaver employee rate"
                 disabled={!form.kiwisaver_enrolled}
-              >
-                <option value="">—</option>
-                {KIWISAVER_RATES.map((r) => (
-                  <option key={r} value={r}>
-                    {r}
-                  </option>
-                ))}
-              </select>
+                placeholder="e.g. 3.5"
+              />
             ) : (
               <div className={`${readonlyCls} mono`}>
                 {staff.kiwisaver_employee_rate || '—'}

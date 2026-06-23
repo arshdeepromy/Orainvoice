@@ -136,10 +136,12 @@ class StaffMemberCreate(BaseModel):
     ) -> Decimal | None:
         if v is None:
             return v
-        if v not in _KIWISAVER_EMPLOYEE_RATES:
-            allowed = ", ".join(str(r) for r in _KIWISAVER_EMPLOYEE_RATES)
+        # Custom employee rate permitted (per-org choice). The IRD-standard
+        # restriction is lifted; we only bound it to a sane percentage range.
+        # Payroll deductions use whatever rate is configured here.
+        if v < 0 or v > 100:
             raise ValueError(
-                f"kiwisaver_employee_rate must be one of [{allowed}]",
+                "kiwisaver_employee_rate must be between 0 and 100",
             )
         return v
 
@@ -240,10 +242,11 @@ class StaffMemberUpdate(BaseModel):
     ) -> Decimal | None:
         if v is None:
             return v
-        if v not in _KIWISAVER_EMPLOYEE_RATES:
-            allowed = ", ".join(str(r) for r in _KIWISAVER_EMPLOYEE_RATES)
+        # Custom employee rate permitted (per-org choice). The IRD-standard
+        # restriction is lifted; we only bound it to a sane percentage range.
+        if v < 0 or v > 100:
             raise ValueError(
-                f"kiwisaver_employee_rate must be one of [{allowed}]",
+                "kiwisaver_employee_rate must be between 0 and 100",
             )
         return v
 
