@@ -67,6 +67,22 @@ async def create_default_main_branch(
     )
     db.add(branch)
     await db.flush()
+
+    # Seed the default statutory leave-type catalogue so every new org starts
+    # with the standard leave types preconfigured (org admins can then edit /
+    # deactivate them). Idempotent — only inserts missing codes. This is the
+    # universal new-org hook (all signup + provisioning paths call it), so it
+    # guarantees both trial and paid signups get the leave types. Best-effort:
+    # a seeding hiccup must never block org creation.
+    try:
+        from app.modules.leave.provisioning import ensure_default_leave_types
+
+        await ensure_default_leave_types(db, org_id)
+    except Exception:  # noqa: BLE001 — seeding is best-effort
+        logger.warning(
+            "default leave-type seeding failed for org %s", org_id, exc_info=True
+        )
+
     return branch
 
 
