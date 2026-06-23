@@ -274,6 +274,31 @@ _MILESTONE_PHRASE = {
 }
 
 
+def _weekly_hours_from_schedule(schedule: Any) -> "Decimal | None":
+    """Total contracted hours per week from an ``availability_schedule`` map,
+    or ``None`` when there is no usable schedule. Overnight shifts wrap."""
+    if not isinstance(schedule, dict) or not schedule:
+        return None
+    total_minutes = 0
+    for key in _WEEKDAY_KEYS:
+        entry = schedule.get(key)
+        if not isinstance(entry, dict):
+            continue
+        try:
+            sh, sm = str(entry.get("start")).split(":")
+            eh, em = str(entry.get("end")).split(":")
+            start = int(sh) * 60 + int(sm)
+            end = int(eh) * 60 + int(em)
+            if end <= start:
+                end += 24 * 60
+            total_minutes += end - start
+        except (ValueError, AttributeError, TypeError):
+            continue
+    if total_minutes <= 0:
+        return None
+    return Decimal(total_minutes) / Decimal(60)
+
+
 async def check_mark_eligibility(
     db: AsyncSession,
     *,
@@ -333,6 +358,46 @@ async def check_mark_eligibility(
         result.hours_test.met if result.hours_test is not None else None
     )
 
+    # The Hours_Test is only a real gate for casual / genuinely low-hours
+    # staff — a permanent full-time or fixed employee obviously meets the
+    # "average ≥ 10 hours/week" bar, so mentioning it just confuses admins
+    # (Holidays Act: the hours test is the gate for part-timers and casuals,
+    # not the FT/PT label). Only surface the hours-test wording for those.
+    # Weekly hours come from standard_hours_per_week, falling back to the
+    # fixed availability_schedule (fixed staff often leave the former NULL).
+    _emp = (getattr(staff, "employment_type", "") or "").lower()
+    _arrangement = (getattr(staff, "working_arrangement", "") or "").lower()
+    _shp = getattr(staff, "standard_hours_per_week", None)
+    weekly_hours = (
+        Decimal(_shp)
+        if _shp
+        else _weekly_hours_from_schedule(
+            getattr(staff, "availability_schedule", None)
+        )
+    )
+    is_casual = (
+        _emp == "casual"
+        or "casual" in _arrangement
+        or snapshot.holiday_pay_method == "casual_payg"
+    )
+    hours_test_relevant = is_casual or (
+        weekly_hours is not None
+        and weekly_hours < rule_set.hours_test.min_avg_hours_per_week
+    )
+
+    # A non-casual (full-time / fixed / sufficient-hours) employee who has
+    # reached the service milestone satisfies the hours test by virtue of
+    # their contracted hours — never block them on a clock-data-driven
+    # hours-test miss. Their only real gate is the service milestone.
+    if (
+        not hours_test_relevant
+        and hours_test_required
+        and hours_test_met is False
+        and service is not None
+        and service.is_milestone_reached(milestone_months)
+    ):
+        return
+
     if result.reason == "start_date_required":
         message = (
             f"{name} has no employment start date on record, so statutory "
@@ -344,11 +409,14 @@ async def check_mark_eligibility(
             f"{name} is paid annual holidays as 8% with each pay (casual "
             f"pay-as-you-go), so annual leave isn't accrued to mark here."
         )
-    elif hours_test_required and hours_test_met is False and (
-        service is not None
+    elif (
+        hours_test_required
+        and hours_test_met is False
+        and hours_test_relevant
+        and service is not None
         and service.is_milestone_reached(milestone_months)
     ):
-        # Milestone reached but the Hours_Test failed.
+        # Milestone reached but the Hours_Test failed (casual / low-hours only).
         message = (
             f"{name} has reached {milestone_months} months of service "
             f"(started {start.isoformat()}, {days_employed} days ago) but "
@@ -366,8 +434,12 @@ async def check_mark_eligibility(
             f"({months_completed} month(s), {days_employed} days ago) and "
             f"become eligible {phrase} — on {eligible_str}."
         )
-        if hours_test_required:
-            message += " The hours test must also be met at that point."
+        # Only mention the hours test for casual / low-hours staff (see above).
+        if hours_test_required and hours_test_relevant:
+            message += (
+                " For casual or low-hours staff, the hours test "
+                "(an average of at least 10 hours/week) must also be met."
+            )
 
     raise LeaveEligibilityError(
         {
