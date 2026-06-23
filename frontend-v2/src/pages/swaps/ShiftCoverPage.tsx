@@ -44,6 +44,9 @@ interface ShiftCover {
   expires_at: string | null
   accepted_at: string | null
   created_at: string
+  shift_start: string | null
+  shift_end: string | null
+  shift_title: string | null
 }
 
 interface ShiftCoverListResponse {
@@ -115,6 +118,31 @@ function formatDateTime(iso: string | null | undefined): string {
     })
   } catch {
     return '—'
+  }
+}
+
+/** Format the covered shift as e.g. "Wed 1 Jul · 09:00–17:00". */
+function formatShiftRange(
+  start: string | null | undefined,
+  end: string | null | undefined,
+): string | null {
+  if (!start) return null
+  try {
+    const s = new Date(start)
+    if (Number.isNaN(s.getTime())) return null
+    const dayLabel = s.toLocaleDateString([], {
+      weekday: 'short',
+      day: 'numeric',
+      month: 'short',
+    })
+    const t = (d: Date) =>
+      d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    const e = end ? new Date(end) : null
+    const timeLabel =
+      e && !Number.isNaN(e.getTime()) ? `${t(s)}–${t(e)}` : t(s)
+    return `${dayLabel} · ${timeLabel}`
+  } catch {
+    return null
   }
 }
 
@@ -318,6 +346,35 @@ export default function ShiftCoverPage() {
     [items],
   )
 
+  /* Admin: cancel an open cover — the shift no longer needs coverage. */
+  const handleCancelCover = useCallback(
+    async (coverId: string) => {
+      setActionError(null)
+      setRowBusy(coverId, true)
+      try {
+        await apiClient.post(`/api/v2/shift-cover/${coverId}/cancel`, {})
+        refresh()
+      } catch (err) {
+        if (isAbortError(err)) return
+        const detail = readErrorDetail(err)
+        const status = (err as { response?: { status?: number } })?.response
+          ?.status
+        let message = 'Could not cancel this open shift. Please try again.'
+        if (status === 409 && detail === 'invalid_state') {
+          message = 'This shift is no longer open.'
+        } else if (status === 403) {
+          message = "You don't have permission to cancel open shifts."
+        } else if (detail) {
+          message = detail
+        }
+        setActionError({ id: coverId, message })
+      } finally {
+        setRowBusy(coverId, false)
+      }
+    },
+    [refresh, setRowBusy],
+  )
+
   return (
     <div className="page page-wide" data-testid="shift-cover-page">
       <div className="page-head">
@@ -419,6 +476,18 @@ export default function ShiftCoverPage() {
                         needs cover
                       </span>
                     </p>
+                    {(() => {
+                      const range = formatShiftRange(
+                        cover?.shift_start,
+                        cover?.shift_end,
+                      )
+                      return (
+                        <p className="mt-1 text-sm font-medium text-text">
+                          {cover?.shift_title ? `${cover.shift_title} · ` : ''}
+                          {range ?? 'Shift date unavailable'}
+                        </p>
+                      )
+                    })()}
                     <p className="mono mt-1 text-xs text-muted">
                       Broadcast {formatDateTime(cover?.broadcast_at)}
                       {cover?.expires_at && (
@@ -527,6 +596,20 @@ export default function ShiftCoverPage() {
                     >
                       Claimed — refreshing list…
                     </span>
+                  )}
+
+                  {/* Admin: close an open shift that no longer needs cover */}
+                  {cover.status === 'open' && !justClaimed && canAssign && (
+                    <button
+                      type="button"
+                      onClick={() => void handleCancelCover(cover.id)}
+                      disabled={isBusy}
+                      className="min-h-[44px] rounded-ctl border border-border bg-card px-4 py-2 text-sm font-medium text-muted hover:bg-canvas hover:text-text disabled:cursor-not-allowed disabled:opacity-50"
+                      data-testid={`cover-cancel-${cover.id}`}
+                      title="This shift no longer needs coverage"
+                    >
+                      {isBusy ? 'Cancelling…' : 'No cover needed'}
+                    </button>
                   )}
                 </div>
 

@@ -559,6 +559,10 @@ class ShiftCoverResponse(BaseModel):
     expires_at: datetime | None = None
     accepted_at: datetime | None = None
     created_at: datetime
+    # The shift being covered (resolved from the linked schedule_entry).
+    shift_start: datetime | None = None
+    shift_end: datetime | None = None
+    shift_title: str | None = None
 
     model_config = {"from_attributes": True}
 

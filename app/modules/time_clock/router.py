@@ -1938,12 +1938,36 @@ def _serialise_cover(
     row: ShiftCoverRequest,
     *,
     staff_names: dict[UUID, str],
+    entries: dict[UUID, "ScheduleEntry"] | None = None,
 ) -> ShiftCoverResponse:
     data = ShiftCoverResponse.model_validate(row).model_dump()
     data["requester_name"] = staff_names.get(row.requester_staff_id)
     if row.accepted_by:
         data["accepted_by_name"] = staff_names.get(row.accepted_by)
+    entry = (entries or {}).get(row.schedule_entry_id)
+    if entry is not None:
+        data["shift_start"] = entry.start_time
+        data["shift_end"] = entry.end_time
+        data["shift_title"] = entry.title
     return ShiftCoverResponse(**data)
+
+
+async def _load_cover_entries(
+    db: AsyncSession, rows: list[ShiftCoverRequest]
+) -> dict[UUID, "ScheduleEntry"]:
+    """Load the schedule_entries linked to a set of cover rows, keyed by id,
+    so each cover can surface the shift date/time it covers."""
+    from app.modules.scheduling_v2.models import ScheduleEntry
+
+    entry_ids = {r.schedule_entry_id for r in rows if r.schedule_entry_id}
+    if not entry_ids:
+        return {}
+    erows = (
+        await db.execute(
+            select(ScheduleEntry).where(ScheduleEntry.id.in_(entry_ids))
+        )
+    ).scalars().all()
+    return {e.id: e for e in erows}
 
 
 @router.get(
@@ -1988,8 +2012,12 @@ async def list_shift_cover(
         if row.accepted_by:
             staff_ids.add(row.accepted_by)
     staff_names = await _bulk_resolve_staff_names(db, staff_ids)
+    entries_map = await _load_cover_entries(db, rows)
 
-    items = [_serialise_cover(row, staff_names=staff_names) for row in rows]
+    items = [
+        _serialise_cover(row, staff_names=staff_names, entries=entries_map)
+        for row in rows
+    ]
     return ShiftCoverListResponse(items=items, total=len(total_rows))
 
 
@@ -2034,7 +2062,46 @@ async def submit_shift_cover(
     staff_names = await _bulk_resolve_staff_names(
         db, {cover.requester_staff_id},
     )
-    return _serialise_cover(cover, staff_names=staff_names)
+    entries_map = await _load_cover_entries(db, [cover])
+    return _serialise_cover(cover, staff_names=staff_names, entries=entries_map)
+
+
+@router.post(
+    "/shift-cover/{cover_id}/cancel",
+    response_model=ShiftCoverResponse,
+    summary="Cancel an open cover — the shift no longer needs coverage",
+)
+async def shift_cover_cancel(
+    cover_id: UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+) -> ShiftCoverResponse:
+    """Admin/manager closes an open cover request because the shift no longer
+    needs to be covered. Sets ``status='cancelled'`` (no SMS). The underlying
+    schedule entry is left untouched.
+    """
+    await _require_staff_management_module(request, db)
+    if _get_user_role(request) not in (ORG_ADMIN, BRANCH_ADMIN, LOCATION_MANAGER):
+        raise HTTPException(status_code=403, detail="forbidden")
+    org_id = _get_org_id(request)
+    user_id = _get_user_id(request)
+    ip_address = _get_client_ip(request)
+
+    try:
+        cover = await cover_service.cancel_cover_request(
+            db,
+            org_id=org_id,
+            cover_id=cover_id,
+            acting_staff_id=None,  # admin/manager path
+            user_id=user_id,
+            ip_address=ip_address,
+        )
+    except cover_service.ShiftCoverServiceError as exc:
+        _raise_cover_service_error(exc)
+
+    staff_names = await _bulk_resolve_staff_names(db, {cover.requester_staff_id})
+    entries_map = await _load_cover_entries(db, [cover])
+    return _serialise_cover(cover, staff_names=staff_names, entries=entries_map)
 
 
 @router.post(
