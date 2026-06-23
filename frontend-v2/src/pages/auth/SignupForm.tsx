@@ -517,9 +517,14 @@ export function SignupForm({ onComplete }: SignupFormProps) {
                               {plan.trial_duration} {plan.trial_duration_unit} free trial
                             </span>
                           )}
-                          {!hasTrial && !isUnavailable && (
+                          {!hasTrial && !isUnavailable && (effectivePrice ?? 0) > 0 && (
                             <span className="ml-2 text-[12px] font-medium text-warn">
                               Payment required upfront
+                            </span>
+                          )}
+                          {!hasTrial && !isUnavailable && (effectivePrice ?? 0) <= 0 && (
+                            <span className="ml-2 text-[12px] font-medium text-ok">
+                              No upfront payment
                             </span>
                           )}
                           {isUnavailable && (

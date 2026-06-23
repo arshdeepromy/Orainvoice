@@ -530,7 +530,8 @@ export function SignupWizard() {
                               <div>
                                 <span className={`font-medium ${isUnavailable ? 'text-muted-2' : 'text-text'}`}>{plan.name}</span>
                                 {hasTrial && !isUnavailable && <span className="ml-2 text-[12px] font-medium text-ok">{plan.trial_duration} {plan.trial_duration_unit} free trial</span>}
-                                {!hasTrial && !isUnavailable && <span className="ml-2 text-[12px] font-medium text-warn">Payment required upfront</span>}
+                                {!hasTrial && !isUnavailable && (effectivePrice ?? 0) > 0 && <span className="ml-2 text-[12px] font-medium text-warn">Payment required upfront</span>}
+                                {!hasTrial && !isUnavailable && (effectivePrice ?? 0) <= 0 && <span className="ml-2 text-[12px] font-medium text-ok">No upfront payment</span>}
                                 {isUnavailable && <span className="ml-2 text-[12px] text-muted-2">Not available for {selectedInterval} billing</span>}
                               </div>
                             </div>
