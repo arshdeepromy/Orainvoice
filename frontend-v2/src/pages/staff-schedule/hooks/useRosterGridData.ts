@@ -147,7 +147,15 @@ export function useRosterGridData(visibleWindow: {
   const [refetchCounter, setRefetchCounter] = useState(0)
 
   const startIso = visibleWindow.start.toISOString()
-  const endIso = visibleWindow.end.toISOString()
+  // `visibleWindow.end` is the START (local midnight) of the LAST visible day.
+  // Fetch through the END of that day (next local midnight) so shifts that
+  // fall on the final day — including ones stored on the previous UTC date for
+  // +12/+13h timezones like NZ — are included. Without this, the last column
+  // renders empty even though entries exist, and a "phantom" overlap appears
+  // when adding a shift there.
+  const fetchEnd = new Date(visibleWindow.end)
+  fetchEnd.setDate(fetchEnd.getDate() + 1)
+  const endIso = fetchEnd.toISOString()
   const startDate = toIsoDate(visibleWindow.start)
   const endDate = toIsoDate(visibleWindow.end)
 
