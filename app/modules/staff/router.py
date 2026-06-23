@@ -68,6 +68,7 @@ from app.modules.staff.schemas import (
     RosterSmsRequest,
     IssuePortalAccessResponse,
     RevokePortalAccessResponse,
+    PortalAccessStatusResponse,
     StaffListKpisResponse,
     StaffMemberCreate,
     StaffMemberListResponse,
@@ -929,6 +930,53 @@ async def deactivate_staff(
         ip_address=ip_address,
     )
     return {"message": "Staff member deactivated", "id": str(staff_id)}
+
+
+@router.get(
+    "/{staff_id}/portal-access",
+    response_model=PortalAccessStatusResponse,
+    summary="Get a staff member's Employee Portal access status",
+)
+async def get_portal_access_status(
+    staff_id: UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+) -> PortalAccessStatusResponse:
+    """Report whether the staff member currently holds Employee Portal access.
+
+    ``state`` is ``none`` (no active portal user), ``invited`` (issued but the
+    invite hasn't been accepted), or ``active`` (password set / can log in).
+    """
+    from app.modules.employee_portal.models import EmployeePortalUser
+
+    org_id_raw = getattr(request.state, "org_id", None)
+    if not org_id_raw:
+        raise HTTPException(status_code=403, detail="Organisation context required")
+    org_id = UUID(str(org_id_raw))
+
+    row = (
+        await db.execute(
+            select(EmployeePortalUser)
+            .where(
+                EmployeePortalUser.org_id == org_id,
+                EmployeePortalUser.staff_id == staff_id,
+                EmployeePortalUser.is_active.is_(True),
+            )
+            .order_by(EmployeePortalUser.created_at.desc())
+        )
+    ).scalars().first()
+
+    if row is None:
+        return PortalAccessStatusResponse(state="none")
+
+    accepted = row.invite_accepted_at is not None or row.password_hash is not None
+    return PortalAccessStatusResponse(
+        state="active" if accepted else "invited",
+        email=row.email,
+        invite_sent_at=row.invite_sent_at,
+        invite_accepted_at=row.invite_accepted_at,
+        last_login_at=row.last_login_at,
+    )
 
 
 @router.post(

@@ -788,3 +788,19 @@ class RevokePortalAccessResponse(BaseModel):
 
     revoked: bool = True
     sessions_invalidated: int = 0
+
+
+class PortalAccessStatusResponse(BaseModel):
+    """``GET /api/v2/staff/{staff_id}/portal-access`` body.
+
+    Reports whether the staff member currently holds Employee Portal access and,
+    if so, whether the invite has been accepted (password set) yet. ``state`` is
+    one of: ``none`` (no active portal user), ``invited`` (issued, not yet
+    accepted), ``active`` (password set / can log in).
+    """
+
+    state: str = "none"
+    email: str | None = None
+    invite_sent_at: datetime | None = None
+    invite_accepted_at: datetime | None = None
+    last_login_at: datetime | None = None

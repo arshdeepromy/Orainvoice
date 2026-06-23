@@ -38,6 +38,7 @@ import PayRateHistoryPanel from '../components/PayRateHistoryPanel'
 import RecurringAllowancesPanel from '../components/RecurringAllowancesPanel'
 import ThisMonthPanel from '../components/ThisMonthPanel'
 import CreateAccountModal from '../components/CreateAccountModal'
+import PortalAccessCard from '../components/PortalAccessCard'
 import StaffPhotoUploader from '../components/StaffPhotoUploader'
 import AuthorizedAvatar from '@/components/AuthorizedAvatar'
 import {
@@ -2127,6 +2128,10 @@ export default function OverviewTab({ staffId, onDirtyChange }: OverviewTabProps
               Account panel in the sidebar. Self-contained: fetches its own
               status on mount and manages resend/revoke/send actions. */}
           <OnboardingLinkCard staffId={staffId} />
+
+          {/* Employee Portal access lifecycle card — self-contained: fetches
+              its own status and manages send-invite / resend / revoke. */}
+          <PortalAccessCard staffId={staffId} />
         </div>
       </div>{/* end detail grid */}
 
