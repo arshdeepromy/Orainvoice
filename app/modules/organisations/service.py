@@ -1823,6 +1823,101 @@ async def revoke_user_sessions(
     }
 
 
+async def reset_org_user_mfa(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    acting_user_id: uuid.UUID,
+    target_user_id: uuid.UUID,
+    ip_address: str | None = None,
+) -> dict:
+    """Clear a user's MFA enrolments (TOTP, SMS, passkeys, backup codes) so they
+    can re-enrol, and revoke their active sessions.
+
+    Used by an org_admin to recover a user locked out of MFA. If the org's MFA
+    policy is mandatory, the user is prompted to re-enrol on next login.
+    """
+    from sqlalchemy import delete as sql_delete
+
+    from app.modules.auth.models import (
+        UserBackupCode,
+        UserMfaMethod,
+        UserPasskeyCredential,
+    )
+
+    result = await db.execute(
+        select(User).where(User.id == target_user_id, User.org_id == org_id)
+    )
+    user = result.scalar_one_or_none()
+    if user is None:
+        raise ValueError("User not found in this organisation")
+
+    await db.execute(sql_delete(UserMfaMethod).where(UserMfaMethod.user_id == target_user_id))
+    await db.execute(sql_delete(UserBackupCode).where(UserBackupCode.user_id == target_user_id))
+    await db.execute(sql_delete(UserPasskeyCredential).where(UserPasskeyCredential.user_id == target_user_id))
+
+    sessions_invalidated = await _invalidate_user_sessions(db, user_id=target_user_id)
+    await db.flush()
+
+    await write_audit_log(
+        session=db,
+        org_id=org_id,
+        user_id=acting_user_id,
+        action="org.user_mfa_reset",
+        entity_type="user",
+        entity_id=target_user_id,
+        after_value={"sessions_invalidated": sessions_invalidated},
+        ip_address=ip_address,
+    )
+
+    return {
+        "user_id": str(target_user_id),
+        "sessions_invalidated": sessions_invalidated,
+    }
+
+
+async def send_org_user_password_reset(
+    db: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    acting_user_id: uuid.UUID,
+    target_user_id: uuid.UUID,
+    ip_address: str | None = None,
+) -> dict:
+    """Send a password-reset email to an org user (admin-triggered recovery).
+
+    Reuses the standard self-service reset flow (1-hour token in Redis + email).
+    Kiosk accounts have no email reset — use the direct password reset instead.
+    """
+    from app.modules.auth.service import request_password_reset
+
+    result = await db.execute(
+        select(User).where(User.id == target_user_id, User.org_id == org_id)
+    )
+    user = result.scalar_one_or_none()
+    if user is None:
+        raise ValueError("User not found in this organisation")
+    if user.role == "kiosk":
+        raise ValueError("Kiosk accounts don't use email reset — use Reset Password instead.")
+    if not user.email:
+        raise ValueError("This user has no email address on file.")
+
+    await request_password_reset(db, user.email)
+
+    await write_audit_log(
+        session=db,
+        org_id=org_id,
+        user_id=acting_user_id,
+        action="org.user_password_reset_sent",
+        entity_type="user",
+        entity_id=target_user_id,
+        after_value={"email": user.email},
+        ip_address=ip_address,
+    )
+
+    return {"user_id": str(target_user_id), "email": user.email}
+
+
 async def reset_kiosk_user_password(
     db: AsyncSession,
     *,

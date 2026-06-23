@@ -74,7 +74,9 @@ from app.modules.organisations.service import (
     list_salespeople,
     reactivate_branch,
     reset_kiosk_user_password,
+    reset_org_user_mfa,
     revoke_user_sessions,
+    send_org_user_password_reset,
     save_onboarding_step,
     set_business_type,
     set_employee_portal_enabled,
@@ -1463,6 +1465,110 @@ async def reset_kiosk_password(
         message="Password reset successfully",
         user_id=result["user_id"],
         sessions_invalidated=result["sessions_invalidated"],
+    )
+
+
+@router.post(
+    "/users/{target_user_id}/reset-mfa",
+    responses={
+        400: {"description": "Validation error"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org_Admin role required"},
+        404: {"description": "User not found in this organisation"},
+    },
+    summary="Reset (clear) a user's MFA enrolments",
+    dependencies=[require_role("org_admin")],
+)
+async def reset_user_mfa(
+    target_user_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Clear a user's MFA methods so they can re-enrol, and revoke their sessions."""
+    acting_user_id = getattr(request.state, "user_id", None)
+    org_id = getattr(request.state, "org_id", None)
+    ip_address = getattr(request.state, "client_ip", None)
+
+    if not org_id:
+        return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
+
+    try:
+        org_uuid = uuid.UUID(org_id)
+        acting_uuid = uuid.UUID(acting_user_id) if acting_user_id else uuid.uuid4()
+        target_uuid = uuid.UUID(target_user_id)
+    except (ValueError, TypeError):
+        return JSONResponse(status_code=400, content={"detail": "Invalid UUID format"})
+
+    try:
+        result = await reset_org_user_mfa(
+            db,
+            org_id=org_uuid,
+            acting_user_id=acting_uuid,
+            target_user_id=target_uuid,
+            ip_address=ip_address,
+        )
+    except ValueError as exc:
+        error_msg = str(exc)
+        status = 404 if "not found" in error_msg.lower() else 400
+        return JSONResponse(status_code=status, content={"detail": error_msg})
+
+    return JSONResponse(
+        status_code=200,
+        content={
+            "message": "MFA reset. The user can re-enrol on next login.",
+            "user_id": result["user_id"],
+            "sessions_invalidated": result["sessions_invalidated"],
+        },
+    )
+
+
+@router.post(
+    "/users/{target_user_id}/send-password-reset",
+    responses={
+        400: {"description": "Validation error or kiosk user"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Org_Admin role required"},
+        404: {"description": "User not found in this organisation"},
+    },
+    summary="Send a password-reset email to a user",
+    dependencies=[require_role("org_admin")],
+)
+async def send_user_password_reset(
+    target_user_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Email a password-reset link to an org user (admin-triggered recovery)."""
+    acting_user_id = getattr(request.state, "user_id", None)
+    org_id = getattr(request.state, "org_id", None)
+    ip_address = getattr(request.state, "client_ip", None)
+
+    if not org_id:
+        return JSONResponse(status_code=403, content={"detail": "Organisation context required"})
+
+    try:
+        org_uuid = uuid.UUID(org_id)
+        acting_uuid = uuid.UUID(acting_user_id) if acting_user_id else uuid.uuid4()
+        target_uuid = uuid.UUID(target_user_id)
+    except (ValueError, TypeError):
+        return JSONResponse(status_code=400, content={"detail": "Invalid UUID format"})
+
+    try:
+        result = await send_org_user_password_reset(
+            db,
+            org_id=org_uuid,
+            acting_user_id=acting_uuid,
+            target_user_id=target_uuid,
+            ip_address=ip_address,
+        )
+    except ValueError as exc:
+        error_msg = str(exc)
+        status = 404 if "not found" in error_msg.lower() else 400
+        return JSONResponse(status_code=status, content={"detail": error_msg})
+
+    return JSONResponse(
+        status_code=200,
+        content={"message": f"Password reset email sent to {result['email']}.", "user_id": result["user_id"]},
     )
 
 

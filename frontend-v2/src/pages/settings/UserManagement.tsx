@@ -57,6 +57,13 @@ export function UserManagement() {
   const [resetConfirmPassword, setResetConfirmPassword] = useState('')
   const [resetSubmitting, setResetSubmitting] = useState(false)
   const [resetTouched, setResetTouched] = useState({ newPassword: false, confirmPassword: false })
+  // Edit user (role) modal
+  const [editOpen, setEditOpen] = useState(false)
+  const [editUser, setEditUser] = useState<{ id: string; email: string } | null>(null)
+  const [editRole, setEditRole] = useState('')
+  const [editSaving, setEditSaving] = useState(false)
+  // Per-row busy state for MFA reset / send-reset actions
+  const [rowBusy, setRowBusy] = useState<string | null>(null)
   const { toasts, addToast, dismissToast } = useToast()
 
   const fetchData = async (signal?: AbortSignal) => {
@@ -222,6 +229,55 @@ export function UserManagement() {
     }
   }
 
+  const openEditUser = (row: OrgUser) => {
+    setEditUser({ id: row.id, email: row.email })
+    setEditRole(row.role)
+    setEditOpen(true)
+  }
+
+  const submitEditUser = async () => {
+    if (!editUser || !editRole) return
+    setEditSaving(true)
+    try {
+      await apiClient.put(`/org/users/${editUser.id}`, { role: editRole })
+      setEditOpen(false)
+      setEditUser(null)
+      addToast('success', 'User updated')
+      fetchData()
+    } catch (err: any) {
+      addToast('error', err?.response?.data?.detail || 'Failed to update user')
+    } finally {
+      setEditSaving(false)
+    }
+  }
+
+  const resetUserMfa = async (userId: string, email: string) => {
+    if (!confirm(`Reset MFA for ${email}? Their MFA methods (authenticator, SMS, passkeys, backup codes) will be cleared and active sessions revoked. They can re-enrol on next login.`)) return
+    setRowBusy(userId)
+    try {
+      await apiClient.post(`/org/users/${userId}/reset-mfa`)
+      addToast('success', 'MFA reset')
+      fetchData()
+    } catch (err: any) {
+      addToast('error', err?.response?.data?.detail || 'Failed to reset MFA')
+    } finally {
+      setRowBusy(null)
+    }
+  }
+
+  const sendPasswordResetEmail = async (userId: string, email: string) => {
+    if (!confirm(`Send a password-reset email to ${email}?`)) return
+    setRowBusy(userId)
+    try {
+      await apiClient.post(`/org/users/${userId}/send-password-reset`)
+      addToast('success', `Password reset email sent to ${email}`)
+    } catch (err: any) {
+      addToast('error', err?.response?.data?.detail || 'Failed to send reset email')
+    } finally {
+      setRowBusy(null)
+    }
+  }
+
   const toggleMfaPolicy = async () => {
     const newPolicy = mfaPolicy === 'optional' ? 'mandatory' : 'optional'
     try {
@@ -283,16 +339,21 @@ export function UserManagement() {
           </div>
         )
         return (
-          <div className="flex gap-2">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Button size="sm" variant="ghost" onClick={() => openEditUser(row)}>Edit</Button>
             {row.is_active && !row.is_email_verified && (
               resendCooldowns[row.email] > 0
                 ? <span className="text-xs text-muted-2 tabular-nums">Resend in {resendCooldowns[row.email]}s</span>
                 : <Button size="sm" variant="ghost" loading={resendingEmail === row.email} onClick={() => resendInvite(row.email)}>Resend Invite</Button>
             )}
-            {row.role === 'kiosk' && row.is_active && (
+            {row.role !== 'kiosk' && (
+              <Button size="sm" variant="ghost" loading={rowBusy === row.id} onClick={() => sendPasswordResetEmail(row.id, row.email)}>Send Reset</Button>
+            )}
+            <Button size="sm" variant="ghost" loading={rowBusy === row.id} onClick={() => resetUserMfa(row.id, row.email)}>Reset MFA</Button>
+            {row.role === 'kiosk' && (
               <Button size="sm" variant="ghost" onClick={() => revokeUserSessions(row.id)}>Revoke Sessions</Button>
             )}
-            {row.role === 'kiosk' && row.is_active && (
+            {row.role === 'kiosk' && (
               <Button size="sm" variant="ghost" onClick={() => { setResetPasswordUser({ id: row.id, email: row.email }); setResetPasswordOpen(true) }}>Reset Password</Button>
             )}
             <Button size="sm" variant="danger" onClick={() => deactivateUser(row.id)}>Deactivate</Button>
@@ -366,6 +427,23 @@ export function UserManagement() {
             <Button onClick={inviteUser} loading={saving}>
               {inviteForm.role === 'kiosk' ? 'Create Account' : 'Send Invitation'}
             </Button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal open={editOpen} onClose={() => setEditOpen(false)} title="Edit User">
+        <div className="space-y-4">
+          <p className="text-sm text-muted">
+            Editing <span className="font-medium">{editUser?.email}</span>
+          </p>
+          <Select label="Role" options={roleOptions} value={editRole}
+            onChange={(e) => setEditRole(e.target.value)} />
+          <p className="text-xs text-muted-2">
+            Changing a role updates what this user can access immediately on their next request.
+          </p>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="ghost" onClick={() => setEditOpen(false)}>Cancel</Button>
+            <Button onClick={submitEditUser} loading={editSaving}>Save</Button>
           </div>
         </div>
       </Modal>
