@@ -608,8 +608,9 @@ class TestOnboardingLoginDestination:
         assert "/auth/login" in login_paths
 
     def test_admin_issuance_is_the_credential_mechanism(self):
-        """The admin staff router exposes the portal-access issuance endpoint
-        (the credential-issuance mechanism R5.4 refers to)."""
+        """The admin staff router exposes the portal-access issuance endpoints
+        (the credential-issuance mechanism R5.4 refers to): issue (POST) +
+        status (GET) + resend (POST .../resend) + revoke (DELETE)."""
         from app.modules.staff.router import router as staff_router
 
         portal_access = {
@@ -617,7 +618,10 @@ class TestOnboardingLoginDestination:
             for r in staff_router.routes
             if "/{staff_id}/portal-access" in getattr(r, "path", "")
         }
-        assert portal_access == {"/{staff_id}/portal-access"}
+        assert portal_access == {
+            "/{staff_id}/portal-access",
+            "/{staff_id}/portal-access/resend",
+        }
 
     def test_onboarding_submit_does_not_auto_issue_portal_access(self):
         """Completing the onboarding link does not auto-create a Portal_User —

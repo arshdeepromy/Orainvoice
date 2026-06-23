@@ -300,6 +300,72 @@ async def issue_access(
     return user, raw_token
 
 
+async def resend_access(
+    db: AsyncSession,
+    org_id: uuid.UUID,
+    staff: "StaffMember",
+    *,
+    actor_user_id: uuid.UUID | None = None,
+    ip_address: str | None = None,
+) -> tuple[EmployeePortalUser, str]:
+    """Re-issue a fresh invite token on the staff member's EXISTING active
+    Portal_User and return ``(user, raw_token)``.
+
+    Unlike a revoke-then-:func:`issue_access` (which would orphan a previously
+    accepted credential and leave stale rows carrying live invite tokens), this
+    refreshes ``invite_token_hash`` / ``invite_sent_at`` **in place** on the one
+    active row, so there is only ever a single live invite link.
+
+    - No active Portal_User yet → delegate to :func:`issue_access` (fresh row).
+    - Active Portal_User already **accepted** (has a password) → raise
+      :class:`DuplicatePortalUser` (409): you can't re-invite someone who has
+      already set a password — revoke first if you really want to reset them.
+    """
+    res = await db.execute(
+        select(EmployeePortalUser).where(
+            EmployeePortalUser.org_id == org_id,
+            EmployeePortalUser.staff_id == staff.id,
+            EmployeePortalUser.is_active.is_(True),
+        )
+    )
+    user: EmployeePortalUser | None = res.scalars().first()
+
+    if user is None:
+        return await issue_access(
+            db, org_id, staff, actor_user_id=actor_user_id, ip_address=ip_address
+        )
+
+    if user.invite_accepted_at is not None or user.password_hash is not None:
+        raise DuplicatePortalUser(
+            "This staff member has already set a password. Revoke access first to re-invite."
+        )
+
+    raw_token = secrets.token_urlsafe(32)
+    user.invite_token_hash = _hash_token(raw_token)
+    user.invite_sent_at = _now_utc()
+    await db.flush()
+    await db.refresh(user)
+
+    _write_audit(
+        db,
+        org_id=org_id,
+        action="credential_reissued",
+        outcome="success",
+        portal_user_id=user.id,
+        actor_user_id=actor_user_id,
+        ip_address=ip_address,
+        details={"staff_id": str(staff.id)},
+    )
+
+    logger.info(
+        "employee_portal.credential_reissued org_id=%s portal_user_id=%s staff_id=%s",
+        org_id,
+        user.id,
+        staff.id,
+    )
+    return user, raw_token
+
+
 # ---------------------------------------------------------------------------
 # Invite acceptance — set password (R5.5, R5.6, R5.8, R5.9)
 # ---------------------------------------------------------------------------
@@ -572,6 +638,7 @@ __all__ = [
     "RESET_VALIDITY",
     "AccountServiceError",
     "EmailRequired",
+    "resend_access",
     "DuplicatePortalUser",
     "InviteExpired",
     "InviteNotFound",

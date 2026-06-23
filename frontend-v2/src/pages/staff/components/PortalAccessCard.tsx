@@ -98,11 +98,16 @@ export default function PortalAccessCard({ staffId }: { staffId: string }) {
     setActionError(null)
     setActionNote(null)
     try {
+      let res: { invite_sent: boolean; invite_error: string | null } | undefined
       if (kind === 'resend') {
-        // Revoke the existing (single-use) invite first, then mint a fresh one.
-        await apiClient.delete(`/api/v2/staff/${staffId}/portal-access`)
+        // Refresh the invite on the existing row (no revoke — avoids orphaning).
+        const r = await apiClient.post<{ invite_sent: boolean; invite_error: string | null }>(
+          `/api/v2/staff/${staffId}/portal-access/resend`,
+        )
+        res = r.data
+      } else {
+        res = await issue()
       }
-      const res = await issue()
       if (res && res.invite_sent === false) {
         setActionError('Portal access was created, but the invite email could not be sent. Check the staff email address.')
       } else {
@@ -172,7 +177,7 @@ export default function PortalAccessCard({ staffId }: { staffId: string }) {
                 <button type="button" className={btnPrimaryCls} disabled={busy !== null} onClick={() => handleSend('send')}>
                   {busy === 'send' ? 'Sending…' : 'Send portal invite'}
                 </button>
-              ) : (
+              ) : status.state === 'invited' ? (
                 <>
                   <button type="button" className={btnSecondaryCls} disabled={busy !== null} onClick={() => handleSend('resend')}>
                     {busy === 'resend' ? 'Resending…' : 'Resend invite'}
@@ -181,6 +186,10 @@ export default function PortalAccessCard({ staffId }: { staffId: string }) {
                     {busy === 'revoke' ? 'Revoking…' : 'Revoke access'}
                   </button>
                 </>
+              ) : (
+                <button type="button" className={btnSecondaryCls} disabled={busy !== null} onClick={handleRevoke}>
+                  {busy === 'revoke' ? 'Revoking…' : 'Revoke access'}
+                </button>
               )}
             </div>
 

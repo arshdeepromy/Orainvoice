@@ -1108,6 +1108,101 @@ async def issue_portal_access(
     )
 
 
+@router.post(
+    "/{staff_id}/portal-access/resend",
+    response_model=IssuePortalAccessResponse,
+    status_code=200,
+    summary="Resend a staff member's Employee Portal invite",
+)
+async def resend_portal_access(
+    staff_id: UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+) -> IssuePortalAccessResponse:
+    """Re-send the set-password invite WITHOUT orphaning an existing credential.
+
+    Refreshes the invite token on the staff member's existing active Portal_User
+    (so there is only ever one live link) and re-emails it. If the staff member
+    has already accepted (set a password), returns 409 ``duplicate`` — revoke
+    first to re-invite. If no portal user exists yet, this issues a fresh one.
+    """
+    await _require_staff_management_module(request, db)
+    org_id = _get_org_id(request)
+    user_id = getattr(request.state, "user_id", None)
+    ip_address = getattr(request.state, "client_ip", None)
+    svc = StaffService(db)
+
+    staff = await svc.get_staff(org_id, staff_id)
+    if staff is None:
+        raise HTTPException(status_code=404, detail="Staff member not found")
+    if not staff.email or not staff.email.strip():
+        raise HTTPException(
+            status_code=422,
+            detail={"detail": "email_required", "code": "email_required"},
+        )
+
+    try:
+        portal_user, raw_token = await account_service.resend_access(
+            db,
+            org_id,
+            staff,
+            actor_user_id=user_id,
+            ip_address=ip_address,
+        )
+    except (account_service.EmailRequired, account_service.DuplicatePortalUser) as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={"message": exc.message, "code": exc.code},
+        )
+
+    org_row = (
+        await db.execute(
+            select(Organisation.slug, Organisation.name).where(
+                Organisation.id == org_id
+            )
+        )
+    ).first()
+    org_slug = (org_row[0] if org_row else None) or ""
+    org_name = (org_row[1] if org_row else None) or "Your organisation"
+
+    base = (
+        request.headers.get("origin")
+        or app_settings.frontend_base_url
+        or "http://localhost"
+    ).rstrip("/")
+    set_password_url = f"{base}/e/{org_slug}/accept-invite/{raw_token}"
+
+    delivery = await employee_portal_delivery.send_credential_setup_email(
+        db,
+        staff_email=staff.email,
+        org_name=org_name,
+        set_password_url=set_password_url,
+        org_id=org_id,
+    )
+
+    await write_audit_log(
+        session=db,
+        org_id=org_id,
+        user_id=user_id,
+        action="staff.portal_access_resent",
+        entity_type="staff_member",
+        entity_id=staff_id,
+        after_value={
+            "portal_user_id": str(portal_user.id),
+            "invite_sent": delivery.ok,
+            "invite_error": delivery.error_code,
+        },
+        ip_address=ip_address,
+    )
+
+    return IssuePortalAccessResponse(
+        portal_user_id=portal_user.id,
+        email=portal_user.email,
+        invite_sent=delivery.ok,
+        invite_error=delivery.error_code,
+    )
+
+
 @router.delete(
     "/{staff_id}/portal-access",
     response_model=RevokePortalAccessResponse,
