@@ -509,6 +509,7 @@ const OnboardingFormPage = lazy(() => import('@/pages/public/OnboardingFormPage'
 // /onboard and /public/staff-roster token pages. Registered above the marketing
 // PublicPageRenderer catch-all so score-based matching resolves it first (R8.4).
 const EmployeePortalLogin = lazy(() => import('@/pages/employee-portal/EmployeePortalLogin'))
+const EmployeePortalAcceptInvite = lazy(() => import('@/pages/employee-portal/EmployeePortalAcceptInvite'))
 const EmployeePortalApp = lazy(() => import('@/pages/employee-portal/EmployeePortalApp'))
 
 // QR payment result pages (Task 62 — public, rendered on customer's phone
@@ -1840,6 +1841,7 @@ function AppRoutes() {
           /e/:slug login scores above /e/:slug/* for the exact login path.
           PublicPageRenderer is left unchanged (R17.3). */}
       <Route path="/e/:slug" element={<EmployeePortalLogin />} />
+      <Route path="/e/:slug/accept-invite/:token" element={<EmployeePortalAcceptInvite />} />
       <Route path="/e/:slug/*" element={<EmployeePortalApp />} />
 
       {/* Public catch-all (Task 62) — replaces the old
