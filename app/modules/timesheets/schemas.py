@@ -233,6 +233,11 @@ class AttendanceRow(BaseModel):
     shift_count: int
     is_clocked_in: bool = False      # has an open (not-yet-clocked-out) shift in range
     last_clock_out_at: datetime | None = None
+    # Pre-payroll review state (aggregated over the row's completed shifts).
+    # ``pending_review_count`` = completed shifts not yet signed off; when it is
+    # zero and ``reviewed_count`` > 0 the staff member's hours are fully reviewed.
+    pending_review_count: int = 0
+    reviewed_count: int = 0
 
 
 class AttendanceSummary(BaseModel):
@@ -240,6 +245,7 @@ class AttendanceSummary(BaseModel):
     total_worked_hours: Decimal
     total_expected_hours: Decimal
     clocked_in_count: int
+    pending_review_count: int = 0  # completed shifts awaiting sign-off across all staff
 
 
 class AttendanceResponse(BaseModel):
@@ -248,3 +254,64 @@ class AttendanceResponse(BaseModel):
     summary: AttendanceSummary
     date_from: str  # ISO date
     date_to: str    # ISO date
+
+
+# --- Attendance drill-in (per-staff shift list + review/approve for payroll) ---
+#
+# Backs the expandable row on the Attendance tab. Lists every clock shift a
+# staff member worked in the range so an admin can review the raw hours and
+# sign them off ("approve") before they flow into the timesheet / pay run.
+# Review state is stored per shift on ``TimeClockEntry.flags`` (``reviewed`` /
+# ``reviewed_by`` / ``reviewed_at``) — the same JSONB container that already
+# holds ``flagged_for_review``.
+
+
+class AttendanceShift(BaseModel):
+    id: UUID
+    work_date: str                       # org-local YYYY-MM-DD of clock-in
+    clock_in_at: datetime
+    clock_out_at: datetime | None = None
+    worked_hours: Decimal | None = None  # null while still clocked in
+    branch_name: str | None = None
+    source: str
+    scheduled_start: datetime | None = None
+    scheduled_end: datetime | None = None
+    is_open: bool = False                # not yet clocked out
+    reviewed: bool = False               # signed off for payroll
+    reviewed_by_name: str | None = None
+    reviewed_at: datetime | None = None
+    flagged_for_review: bool = False     # follow-up marker (G10)
+    review_reason: str | None = None
+
+
+class AttendanceDetailResponse(BaseModel):
+    staff_id: UUID
+    staff_name: str
+    position: str | None = None
+    date_from: str
+    date_to: str
+    worked_hours: Decimal
+    expected_hours: Decimal | None = None
+    expected_source: str = "none"
+    variance_hours: Decimal | None = None
+    shifts: list[AttendanceShift] = Field(default_factory=list)
+    pending_review_count: int = 0
+    reviewed_count: int = 0
+
+
+class ShiftReviewRequest(BaseModel):
+    """Toggle the payroll sign-off (``reviewed``) on a single clock shift."""
+
+    reviewed: bool = True
+
+
+class ShiftReviewResponse(BaseModel):
+    id: UUID
+    reviewed: bool
+    reviewed_by_name: str | None = None
+    reviewed_at: datetime | None = None
+
+
+class AttendanceReviewAllResponse(BaseModel):
+    affected_count: int
+    pending_review_count: int

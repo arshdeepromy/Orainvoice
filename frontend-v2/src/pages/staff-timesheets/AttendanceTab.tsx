@@ -1,9 +1,15 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import apiClient from '@/api/client'
 import { useBranch } from '@/contexts/BranchContext'
-import type { AttendanceResponse, AttendanceRow } from './types'
+import { useToast, ToastContainer } from '@/components/ui'
+import type {
+  AttendanceResponse,
+  AttendanceRow,
+  AttendanceDetailResponse,
+  AttendanceShift,
+} from './types'
 
-type RangePreset = 'today' | 'week' | 'custom'
+type RangePreset = 'today' | 'week' | 'month' | 'custom'
 
 /** Local date as YYYY-MM-DD (no UTC shift). */
 function localISO(d: Date): string {
@@ -22,6 +28,13 @@ function weekBounds(d: Date): { start: string; end: string } {
   return { start: localISO(monday), end: localISO(sunday) }
 }
 
+/** First and last day of the calendar month containing `d`. */
+function monthBounds(d: Date): { start: string; end: string } {
+  const first = new Date(d.getFullYear(), d.getMonth(), 1)
+  const last = new Date(d.getFullYear(), d.getMonth() + 1, 0)
+  return { start: localISO(first), end: localISO(last) }
+}
+
 /** Decimal hours → "Xh Ym" (e.g. 7.5 → "7h 30m"). */
 function fmtHours(hours: number | null | undefined): string {
   if (hours == null) return '—'
@@ -30,6 +43,18 @@ function fmtHours(hours: number | null | undefined): string {
   const m = totalMin % 60
   if (h === 0 && m === 0) return '0h'
   return `${h}h${m ? ` ${m}m` : ''}`
+}
+
+function fmtTime(iso: string | null | undefined): string {
+  if (!iso) return '—'
+  return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
+
+function fmtDate(iso: string): string {
+  // iso is YYYY-MM-DD — render as e.g. "Mon 23 Jun"
+  const [y, m, d] = iso.split('-').map(Number)
+  const dt = new Date(y, (m ?? 1) - 1, d)
+  return dt.toLocaleDateString([], { weekday: 'short', day: '2-digit', month: 'short' })
 }
 
 const SOURCE_LABEL: Record<AttendanceRow['expected_source'], string> = {
@@ -41,6 +66,7 @@ const SOURCE_LABEL: Record<AttendanceRow['expected_source'], string> = {
 
 export default function AttendanceTab() {
   const today = useMemo(() => localISO(new Date()), [])
+  const { toasts, addToast, dismissToast } = useToast()
 
   const [preset, setPreset] = useState<RangePreset>('today')
   const [start, setStart] = useState<string>(today)
@@ -53,14 +79,22 @@ export default function AttendanceTab() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
+  // Expand-row state: one open at a time, lazily fetched + cached per staff/range.
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+
   // Apply a preset → recompute start/end.
   const applyPreset = useCallback((p: RangePreset) => {
     setPreset(p)
+    setExpandedId(null)
     if (p === 'today') {
       setStart(today)
       setEnd(today)
     } else if (p === 'week') {
       const b = weekBounds(new Date())
+      setStart(b.start)
+      setEnd(b.end)
+    } else if (p === 'month') {
+      const b = monthBounds(new Date())
       setStart(b.start)
       setEnd(b.end)
     }
@@ -99,12 +133,25 @@ export default function AttendanceTab() {
 
   const summary = data?.summary
 
+  const rangeIsToday = start === today && end === today
+
+  const toggleExpand = useCallback((staffId: string) => {
+    setExpandedId((cur) => (cur === staffId ? null : staffId))
+  }, [])
+
   return (
     <div className="space-y-4">
+      {/* Intro: this tab reviews already-worked hours (not the live clocked-in view) */}
+      <p className="text-xs text-muted">
+        Review hours staff have already worked, then sign them off for payroll. Expand a
+        row to see each shift. For who is on the clock right now, use the{' '}
+        <span className="font-medium text-text">Clocked In</span> tab.
+      </p>
+
       {/* Controls */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2">
-          {(['today', 'week', 'custom'] as RangePreset[]).map((p) => (
+          {(['today', 'week', 'month', 'custom'] as RangePreset[]).map((p) => (
             <button
               key={p}
               onClick={() => applyPreset(p)}
@@ -114,7 +161,7 @@ export default function AttendanceTab() {
                   : 'border-border bg-card text-text hover:bg-muted/5'
               }`}
             >
-              {p === 'today' ? 'Today' : p === 'week' ? 'This Week' : 'Custom'}
+              {p === 'today' ? 'Today' : p === 'week' ? 'This Week' : p === 'month' ? 'This Month' : 'Custom'}
             </button>
           ))}
 
@@ -124,7 +171,7 @@ export default function AttendanceTab() {
                 type="date"
                 value={start}
                 max={end || undefined}
-                onChange={(e) => setStart(e.target.value)}
+                onChange={(e) => { setStart(e.target.value); setExpandedId(null) }}
                 className="h-9 rounded-lg border border-border bg-canvas px-2 text-sm text-text focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20"
               />
               <span className="text-xs text-muted">to</span>
@@ -132,7 +179,7 @@ export default function AttendanceTab() {
                 type="date"
                 value={end}
                 min={start || undefined}
-                onChange={(e) => setEnd(e.target.value)}
+                onChange={(e) => { setEnd(e.target.value); setExpandedId(null) }}
                 className="h-9 rounded-lg border border-border bg-canvas px-2 text-sm text-text focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20"
               />
             </div>
@@ -142,7 +189,7 @@ export default function AttendanceTab() {
         {/* Branch filter */}
         <select
           value={filterBranch}
-          onChange={(e) => setFilterBranch(e.target.value)}
+          onChange={(e) => { setFilterBranch(e.target.value); setExpandedId(null) }}
           className="h-9 rounded-lg border border-border bg-canvas px-3 text-sm text-text focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20"
         >
           <option value="all">All Branches</option>
@@ -158,7 +205,11 @@ export default function AttendanceTab() {
           <SummaryCard label="Staff" value={String(summary.total_staff)} />
           <SummaryCard label="Hours worked" value={fmtHours(summary.total_worked_hours)} />
           <SummaryCard label="Expected" value={fmtHours(summary.total_expected_hours)} />
-          <SummaryCard label="Still clocked in" value={String(summary.clocked_in_count)} />
+          <SummaryCard
+            label="Pending review"
+            value={String(summary.pending_review_count)}
+            tone={summary.pending_review_count > 0 ? 'warn' : 'success'}
+          />
         </div>
       )}
 
@@ -188,9 +239,11 @@ export default function AttendanceTab() {
               <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
           </div>
-          <p className="mt-4 text-sm font-medium text-text">No attendance in this range</p>
+          <p className="mt-4 text-sm font-medium text-text">No worked hours in this range</p>
           <p className="mt-1 text-xs text-muted">
-            Staff appear here once they clock in within the selected dates.
+            {rangeIsToday
+              ? 'Try This Week or This Month to review earlier shifts.'
+              : 'Staff appear here once they have clocked shifts within the selected dates.'}
           </p>
         </div>
       ) : (
@@ -198,84 +251,344 @@ export default function AttendanceTab() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border bg-canvas text-left text-xs font-medium text-muted">
+                <th className="w-8 px-2 py-2.5" />
                 <th className="px-4 py-2.5">Staff</th>
                 <th className="px-4 py-2.5">Branch</th>
                 <th className="px-4 py-2.5 text-right">Worked</th>
                 <th className="px-4 py-2.5 text-right">Expected</th>
                 <th className="px-4 py-2.5 text-right">Variance</th>
                 <th className="px-4 py-2.5 text-center">Shifts</th>
-                <th className="px-4 py-2.5">Status</th>
+                <th className="px-4 py-2.5">Review</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {items.map((r) => {
-                const variance = r.variance_hours
-                const varClass =
-                  variance == null ? 'text-muted'
-                    : variance < -0.01 ? 'text-danger'
-                    : variance > 0.01 ? 'text-success'
-                    : 'text-muted'
-                return (
-                  <tr key={r.staff_id} className="hover:bg-muted/5 transition-colors">
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2.5">
-                        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-accent/10 text-xs font-bold text-accent">
-                          {r.staff_name?.charAt(0) ?? '?'}
-                        </div>
-                        <div>
-                          <p className="font-medium text-text">{r.staff_name}</p>
-                          {r.position && <p className="text-xs text-muted">{r.position}</p>}
-                        </div>
-                      </div>
-                    </td>
-                    <td className="px-4 py-3 text-muted">{r.branch_name ?? '—'}</td>
-                    <td className="px-4 py-3 text-right font-mono font-medium text-text">
-                      {fmtHours(r.worked_hours)}
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      <span className="font-mono text-text">{fmtHours(r.expected_hours)}</span>
-                      {r.expected_source !== 'none' && (
-                        <span className="ml-2 inline-flex items-center rounded-full bg-muted/10 px-2 py-0.5 text-[10px] font-medium text-muted">
-                          {SOURCE_LABEL[r.expected_source]}
-                        </span>
-                      )}
-                    </td>
-                    <td className={`px-4 py-3 text-right font-mono font-medium ${varClass}`}>
-                      {variance == null
-                        ? '—'
-                        : `${variance > 0 ? '+' : ''}${fmtHours(Math.abs(variance)).replace(/^/, variance < 0 ? '-' : '')}`}
-                    </td>
-                    <td className="px-4 py-3 text-center text-muted">{r.shift_count}</td>
-                    <td className="px-4 py-3">
-                      {r.is_clocked_in ? (
-                        <span className="inline-flex items-center gap-1 rounded-full bg-success/10 px-2 py-0.5 text-[11px] font-medium text-success">
-                          <span className="h-1.5 w-1.5 rounded-full bg-success" />
-                          Clocked in
-                        </span>
-                      ) : r.last_clock_out_at ? (
-                        <span className="text-xs text-muted">
-                          Out {new Date(r.last_clock_out_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                        </span>
-                      ) : (
-                        <span className="text-xs text-muted">—</span>
-                      )}
-                    </td>
-                  </tr>
-                )
-              })}
+              {items.map((r) => (
+                <AttendanceRowItem
+                  key={r.staff_id}
+                  row={r}
+                  start={start}
+                  end={end}
+                  expanded={expandedId === r.staff_id}
+                  onToggle={() => toggleExpand(r.staff_id)}
+                  onReviewed={() => fetchData()}
+                  addToast={addToast}
+                />
+              ))}
             </tbody>
           </table>
         </div>
       )}
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>
   )
 }
 
-function SummaryCard({ label, value }: { label: string; value: string }) {
+function SummaryCard({ label, value, tone }: { label: string; value: string; tone?: 'warn' | 'success' }) {
+  const valueClass =
+    tone === 'warn' ? 'text-warn' : tone === 'success' ? 'text-success' : 'text-text'
   return (
     <div className="rounded-lg border border-border bg-card px-4 py-3">
       <p className="text-xs text-muted">{label}</p>
-      <p className="mt-1 text-lg font-semibold text-text">{value}</p>
+      <p className={`mt-1 text-lg font-semibold ${valueClass}`}>{value}</p>
+    </div>
+  )
+}
+
+interface RowProps {
+  row: AttendanceRow
+  start: string
+  end: string
+  expanded: boolean
+  onToggle: () => void
+  onReviewed: () => void
+  addToast: (kind: 'success' | 'error' | 'info', msg: string) => void
+}
+
+function AttendanceRowItem({ row, start, end, expanded, onToggle, onReviewed, addToast }: RowProps) {
+  const variance = row.variance_hours
+  const varClass =
+    variance == null ? 'text-muted'
+      : variance < -0.01 ? 'text-danger'
+      : variance > 0.01 ? 'text-success'
+      : 'text-muted'
+
+  const reviewBadge = (() => {
+    if (row.pending_review_count > 0) {
+      return (
+        <span className="inline-flex items-center gap-1 rounded-full bg-warn/10 px-2 py-0.5 text-[11px] font-medium text-warn">
+          {row.pending_review_count} pending
+        </span>
+      )
+    }
+    if (row.reviewed_count > 0) {
+      return (
+        <span className="inline-flex items-center gap-1 rounded-full bg-success/10 px-2 py-0.5 text-[11px] font-medium text-success">
+          <svg className="h-3 w-3" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M16.7 5.3a1 1 0 010 1.4l-7.5 7.5a1 1 0 01-1.4 0L3.3 9.7a1 1 0 011.4-1.4l3.1 3.1 6.8-6.8a1 1 0 011.4 0z" clipRule="evenodd" /></svg>
+          Reviewed
+        </span>
+      )
+    }
+    return <span className="text-xs text-muted">—</span>
+  })()
+
+  return (
+    <>
+      <tr
+        className="cursor-pointer transition-colors hover:bg-muted/5"
+        onClick={onToggle}
+        aria-expanded={expanded}
+      >
+        <td className="px-2 py-3 text-center align-middle">
+          <svg
+            className={`mx-auto h-4 w-4 text-muted transition-transform duration-200 ${expanded ? 'rotate-90' : ''}`}
+            viewBox="0 0 20 20" fill="currentColor"
+          >
+            <path fillRule="evenodd" d="M7.3 5.3a1 1 0 011.4 0l4 4a1 1 0 010 1.4l-4 4a1 1 0 01-1.4-1.4L10.6 10 7.3 6.7a1 1 0 010-1.4z" clipRule="evenodd" />
+          </svg>
+        </td>
+        <td className="px-4 py-3">
+          <div className="flex items-center gap-2.5">
+            <div className="relative flex h-8 w-8 items-center justify-center rounded-full bg-accent/10 text-xs font-bold text-accent">
+              {row.staff_name?.charAt(0) ?? '?'}
+              {row.is_clocked_in && (
+                <span
+                  className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border-2 border-card bg-success"
+                  title="Currently clocked in"
+                />
+              )}
+            </div>
+            <div>
+              <p className="font-medium text-text">{row.staff_name}</p>
+              {row.position && <p className="text-xs text-muted">{row.position}</p>}
+            </div>
+          </div>
+        </td>
+        <td className="px-4 py-3 text-muted">{row.branch_name ?? '—'}</td>
+        <td className="px-4 py-3 text-right font-mono font-medium text-text">
+          {fmtHours(row.worked_hours)}
+        </td>
+        <td className="px-4 py-3 text-right">
+          <span className="font-mono text-text">{fmtHours(row.expected_hours)}</span>
+          {row.expected_source !== 'none' && (
+            <span className="ml-2 inline-flex items-center rounded-full bg-muted/10 px-2 py-0.5 text-[10px] font-medium text-muted">
+              {SOURCE_LABEL[row.expected_source]}
+            </span>
+          )}
+        </td>
+        <td className={`px-4 py-3 text-right font-mono font-medium ${varClass}`}>
+          {variance == null
+            ? '—'
+            : `${variance < 0 ? '-' : variance > 0 ? '+' : ''}${fmtHours(Math.abs(variance))}`}
+        </td>
+        <td className="px-4 py-3 text-center text-muted">{row.shift_count}</td>
+        <td className="px-4 py-3">{reviewBadge}</td>
+      </tr>
+      <tr>
+        <td colSpan={8} className="p-0">
+          <ExpandPanel
+            open={expanded}
+            staffId={row.staff_id}
+            start={start}
+            end={end}
+            onReviewed={onReviewed}
+            addToast={addToast}
+          />
+        </td>
+      </tr>
+    </>
+  )
+}
+
+interface ExpandPanelProps {
+  open: boolean
+  staffId: string
+  start: string
+  end: string
+  onReviewed: () => void
+  addToast: (kind: 'success' | 'error' | 'info', msg: string) => void
+}
+
+function ExpandPanel({ open, staffId, start, end, onReviewed, addToast }: ExpandPanelProps) {
+  const [detail, setDetail] = useState<AttendanceDetailResponse | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [busyId, setBusyId] = useState<string | null>(null)
+  const [busyAll, setBusyAll] = useState(false)
+  const loadedKey = useRef<string | null>(null)
+
+  const rangeKey = `${staffId}|${start}|${end}`
+
+  const load = useCallback(async (signal?: AbortSignal) => {
+    try {
+      setLoading(true)
+      setError(null)
+      const res = await apiClient.get<AttendanceDetailResponse>(
+        `/api/v2/timesheets/attendance/${staffId}/shifts`,
+        { params: { start, end }, signal },
+      )
+      setDetail(res.data ?? null)
+      loadedKey.current = rangeKey
+    } catch (err: unknown) {
+      if (!(err as { name?: string })?.name?.includes('Cancel') &&
+          !(err as { code?: string })?.code?.includes('CANCELED')) {
+        setError('Failed to load shifts')
+      }
+    } finally {
+      setLoading(false)
+    }
+  }, [staffId, start, end, rangeKey])
+
+  // Lazily load (and reload when the range changes) only while open.
+  useEffect(() => {
+    if (!open) return
+    if (loadedKey.current === rangeKey && detail) return
+    const controller = new AbortController()
+    load(controller.signal)
+    return () => controller.abort()
+  }, [open, rangeKey, load, detail])
+
+  const reviewShift = useCallback(async (shift: AttendanceShift) => {
+    setBusyId(shift.id)
+    try {
+      await apiClient.post(`/api/v2/timesheets/attendance/shifts/${shift.id}/review`, {
+        reviewed: !shift.reviewed,
+      })
+      await load()
+      onReviewed()
+    } catch {
+      addToast('error', 'Could not update review status')
+    } finally {
+      setBusyId(null)
+    }
+  }, [load, onReviewed, addToast])
+
+  const reviewAll = useCallback(async () => {
+    setBusyAll(true)
+    try {
+      const res = await apiClient.post<{ affected_count: number }>(
+        `/api/v2/timesheets/attendance/${staffId}/review-all`,
+        null,
+        { params: { start, end } },
+      )
+      const n = res.data?.affected_count ?? 0
+      addToast('success', n > 0 ? `Approved ${n} shift${n === 1 ? '' : 's'}` : 'All shifts already reviewed')
+      await load()
+      onReviewed()
+    } catch {
+      addToast('error', 'Could not approve shifts')
+    } finally {
+      setBusyAll(false)
+    }
+  }, [staffId, start, end, load, onReviewed, addToast])
+
+  const pending = detail?.pending_review_count ?? 0
+
+  return (
+    <div
+      className="grid bg-canvas/40 transition-[grid-template-rows] duration-300 ease-in-out"
+      style={{ gridTemplateRows: open ? '1fr' : '0fr' }}
+    >
+      <div className="overflow-hidden">
+        <div className="border-t border-border px-4 py-4">
+          {loading && !detail ? (
+            <div className="animate-pulse space-y-2">
+              {[1, 2, 3].map((i) => <div key={i} className="h-10 rounded bg-muted/10" />)}
+            </div>
+          ) : error ? (
+            <div className="flex items-center justify-between rounded-lg bg-danger/5 px-3 py-2 text-sm text-danger">
+              <span>{error}</span>
+              <button onClick={() => load()} className="text-accent hover:underline">Retry</button>
+            </div>
+          ) : !detail || detail.shifts.length === 0 ? (
+            <p className="py-2 text-sm text-muted">No shifts recorded in this range.</p>
+          ) : (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-xs font-medium uppercase tracking-wide text-muted">
+                  Shifts ({detail.shifts.length})
+                  {pending > 0 && <span className="ml-2 text-warn">· {pending} pending review</span>}
+                </p>
+                {pending > 0 && (
+                  <button
+                    onClick={reviewAll}
+                    disabled={busyAll}
+                    className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-accent px-3 text-xs font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+                  >
+                    {busyAll ? 'Approving…' : `Approve all (${pending})`}
+                  </button>
+                )}
+              </div>
+
+              <div className="overflow-hidden rounded-lg border border-border">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-border bg-card text-left text-[11px] font-medium uppercase tracking-wide text-muted">
+                      <th className="px-3 py-2">Date</th>
+                      <th className="px-3 py-2">Clock in</th>
+                      <th className="px-3 py-2">Clock out</th>
+                      <th className="px-3 py-2 text-right">Worked</th>
+                      <th className="px-3 py-2">Scheduled</th>
+                      <th className="px-3 py-2">Branch</th>
+                      <th className="px-3 py-2 text-right">Review</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {detail.shifts.map((s) => (
+                      <tr key={s.id} className="bg-canvas/30">
+                        <td className="px-3 py-2 font-medium text-text">{fmtDate(s.work_date)}</td>
+                        <td className="px-3 py-2 text-muted">{fmtTime(s.clock_in_at)}</td>
+                        <td className="px-3 py-2 text-muted">
+                          {s.is_open
+                            ? <span className="inline-flex items-center gap-1 text-success"><span className="h-1.5 w-1.5 rounded-full bg-success" />On clock</span>
+                            : fmtTime(s.clock_out_at)}
+                        </td>
+                        <td className="px-3 py-2 text-right font-mono text-text">{fmtHours(s.worked_hours)}</td>
+                        <td className="px-3 py-2 text-xs text-muted">
+                          {s.scheduled_start
+                            ? `${fmtTime(s.scheduled_start)}–${fmtTime(s.scheduled_end)}`
+                            : <span className="italic">unmatched</span>}
+                        </td>
+                        <td className="px-3 py-2 text-xs text-muted">{s.branch_name ?? '—'}</td>
+                        <td className="px-3 py-2 text-right">
+                          {s.is_open ? (
+                            <span className="text-xs text-muted">—</span>
+                          ) : s.reviewed ? (
+                            <button
+                              onClick={() => reviewShift(s)}
+                              disabled={busyId === s.id}
+                              title={s.reviewed_by_name ? `Approved by ${s.reviewed_by_name}` : 'Approved'}
+                              className="inline-flex items-center gap-1 rounded-full bg-success/10 px-2 py-1 text-[11px] font-medium text-success transition-colors hover:bg-success/20 disabled:opacity-50"
+                            >
+                              <svg className="h-3 w-3" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M16.7 5.3a1 1 0 010 1.4l-7.5 7.5a1 1 0 01-1.4 0L3.3 9.7a1 1 0 011.4-1.4l3.1 3.1 6.8-6.8a1 1 0 011.4 0z" clipRule="evenodd" /></svg>
+                              Approved
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => reviewShift(s)}
+                              disabled={busyId === s.id}
+                              className="inline-flex items-center gap-1 rounded-full border border-accent/40 px-2.5 py-1 text-[11px] font-semibold text-accent transition-colors hover:bg-accent/10 disabled:opacity-50"
+                            >
+                              {busyId === s.id ? '…' : 'Approve'}
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <p className="text-[11px] text-muted">
+                Approving a shift signs off its hours for payroll. Worked{' '}
+                <span className="font-mono">{fmtHours(detail.worked_hours)}</span>
+                {detail.expected_hours != null && (
+                  <> of <span className="font-mono">{fmtHours(detail.expected_hours)}</span> expected</>
+                )}.
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   )
 }

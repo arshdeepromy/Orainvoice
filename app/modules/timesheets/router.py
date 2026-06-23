@@ -25,10 +25,14 @@ from app.modules.timesheets.branch_scope import BranchScopedTimesheets
 from app.modules.timesheets.models import Timesheet, TimesheetSettings
 from app.modules.timesheets.schemas import (
     AdjustRequest,
+    AttendanceDetailResponse,
     AttendanceResponse,
+    AttendanceReviewAllResponse,
     BulkActionResponse,
     ClockedInResponse,
     PeriodSummary,
+    ShiftReviewRequest,
+    ShiftReviewResponse,
     TimesheetDetailResponse,
     TimesheetListResponse,
     TimesheetSettingsRead,
@@ -42,9 +46,12 @@ from app.modules.timesheets.service import (
     bulk_approve,
     bulk_lock,
     compute_attendance,
+    compute_attendance_detail,
     compute_weekly_breakdown,
     get_or_create_timesheet,
     get_settings_for_branch,
+    review_all_shifts,
+    set_shift_review,
     transition_status,
 )
 
@@ -237,6 +244,122 @@ async def attendance_report(
         start_date=start,
         end_date=end,
         branch_ids=branch_ids,
+    )
+
+
+@timesheets_router.get("/attendance/{staff_id}/shifts")
+async def attendance_staff_shifts(
+    staff_id: UUID,
+    request: Request,
+    start: date | None = Query(None),
+    end: date | None = Query(None),
+    scope: BranchScopedTimesheets = Depends(),
+    db: AsyncSession = Depends(get_db_session),
+) -> AttendanceDetailResponse:
+    """Per-staff shift list for the Attendance drill-in (expandable row).
+
+    Lists every clock shift the staff member worked in the range, each with its
+    matched scheduled shift and its pre-payroll review state. READ-ONLY.
+    """
+    org_id = _get_org_id(request)
+    if start is not None and end is not None and end < start:
+        raise HTTPException(
+            status_code=422,
+            detail={"detail": "invalid_range", "message": "end must be on or after start"},
+        )
+    branch_ids = scope.branch_ids if scope.should_filter else None
+    return await compute_attendance_detail(
+        db,
+        org_id=org_id,
+        staff_id=staff_id,
+        start_date=start,
+        end_date=end,
+        branch_ids=branch_ids,
+    )
+
+
+@timesheets_router.post("/attendance/shifts/{entry_id}/review")
+async def review_shift(
+    entry_id: UUID,
+    body: ShiftReviewRequest,
+    request: Request,
+    scope: BranchScopedTimesheets = Depends(),
+    db: AsyncSession = Depends(get_db_session),
+) -> ShiftReviewResponse:
+    """Sign off (or un-sign) a single clock shift for payroll.
+
+    Requires ``timesheet.approve``. Marks the shift reviewed on its ``flags``
+    so the Attendance tab can show it as approved for payroll purposes.
+    """
+    org_id = _get_org_id(request)
+    user_id = _get_user_id(request)
+    _check_permission(request, "timesheet.approve")
+    branch_ids = scope.branch_ids if scope.should_filter else None
+    try:
+        entry, reviewer_name = await set_shift_review(
+            db,
+            org_id=org_id,
+            entry_id=entry_id,
+            reviewed=body.reviewed,
+            actor_id=user_id,
+            branch_ids=branch_ids,
+        )
+    except ValueError as e:
+        msg = str(e)
+        if msg == "shift_not_found":
+            raise HTTPException(status_code=404, detail="Shift not found")
+        if msg == "branch_access_denied":
+            raise HTTPException(status_code=403, detail="Branch access denied")
+        if msg == "shift_still_open":
+            raise HTTPException(
+                status_code=409,
+                detail={"detail": "shift_still_open", "message": "Clock out the shift before reviewing it."},
+            )
+        raise HTTPException(status_code=400, detail=msg)
+
+    flags = entry.flags or {}
+    return ShiftReviewResponse(
+        id=entry.id,
+        reviewed=bool(flags.get("reviewed")),
+        reviewed_by_name=reviewer_name,
+        reviewed_at=flags.get("reviewed_at"),
+    )
+
+
+@timesheets_router.post("/attendance/{staff_id}/review-all")
+async def review_all_staff_shifts(
+    staff_id: UUID,
+    request: Request,
+    start: date | None = Query(None),
+    end: date | None = Query(None),
+    scope: BranchScopedTimesheets = Depends(),
+    db: AsyncSession = Depends(get_db_session),
+) -> AttendanceReviewAllResponse:
+    """Sign off every completed shift for a staff member in the range.
+
+    Requires ``timesheet.approve``. Skips already-reviewed and still-open shifts.
+    """
+    org_id = _get_org_id(request)
+    user_id = _get_user_id(request)
+    _check_permission(request, "timesheet.approve")
+    if start is not None and end is not None and end < start:
+        raise HTTPException(
+            status_code=422,
+            detail={"detail": "invalid_range", "message": "end must be on or after start"},
+        )
+    branch_ids = scope.branch_ids if scope.should_filter else None
+    result = await review_all_shifts(
+        db,
+        org_id=org_id,
+        staff_id=staff_id,
+        start_date=start,
+        end_date=end,
+        actor_id=user_id,
+        branch_ids=branch_ids,
+    )
+    return AttendanceReviewAllResponse(
+        affected_count=result["affected_count"],
+        pending_review_count=result["pending_review_count"],
     )
 
 

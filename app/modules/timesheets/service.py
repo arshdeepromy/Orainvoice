@@ -868,6 +868,7 @@ async def compute_attendance(
     total_worked = 0
     total_expected = 0
     clocked_in_count = 0
+    total_pending_review = 0
 
     for staff_id, ents in by_staff.items():
         staff = staff_map.get(staff_id)
@@ -876,6 +877,15 @@ async def compute_attendance(
         worked = sum((e.worked_minutes or 0) for e in completed)
         is_in = len(open_entries) > 0
         last_out = max((e.clock_out_at for e in completed), default=None)
+
+        # Pre-payroll review state: a completed shift is "pending" until an
+        # admin signs it off (``flags.reviewed``). Open shifts aren't counted
+        # (they can't be reviewed until clock-out).
+        reviewed_count = sum(
+            1 for e in completed if bool((e.flags or {}).get("reviewed"))
+        )
+        pending_review_count = len(completed) - reviewed_count
+        total_pending_review += pending_review_count
 
         sched = scheduled_minutes.get(staff_id, 0)
         if sched > 0:
@@ -916,6 +926,8 @@ async def compute_attendance(
                 shift_count=len(ents),
                 is_clocked_in=is_in,
                 last_clock_out_at=last_out,
+                pending_review_count=pending_review_count,
+                reviewed_count=reviewed_count,
             )
         )
         total_worked += worked
@@ -933,7 +945,360 @@ async def compute_attendance(
             total_worked_hours=_minutes_to_hours(total_worked),
             total_expected_hours=_minutes_to_hours(total_expected),
             clocked_in_count=clocked_in_count,
+            pending_review_count=total_pending_review,
         ),
         date_from=start_date.isoformat(),
         date_to=end_date.isoformat(),
     )
+
+
+def _org_local_window(tz_name: str | None, start_date, end_date):
+    """Resolve the org timezone and the UTC [start, end) window for a local
+    inclusive date range. Shared by the attendance detail/review helpers."""
+    from datetime import datetime, time, timedelta, timezone
+    from zoneinfo import ZoneInfo
+
+    try:
+        org_tz = ZoneInfo(tz_name or "Pacific/Auckland")
+    except Exception:
+        org_tz = ZoneInfo("UTC")
+    today_local = datetime.now(org_tz).date()
+    start_date = start_date or today_local
+    end_date = end_date or start_date
+    start_dt = datetime.combine(start_date, time.min, tzinfo=org_tz).astimezone(timezone.utc)
+    end_dt = datetime.combine(
+        end_date + timedelta(days=1), time.min, tzinfo=org_tz
+    ).astimezone(timezone.utc)
+    return org_tz, start_date, end_date, start_dt, end_dt
+
+
+async def compute_attendance_detail(
+    db: AsyncSession,
+    *,
+    org_id: UUID,
+    staff_id: UUID,
+    start_date=None,
+    end_date=None,
+    branch_ids: list[UUID] | None = None,
+):
+    """Per-staff shift list for the Attendance drill-in (review/approve view).
+
+    Lists every clock shift the staff member has in the org-local date range,
+    each annotated with its matched scheduled shift (when linked) and its
+    pre-payroll review state (``flags.reviewed``). Branch-scoped via
+    ``branch_ids`` (None = all branches). READ-ONLY.
+    """
+    from sqlalchemy import text as _sql_text
+
+    from app.modules.auth.models import User
+    from app.modules.organisations.models import Branch
+    from app.modules.scheduling_v2.models import ScheduleEntry
+    from app.modules.staff.models import StaffMember
+    from app.modules.time_clock.models import TimeClockEntry
+    from app.modules.timesheets.schemas import (
+        AttendanceDetailResponse,
+        AttendanceShift,
+    )
+
+    tz_row = (
+        await db.execute(
+            _sql_text("SELECT timezone FROM organisations WHERE id = :oid"),
+            {"oid": str(org_id)},
+        )
+    ).first()
+    org_tz, start_date, end_date, start_dt, end_dt = _org_local_window(
+        tz_row[0] if tz_row else None, start_date, end_date
+    )
+
+    staff = await db.get(StaffMember, staff_id)
+    staff_name = (getattr(staff, "name", None) or "Unknown") if staff else "Unknown"
+
+    # Scoped caller with no branches → nothing.
+    if branch_ids is not None and not branch_ids:
+        return AttendanceDetailResponse(
+            staff_id=staff_id, staff_name=staff_name,
+            position=getattr(staff, "position", None),
+            date_from=start_date.isoformat(), date_to=end_date.isoformat(),
+            worked_hours=Decimal("0"),
+        )
+
+    entry_q = select(TimeClockEntry).where(
+        TimeClockEntry.org_id == org_id,
+        TimeClockEntry.staff_id == staff_id,
+        TimeClockEntry.clock_in_at >= start_dt,
+        TimeClockEntry.clock_in_at < end_dt,
+    )
+    if branch_ids is not None:
+        entry_q = entry_q.where(TimeClockEntry.branch_id.in_(branch_ids))
+    entries = (
+        await db.execute(entry_q.order_by(TimeClockEntry.clock_in_at))
+    ).scalars().all()
+
+    # Resolve branch names.
+    branch_id_set = {e.branch_id for e in entries if e.branch_id}
+    branch_map: dict[UUID, str] = {}
+    if branch_id_set:
+        branch_map = {
+            b.id: b.name
+            for b in (
+                await db.execute(select(Branch).where(Branch.id.in_(branch_id_set)))
+            ).scalars().all()
+        }
+
+    # Resolve matched scheduled shifts.
+    sched_id_set = {e.scheduled_entry_id for e in entries if e.scheduled_entry_id}
+    sched_map: dict[UUID, ScheduleEntry] = {}
+    if sched_id_set:
+        sched_map = {
+            s.id: s
+            for s in (
+                await db.execute(select(ScheduleEntry).where(ScheduleEntry.id.in_(sched_id_set)))
+            ).scalars().all()
+        }
+
+    # Resolve reviewer names.
+    reviewer_ids = {
+        UUID(str((e.flags or {}).get("reviewed_by")))
+        for e in entries
+        if (e.flags or {}).get("reviewed_by")
+    }
+    reviewer_map: dict[UUID, str] = {}
+    if reviewer_ids:
+        reviewer_map = {
+            u.id: (getattr(u, "full_name", None) or getattr(u, "email", None))
+            for u in (
+                await db.execute(select(User).where(User.id.in_(reviewer_ids)))
+            ).scalars().all()
+        }
+
+    shifts: list[AttendanceShift] = []
+    worked = 0
+    reviewed_count = 0
+    pending_review_count = 0
+    for e in entries:
+        flags = e.flags or {}
+        is_open = e.clock_out_at is None
+        reviewed = bool(flags.get("reviewed"))
+        sched = sched_map.get(e.scheduled_entry_id) if e.scheduled_entry_id else None
+        reviewer_uid = flags.get("reviewed_by")
+        reviewer_name = None
+        if reviewer_uid:
+            try:
+                reviewer_name = reviewer_map.get(UUID(str(reviewer_uid)))
+            except (ValueError, TypeError):
+                reviewer_name = None
+        if not is_open:
+            worked += e.worked_minutes or 0
+            if reviewed:
+                reviewed_count += 1
+            else:
+                pending_review_count += 1
+        shifts.append(
+            AttendanceShift(
+                id=e.id,
+                work_date=e.clock_in_at.astimezone(org_tz).date().isoformat(),
+                clock_in_at=e.clock_in_at,
+                clock_out_at=e.clock_out_at,
+                worked_hours=_minutes_to_hours(e.worked_minutes or 0) if not is_open else None,
+                branch_name=branch_map.get(e.branch_id) if e.branch_id else None,
+                source=e.source,
+                scheduled_start=getattr(sched, "start_time", None),
+                scheduled_end=getattr(sched, "end_time", None),
+                is_open=is_open,
+                reviewed=reviewed,
+                reviewed_by_name=reviewer_name,
+                reviewed_at=flags.get("reviewed_at"),
+                flagged_for_review=bool(flags.get("flagged_for_review")),
+                review_reason=flags.get("review_reason"),
+            )
+        )
+
+    # Expected hours for the range (scheduled overlap → fixed/roster fallback).
+    sched_minutes = 0
+    sched_rows = (
+        await db.execute(
+            select(ScheduleEntry).where(
+                ScheduleEntry.org_id == org_id,
+                ScheduleEntry.staff_id == staff_id,
+                ScheduleEntry.status != "cancelled",
+                ScheduleEntry.entry_type.notin_(["leave", "break"]),
+                ScheduleEntry.start_time < end_dt,
+                ScheduleEntry.end_time > start_dt,
+            )
+        )
+    ).scalars().all()
+    for se in sched_rows:
+        clamped = int(
+            (min(se.end_time, end_dt) - max(se.start_time, start_dt)).total_seconds() // 60
+        )
+        if clamped > 0:
+            sched_minutes += clamped
+    if sched_minutes > 0:
+        expected = sched_minutes
+        source = "scheduled"
+    else:
+        roster = compute_fixed_rostered_minutes(
+            getattr(staff, "availability_schedule", None), start_date, end_date,
+        )
+        if roster > 0:
+            expected = roster
+            source = "fixed" if getattr(staff, "working_arrangement", None) == "fixed" else "roster"
+        else:
+            expected = 0
+            source = "none"
+
+    return AttendanceDetailResponse(
+        staff_id=staff_id,
+        staff_name=staff_name,
+        position=getattr(staff, "position", None),
+        date_from=start_date.isoformat(),
+        date_to=end_date.isoformat(),
+        worked_hours=_minutes_to_hours(worked),
+        expected_hours=_minutes_to_hours(expected) if source != "none" else None,
+        expected_source=source,
+        variance_hours=_minutes_to_hours(worked - expected) if source != "none" else None,
+        shifts=shifts,
+        pending_review_count=pending_review_count,
+        reviewed_count=reviewed_count,
+    )
+
+
+async def set_shift_review(
+    db: AsyncSession,
+    *,
+    org_id: UUID,
+    entry_id: UUID,
+    reviewed: bool,
+    actor_id: UUID,
+    branch_ids: list[UUID] | None = None,
+):
+    """Sign off (or un-sign) a single clock shift for payroll.
+
+    Writes ``reviewed`` / ``reviewed_by`` / ``reviewed_at`` onto the entry's
+    ``flags`` JSONB. Returns the updated entry. Raises ValueError when the
+    shift is missing, out of branch scope, or still open (not clocked out).
+    """
+    from app.modules.auth.models import User
+    from app.modules.time_clock.models import TimeClockEntry
+
+    entry = (
+        await db.execute(
+            select(TimeClockEntry).where(
+                TimeClockEntry.id == entry_id,
+                TimeClockEntry.org_id == org_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if entry is None:
+        raise ValueError("shift_not_found")
+    if branch_ids is not None and entry.branch_id not in branch_ids:
+        raise ValueError("branch_access_denied")
+    if entry.clock_out_at is None:
+        raise ValueError("shift_still_open")
+
+    flags = dict(entry.flags or {})
+    before = bool(flags.get("reviewed"))
+    if reviewed:
+        flags["reviewed"] = True
+        flags["reviewed_by"] = str(actor_id)
+        flags["reviewed_at"] = datetime.now(timezone.utc).isoformat()
+    else:
+        flags.pop("reviewed", None)
+        flags.pop("reviewed_by", None)
+        flags.pop("reviewed_at", None)
+    entry.flags = flags
+    flag_modified(entry, "flags")
+    await db.flush()
+    await db.refresh(entry)
+
+    await write_audit_log(
+        db,
+        action="timesheet.shift_reviewed" if reviewed else "timesheet.shift_unreviewed",
+        entity_type="time_clock_entry",
+        org_id=org_id,
+        user_id=actor_id,
+        entity_id=entry.id,
+        before_value={"reviewed": before},
+        after_value={"reviewed": reviewed},
+    )
+
+    reviewer_name = None
+    if reviewed:
+        reviewer = await db.get(User, actor_id)
+        reviewer_name = (
+            getattr(reviewer, "full_name", None) or getattr(reviewer, "email", None)
+        ) if reviewer else None
+    return entry, reviewer_name
+
+
+async def review_all_shifts(
+    db: AsyncSession,
+    *,
+    org_id: UUID,
+    staff_id: UUID,
+    start_date=None,
+    end_date=None,
+    actor_id: UUID,
+    branch_ids: list[UUID] | None = None,
+) -> dict:
+    """Sign off every completed (clocked-out) shift for a staff member in range.
+
+    Returns ``{"affected_count": N, "pending_review_count": M}``. Already-reviewed
+    and still-open shifts are skipped.
+    """
+    from sqlalchemy import text as _sql_text
+
+    from app.modules.time_clock.models import TimeClockEntry
+
+    tz_row = (
+        await db.execute(
+            _sql_text("SELECT timezone FROM organisations WHERE id = :oid"),
+            {"oid": str(org_id)},
+        )
+    ).first()
+    _, _, _, start_dt, end_dt = _org_local_window(
+        tz_row[0] if tz_row else None, start_date, end_date
+    )
+
+    if branch_ids is not None and not branch_ids:
+        return {"affected_count": 0, "pending_review_count": 0}
+
+    q = select(TimeClockEntry).where(
+        TimeClockEntry.org_id == org_id,
+        TimeClockEntry.staff_id == staff_id,
+        TimeClockEntry.clock_in_at >= start_dt,
+        TimeClockEntry.clock_in_at < end_dt,
+        TimeClockEntry.clock_out_at.isnot(None),
+    )
+    if branch_ids is not None:
+        q = q.where(TimeClockEntry.branch_id.in_(branch_ids))
+    entries = (await db.execute(q)).scalars().all()
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    affected = 0
+    pending = 0
+    for e in entries:
+        flags = dict(e.flags or {})
+        if flags.get("reviewed"):
+            continue
+        flags["reviewed"] = True
+        flags["reviewed_by"] = str(actor_id)
+        flags["reviewed_at"] = now_iso
+        e.flags = flags
+        flag_modified(e, "flags")
+        affected += 1
+
+    if affected > 0:
+        await db.flush()
+        await write_audit_log(
+            db,
+            action="timesheet.shifts_reviewed_bulk",
+            entity_type="staff_member",
+            org_id=org_id,
+            user_id=actor_id,
+            entity_id=staff_id,
+            before_value={},
+            after_value={"affected_count": affected},
+        )
+
+    return {"affected_count": affected, "pending_review_count": pending}
