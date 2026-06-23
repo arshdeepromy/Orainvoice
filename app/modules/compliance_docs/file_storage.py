@@ -34,7 +34,7 @@ ALLOWED_EXTENSIONS: set[str] = {
     ".pdf", ".jpg", ".jpeg", ".png", ".gif", ".doc", ".docx",
 }
 
-MAX_FILE_SIZE: int = 10_485_760  # 10 MB
+MAX_FILE_SIZE: int = 20_971_520  # 20 MB
 
 MAGIC_BYTES: dict[str, bytes] = {
     "application/pdf": b"%PDF",
@@ -166,7 +166,7 @@ class ComplianceFileStorage:
         if len(content) > max_size:
             raise HTTPException(
                 status_code=400,
-                detail="File size exceeds maximum of 10MB",
+                detail="File size exceeds maximum of 20MB",
             )
 
     @staticmethod

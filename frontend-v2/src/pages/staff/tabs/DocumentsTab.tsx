@@ -111,7 +111,7 @@ function inferPreviewMime(blob: Blob, fileName: string): string {
   return map[ext] ?? 'application/octet-stream'
 }
 
-const MAX_BYTES = 10 * 1024 * 1024
+const MAX_BYTES = 20 * 1024 * 1024
 const ACCEPTED_TYPES = '.pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png'
 const ACCEPTED_DOC_UPLOAD_TYPES =
   '.pdf,.jpg,.jpeg,.png,.gif,.doc,.docx,application/pdf,image/jpeg,image/png,image/gif,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document'
@@ -172,6 +172,7 @@ export default function DocumentsTab({ staffId }: DocumentsTabProps) {
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [downloadingId, setDownloadingId] = useState<string | null>(null)
   const docInputRef = useRef<HTMLInputElement | null>(null)
+  const backInputRef = useRef<HTMLInputElement | null>(null)
 
   // Manual upload modal (document type + detail + optional expiry + file).
   const [uploadModalOpen, setUploadModalOpen] = useState(false)
@@ -180,6 +181,9 @@ export default function DocumentsTab({ staffId }: DocumentsTabProps) {
   const [uploadDetailText, setUploadDetailText] = useState('')
   const [uploadExpiry, setUploadExpiry] = useState('')
   const [pendingFile, setPendingFile] = useState<File | null>(null)
+  // Driver's-licence extras: back-of-card file + licence class.
+  const [backFile, setBackFile] = useState<File | null>(null)
+  const [licenceClass, setLicenceClass] = useState('')
   const [uploadError, setUploadError] = useState<string | null>(null)
 
   // In-app preview modal state. We fetch the file as a blob (the endpoints are
@@ -315,6 +319,8 @@ export default function DocumentsTab({ staffId }: DocumentsTabProps) {
     setUploadDetailText('')
     setUploadExpiry('')
     setPendingFile(null)
+    setBackFile(null)
+    setLicenceClass('')
     setUploadError(null)
     setUploadModalOpen(true)
   }
@@ -324,6 +330,8 @@ export default function DocumentsTab({ staffId }: DocumentsTabProps) {
     setUploadType(next)
     setUploadDetailSelect('')
     setUploadDetailText('')
+    setBackFile(null)
+    setLicenceClass('')
     setUploadError(null)
   }
 
@@ -339,35 +347,67 @@ export default function DocumentsTab({ staffId }: DocumentsTabProps) {
     return uploadDetailText.trim()
   }
 
+  /** True when the chosen document is a driver's licence (front/back + class). */
+  const isDriversLicence =
+    uploadType === 'identity' && uploadDetailSelect === 'drivers_licence'
+
   /** Submit the manual upload (document type + detail + optional expiry + file). */
   const submitUpload = async () => {
     setUploadError(null)
     const cfg = docTypeConfig(uploadType)
-    const description = resolveUploadDescription()
-    if (cfg?.detail?.required && !description) {
+    const baseDescription = resolveUploadDescription()
+    if (cfg?.detail?.required && !baseDescription) {
       setUploadError(`Please provide ${cfg.detail.label.toLowerCase()}.`)
       return
     }
     if (!pendingFile) {
-      setUploadError('Choose a file to upload.')
+      setUploadError(
+        isDriversLicence
+          ? 'Choose the front of the licence.'
+          : 'Choose a file to upload.',
+      )
       return
     }
-    if (pendingFile.size > MAX_BYTES) {
-      setUploadError('File too large. Maximum size is 10 MB.')
+    const oversized = [pendingFile, backFile].find(
+      (f): f is File => !!f && f.size > MAX_BYTES,
+    )
+    if (oversized) {
+      setUploadError('File too large. Maximum size is 20 MB.')
       return
     }
-    setDocUploading(true)
-    try {
+
+    // Fold the licence class into the description for driver's licences.
+    let description = baseDescription
+    if (isDriversLicence) {
+      const cls = licenceClass.trim()
+      description = cls ? `${baseDescription} — Class ${cls}` : baseDescription
+    }
+
+    const uploadOne = async (file: File, suffix: string) => {
       const formData = new FormData()
-      formData.append('file', pendingFile)
+      formData.append('file', file)
       formData.append('document_type', uploadType || 'staff_document')
-      if (description) formData.append('description', description)
+      const desc = suffix ? `${description}${suffix}` : description
+      if (desc) formData.append('description', desc)
       if (uploadExpiry) formData.append('expiry_date', uploadExpiry)
       await apiClient.post(`/api/v2/staff/${staffId}/documents`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       })
+    }
+
+    setDocUploading(true)
+    try {
+      if (isDriversLicence) {
+        // Front + (optional) back are stored as two linked documents.
+        await uploadOne(pendingFile, backFile ? ' (Front)' : '')
+        if (backFile) await uploadOne(backFile, ' (Back)')
+      } else {
+        await uploadOne(pendingFile, '')
+      }
       setUploadModalOpen(false)
       setPendingFile(null)
+      setBackFile(null)
+      setLicenceClass('')
       setUploadExpiry('')
       const controller = new AbortController()
       await loadDocs.current(controller.signal)
@@ -377,7 +417,7 @@ export default function DocumentsTab({ staffId }: DocumentsTabProps) {
       setUploadError(
         typeof detail === 'string' && detail.length > 0
           ? detail
-          : 'Failed to upload document. Use a PDF, image, or Word file up to 10 MB.',
+          : 'Failed to upload document. Use a PDF, image, or Word file up to 20 MB.',
       )
     } finally {
       setDocUploading(false)
@@ -410,7 +450,7 @@ export default function DocumentsTab({ staffId }: DocumentsTabProps) {
   const uploadFile = async (file: File) => {
     setError(null)
     if (file.size > MAX_BYTES) {
-      setError('File too large. Maximum size is 10 MB.')
+      setError('File too large. Maximum size is 20 MB.')
       return
     }
     setUploading(true)
@@ -513,7 +553,7 @@ export default function DocumentsTab({ staffId }: DocumentsTabProps) {
       </h2>
       <p className="text-sm text-muted mb-4">
         Attach the staff member's signed employment agreement (PDF, JPG, or
-        PNG, up to 10 MB).
+        PNG, up to 20 MB).
       </p>
 
       {hasUpload ? (
@@ -588,7 +628,7 @@ export default function DocumentsTab({ staffId }: DocumentsTabProps) {
               : 'Drag a PDF, JPG, or PNG here, or click to browse.'}
           </p>
           <p className="text-xs text-muted-2 mt-2">
-            Maximum 10 MB.
+            Maximum 20 MB.
           </p>
         </div>
       )}
@@ -811,7 +851,13 @@ export default function DocumentsTab({ staffId }: DocumentsTabProps) {
                     <select
                       id="doc-detail"
                       value={uploadDetailSelect}
-                      onChange={(e) => setUploadDetailSelect(e.target.value)}
+                      onChange={(e) => {
+                        setUploadDetailSelect(e.target.value)
+                        if (e.target.value !== 'drivers_licence') {
+                          setBackFile(null)
+                          setLicenceClass('')
+                        }
+                      }}
                       className="h-10 w-full rounded-ctl border border-border bg-card px-3 text-sm text-text focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20"
                     >
                       <option value="">Select…</option>
@@ -852,6 +898,26 @@ export default function DocumentsTab({ staffId }: DocumentsTabProps) {
             )
           })()}
 
+          {/* Licence class — driver's licence only */}
+          {isDriversLicence && (
+            <div>
+              <label htmlFor="licence-class" className="mb-1 block text-sm font-medium text-text">
+                Licence class <span className="text-muted-2">(optional)</span>
+              </label>
+              <input
+                id="licence-class"
+                type="text"
+                value={licenceClass}
+                onChange={(e) => setLicenceClass(e.target.value)}
+                placeholder="e.g. 1, 2, 4, 6, DI, F, R, T, W"
+                className="h-10 w-full rounded-ctl border border-border bg-card px-3 text-sm text-text focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20"
+              />
+              <p className="mt-1 text-xs text-muted">
+                The class(es) endorsed on the licence (e.g. Class 1, Class 2 + endorsement DI).
+              </p>
+            </div>
+          )}
+
           <div>
             <label htmlFor="doc-expiry" className="mb-1 block text-sm font-medium text-text">
               Expiry date <span className="text-muted-2">(optional)</span>
@@ -869,7 +935,10 @@ export default function DocumentsTab({ staffId }: DocumentsTabProps) {
           </div>
 
           <div>
-            <label className="mb-1 block text-sm font-medium text-text">File</label>
+            <label className="mb-1 block text-sm font-medium text-text">
+              {isDriversLicence ? 'Front of licence' : 'File'}
+              {isDriversLicence && <span className="text-danger"> *</span>}
+            </label>
             <div className="flex items-center gap-3">
               <button
                 type="button"
@@ -882,8 +951,53 @@ export default function DocumentsTab({ staffId }: DocumentsTabProps) {
                 {pendingFile ? pendingFile.name : 'No file selected'}
               </span>
             </div>
+
+            {isDriversLicence && (
+              <div className="mt-3">
+                <label className="mb-1 block text-sm font-medium text-text">
+                  Back of licence <span className="text-muted-2">(optional)</span>
+                </label>
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => backInputRef.current?.click()}
+                    className="rounded-ctl border border-border bg-card px-3 py-2 text-sm font-medium text-text hover:bg-canvas min-h-[40px]"
+                  >
+                    Choose file
+                  </button>
+                  <span className="min-w-0 flex-1 truncate text-sm text-muted" title={backFile?.name}>
+                    {backFile ? backFile.name : 'No file selected'}
+                  </span>
+                  {backFile && (
+                    <button
+                      type="button"
+                      onClick={() => setBackFile(null)}
+                      className="text-xs text-danger hover:underline"
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
+                <input
+                  ref={backInputRef}
+                  type="file"
+                  accept={ACCEPTED_DOC_UPLOAD_TYPES}
+                  className="hidden"
+                  data-testid="doc-upload-back-input"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0]
+                    if (f) {
+                      setBackFile(f)
+                      setUploadError(null)
+                    }
+                    e.target.value = ''
+                  }}
+                />
+              </div>
+            )}
+
             <p className="mt-1 text-xs text-muted">
-              PDF, image, or Word file, up to 10 MB.
+              PDF, image, or Word file, up to 20 MB.
             </p>
           </div>
 
