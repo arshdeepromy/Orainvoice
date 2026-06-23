@@ -147,9 +147,9 @@ const FEATURE_CATEGORIES: FeatureCategory[] = [
     features: [
       {
         icon: '🗓️',
-        name: 'Scheduling',
+        name: 'Staff Roster',
         description:
-          'Visual scheduling board for staff and bays — see who is working on what, when.',
+          'Build weekly staff rosters — assign shifts, manage leave and open shifts, and see who is working when.',
       },
       {
         icon: '👷',

@@ -121,7 +121,7 @@ function MobileFallback() {
       className="mx-auto mt-8 max-w-md rounded-card border border-warn/40 bg-warn-soft p-6 text-center"
     >
       <h2 className="text-lg font-semibold text-warn">
-        Roster Grid Editor is desktop-only
+        Staff Roster is desktop-only
       </h2>
       <p className="mt-2 text-sm text-warn">
         The grid editor needs at least 1024px width. Use the day or
@@ -1244,7 +1244,7 @@ export default function RosterGridPage() {
     return (
       <div className="px-4 py-6">
         <h1 className="text-xl font-semibold text-text">
-          Roster Grid Editor
+          Staff Roster
         </h1>
         <MobileFallback />
       </div>
@@ -1255,10 +1255,10 @@ export default function RosterGridPage() {
     return (
       <div className="mx-auto mt-12 max-w-md rounded-card border border-warn/40 bg-warn-soft p-8 text-center">
         <h2 className="text-base font-semibold text-warn">
-          Scheduling module is disabled
+          Staff Roster module is disabled
         </h2>
         <p className="mt-2 text-sm text-warn">
-          Ask your org admin to enable it.
+          Ask your org admin to enable the Staff Roster (Scheduling) module.
         </p>
         <Link
           to="/settings/modules"
@@ -1282,7 +1282,7 @@ export default function RosterGridPage() {
         >
           <div className="flex items-center gap-3">
             <h1 className="text-lg font-semibold text-text">
-              Roster Grid Editor
+              Staff Roster
             </h1>
             <span
               className="mono text-sm text-muted"

@@ -171,7 +171,7 @@ const NAV_GROUPS: NavGroup[] = [
       { id: 'job-cards', to: '/job-cards', label: 'Job Cards', icon: ICON.job, module: 'jobs', flagKey: 'jobs' },
       { id: 'jobs', to: '/jobs', label: 'Jobs', icon: ICON.job, module: 'jobs', flagKey: 'jobs' },
       { id: 'bookings', to: '/bookings', label: 'Bookings', icon: ICON.booking, module: 'bookings', flagKey: 'bookings' },
-      { id: 'schedule', to: '/schedule', label: 'Schedule', icon: ICON.schedule, module: 'scheduling', flagKey: 'scheduling' },
+      { id: 'schedule', to: '/schedule', label: 'Staff Roster', icon: ICON.schedule, module: 'scheduling', flagKey: 'scheduling' },
       { id: 'staff-schedule', to: '/staff-schedule', label: 'Staff Schedule', icon: ICON.schedule, module: 'branch_management', adminOnly: true },
       { id: 'projects', to: '/projects', label: 'Projects', icon: ICON.project, module: 'projects', flagKey: 'projects' },
       { id: 'time-tracking', to: '/time-tracking', label: 'Time Tracking', icon: ICON.time, module: 'time_tracking', flagKey: 'time_tracking' },
