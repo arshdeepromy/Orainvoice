@@ -216,7 +216,10 @@ export default function EmployeePortalLogin() {
         { withCredentials: true },
       )
       // Cookies are set by the response; route into the authenticated portal.
-      navigate(`/e/${encodeURIComponent(slug)}/`, { replace: true })
+      // Use a non-empty subpath (`/home`) so React Router matches the
+      // `/e/:slug/*` app route — a bare `/e/:slug/` normalises to `/e/:slug`,
+      // which scores to the login route and would bounce us back here.
+      navigate(`/e/${encodeURIComponent(slug)}/home`, { replace: true })
     } catch (err) {
       setLoginError(mapLoginError(err))
     } finally {
