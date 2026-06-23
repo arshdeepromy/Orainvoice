@@ -901,8 +901,8 @@ export default function RosterGridPage() {
           addToast(
             'warning',
             detail
-              ? `Conflicts with "${detail}"`
-              : `Conflicts with another entry`,
+              ? `Overlaps an existing shift ("${detail}") — they'd be double-booked.`
+              : `Overlaps an existing shift — they'd be double-booked.`,
           )
         } else if (status === 422) {
           addToast('error', e?.response?.data?.detail ?? 'Validation error')

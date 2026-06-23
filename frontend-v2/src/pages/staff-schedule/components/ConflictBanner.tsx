@@ -53,7 +53,12 @@ export default function ConflictBanner({
       <div className="flex items-start justify-between gap-3">
         <div className="flex-1">
           <p className="font-semibold">
-            ⚠ {conflicts.length} conflict{conflicts.length === 1 ? '' : 's'} found
+            ⚠ {conflicts.length} overlapping shift{conflicts.length === 1 ? '' : 's'}
+          </p>
+          <p className="mt-0.5 text-xs text-danger/90">
+            These staff are already rostered at the same time that day — adding
+            another shift would double-book them. (This is an overlap check, not
+            a legal hours limit.)
           </p>
           <ul className="mt-2 space-y-1">
             {conflicts.map((row, idx) => {
@@ -69,19 +74,18 @@ export default function ConflictBanner({
                     className="rounded text-left text-xs underline-offset-2 hover:underline focus:outline-none focus:ring-2 focus:ring-danger"
                   >
                     <span className="font-medium">{row.staff_name}</span>
-                    {' · '}
+                    {' is already rostered '}
+                    {conflictTitles && (
+                      <span className="italic">{conflictTitles} </span>
+                    )}
+                    {'on '}
                     <span className="mono">{row.date}</span>
-                    {' · '}
+                    {' — the new '}
                     <span className="mono">
                       {fmtTime(row.conflict.attempted.start_time)}–
                       {fmtTime(row.conflict.attempted.end_time)}
                     </span>
-                    {conflictTitles && (
-                      <>
-                        {' · conflicts with '}
-                        <span className="italic">{conflictTitles}</span>
-                      </>
-                    )}
+                    {' shift overlaps it.'}
                   </button>
                 </li>
               )
