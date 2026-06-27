@@ -377,7 +377,11 @@ export default function PayRunsTab() {
   const approvedCount = summary?.approved_count ?? 0
   const pendingCount = summary?.pending_count ?? 0
   const totalStaff = summary?.total_staff ?? 0
-  const readyToRun = lockedCount > 0
+  // Approval now happens weekly on the Review Hours tab; the pay run pays
+  // approved hours and skips anyone still pending. So it's runnable whenever a
+  // period is selected — no manual lock gate.
+  const readyToRun = !!selectedPeriod
+  void lockedCount; void approvedCount; void pendingCount
 
   return (
     <div className="space-y-6">
@@ -489,33 +493,18 @@ export default function PayRunsTab() {
             <span className="flex h-6 w-6 items-center justify-center rounded-full bg-accent text-xs font-bold text-white">2</span>
             <h3 className="text-sm font-semibold text-text">Period Readiness</h3>
           </div>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <div className="rounded-lg bg-canvas p-3 text-center">
-              <p className="text-lg font-semibold text-text">{totalStaff}</p>
-              <p className="text-xs text-muted">Timesheets</p>
-            </div>
-            <div className="rounded-lg bg-warning/5 p-3 text-center">
-              <p className="text-lg font-semibold text-warning">{pendingCount}</p>
-              <p className="text-xs text-muted">Pending</p>
-            </div>
-            <div className="rounded-lg bg-success/5 p-3 text-center">
-              <p className="text-lg font-semibold text-success">{approvedCount}</p>
-              <p className="text-xs text-muted">Approved</p>
-            </div>
-            <div className="rounded-lg bg-accent/5 p-3 text-center">
-              <p className="text-lg font-semibold text-accent">{lockedCount}</p>
-              <p className="text-xs text-muted">Locked</p>
-            </div>
+          <div className="rounded-lg bg-canvas p-3 text-center sm:w-40">
+            <p className="text-lg font-semibold text-text">{totalStaff}</p>
+            <p className="text-xs text-muted">Staff in this period</p>
           </div>
-          {!readyToRun && totalStaff > 0 && (
-            <p className="mt-3 text-xs text-muted">
-              Approve and lock timesheets in the <span className="font-medium text-text">Timesheets</span> tab before running pay.
-              Only locked timesheets flow into the pay run.
-            </p>
-          )}
+          <p className="mt-3 text-xs text-muted">
+            Hours are reviewed and approved <span className="font-medium text-text">weekly on the Review Hours tab</span>,
+            for all staff regardless of pay cycle. The pay run below pays each staff member's <span className="font-medium text-text">approved</span> hours
+            for this period and skips anyone with shifts still pending review — finish approving them on Review Hours first.
+          </p>
           {totalStaff === 0 && (
-            <p className="mt-3 text-xs text-muted">
-              No timesheets in this period yet. Use the Timesheets tab to materialise them, or wait for staff to clock in.
+            <p className="mt-2 text-xs text-muted">
+              No timesheets in this period yet — they're created automatically when you run the pay run (or when staff clock in).
             </p>
           )}
         </div>
@@ -540,12 +529,12 @@ export default function PayRunsTab() {
                   {payslips.length} payslip draft(s) generated for this period
                 </p>
               ) : (
-                <p className="text-sm font-medium text-text">Create payslip drafts for {lockedCount} locked timesheet(s)</p>
+                <p className="text-sm font-medium text-text">Create payslip drafts from this period's approved hours</p>
               )}
               <p className="mt-0.5 text-xs text-muted">
                 {payslips.length > 0
-                  ? 'Re-running is safe — it only adds drafts for newly locked timesheets and never duplicates existing ones. Review, edit and finalise drafts in Payroll.'
-                  : 'Generates draft payslips in the Payroll module. Hour bands (ordinary, overtime, public holiday) and any recorded adjustments flow into each payslip. Draft payslips can be reviewed and finalised in Payroll.'}
+                  ? 'Re-running is safe — it only adds drafts for newly approved staff and never duplicates existing ones. Review, edit and finalise drafts in Payroll.'
+                  : 'Pays each staff member\u2019s hours approved on the Review Hours tab. Anyone with shifts still pending review is skipped. Hour bands and recorded adjustments flow into each draft payslip, finalised in Payroll.'}
               </p>
               <div className="mt-3 flex flex-wrap items-center gap-2">
                 <button
@@ -556,7 +545,7 @@ export default function PayRunsTab() {
                       ? 'border border-border bg-card text-text hover:bg-canvas'
                       : 'bg-accent text-white hover:bg-accent/90'
                   }`}
-                  title={!readyToRun ? 'Lock at least one timesheet first' : undefined}
+                  title={!readyToRun ? 'Select a pay period first' : undefined}
                 >
                   {generatingRun ? (
                     <>

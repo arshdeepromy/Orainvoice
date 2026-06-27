@@ -39,7 +39,6 @@ vi.mock('@/api/client', () => ({
   },
 }))
 
-import TimesheetsTab from './TimesheetsTab'
 import PayRunsTab from './PayRunsTab'
 
 // ---------------------------------------------------------------------------
@@ -138,65 +137,6 @@ beforeEach(() => {
   mockGet.mockReset()
   mockPost.mockReset()
   configureApi()
-})
-
-// ===========================================================================
-// TimesheetsTab
-// ===========================================================================
-
-describe('TimesheetsTab — cycle-first period filter', () => {
-  it('renders one cycle box per active cycle', async () => {
-    render(<TimesheetsTab />)
-
-    const cycleGroup = await screen.findByRole('group', { name: /pay cycle/i })
-    expect(within(cycleGroup).getByRole('button', { name: /weekly/i })).toBeTruthy()
-    expect(within(cycleGroup).getByRole('button', { name: /fortnightly/i })).toBeTruthy()
-  })
-
-  it('scopes the period dropdown to the selected cycle (same-range periods stay separated)', async () => {
-    const user = userEvent.setup()
-    render(<TimesheetsTab />)
-
-    // Default cycle is the org default (Weekly): only its period is in play.
-    await waitFor(() => expect(periodOptionValues()).toEqual(['pp-weekly']))
-    expect(periodSelect().value).toBe('pp-weekly')
-
-    // Switch to the Fortnightly cycle: now only its period is shown — the
-    // identical-date-range weekly period is no longer present.
-    const cycleGroup = screen.getByRole('group', { name: /pay cycle/i })
-    await user.click(within(cycleGroup).getByRole('button', { name: /fortnightly/i }))
-
-    await waitFor(() => expect(periodOptionValues()).toEqual(['pp-fortnightly']))
-    expect(periodSelect().value).toBe('pp-fortnightly')
-  })
-
-  it('drives the materialise call with the selected period id', async () => {
-    const user = userEvent.setup()
-    render(<TimesheetsTab />)
-
-    const cycleGroup = await screen.findByRole('group', { name: /pay cycle/i })
-    await user.click(within(cycleGroup).getByRole('button', { name: /fortnightly/i }))
-    await waitFor(() => expect(periodSelect().value).toBe('pp-fortnightly'))
-
-    await user.click(screen.getByRole('button', { name: /generate timesheets/i }))
-
-    await waitFor(() => {
-      const call = mockPost.mock.calls.find((c) => c[0] === '/api/v2/timesheets/materialise/')
-      expect(call).toBeTruthy()
-      expect(call?.[2]?.params?.pay_period_id).toBe('pp-fortnightly')
-    })
-  })
-
-  it('consumes responses safely when arrays are missing (no crash)', async () => {
-    mockGet.mockImplementation(async () => ({ data: {} }))
-
-    render(<TimesheetsTab />)
-
-    // No active cycles → fallback message renders rather than throwing.
-    await waitFor(() => {
-      expect(screen.getByText(/no active pay cycles/i)).toBeInTheDocument()
-    })
-  })
 })
 
 // ===========================================================================

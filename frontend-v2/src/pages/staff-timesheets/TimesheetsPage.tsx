@@ -3,30 +3,56 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import apiClient from '@/api/client'
 import ClockedInTab from './ClockedInTab'
 import AttendanceTab from './AttendanceTab'
-import TimesheetsTab from './TimesheetsTab'
 import PayRunsTab from './PayRunsTab'
-import type { PeriodSummary } from './types'
+import type { AttendanceResponse } from './types'
 
-const TABS = ['Attendance', 'Clocked In', 'Timesheets', 'Pay Runs'] as const
+const TABS = ['Review Hours', 'Clocked In', 'Pay Runs'] as const
 
 // URL <-> tab mapping so the active tab persists across reloads and can be
 // deep-linked (e.g. /timesheets?tab=pay-runs from the Payroll console).
 const TAB_TO_SLUG: Record<(typeof TABS)[number], string> = {
-  Attendance: 'attendance',
+  'Review Hours': 'review',
   'Clocked In': 'clocked-in',
-  Timesheets: 'timesheets',
   'Pay Runs': 'pay-runs',
 }
+// Backward-compatible: old deep-links (?tab=attendance / ?tab=timesheets) still
+// resolve sensibly now that review lives on one tab and pay on another.
 const SLUG_TO_TAB: Record<string, (typeof TABS)[number]> = {
-  attendance: 'Attendance',
+  review: 'Review Hours',
+  attendance: 'Review Hours',
   'clocked-in': 'Clocked In',
-  timesheets: 'Timesheets',
+  timesheets: 'Pay Runs',
   'pay-runs': 'Pay Runs',
+}
+
+/** Local date as YYYY-MM-DD. */
+function localISO(d: Date): string {
+  const tz = d.getTimezoneOffset() * 60000
+  return new Date(d.getTime() - tz).toISOString().split('T')[0]
+}
+
+/** Monday (start) and Sunday (end) of the week containing `d`. */
+function weekBounds(d: Date): { start: string; end: string } {
+  const day = d.getDay()
+  const mondayOffset = day === 0 ? -6 : 1 - day
+  const monday = new Date(d)
+  monday.setDate(d.getDate() + mondayOffset)
+  const sunday = new Date(monday)
+  sunday.setDate(monday.getDate() + 6)
+  return { start: localISO(monday), end: localISO(sunday) }
+}
+
+function fmtHours(hours: number): string {
+  const totalMin = Math.round((hours || 0) * 60)
+  const h = Math.floor(totalMin / 60)
+  const m = totalMin % 60
+  if (h === 0 && m === 0) return '0h'
+  return `${h}h${m ? ` ${m}m` : ''}`
 }
 
 export default function TimesheetsPage() {
   const [searchParams, setSearchParams] = useSearchParams()
-  const activeTab: (typeof TABS)[number] = SLUG_TO_TAB[searchParams.get('tab') ?? ''] ?? 'Attendance'
+  const activeTab: (typeof TABS)[number] = SLUG_TO_TAB[searchParams.get('tab') ?? ''] ?? 'Review Hours'
   const setActiveTab = useCallback(
     (tab: (typeof TABS)[number]) => {
       setSearchParams(
@@ -42,32 +68,35 @@ export default function TimesheetsPage() {
   )
   const navigate = useNavigate()
 
-  // Summary stats from API
+  // Header summary — sourced from the live clocked-in endpoint + this week's
+  // attendance summary (the weekly review is the source of truth now).
   const [clockedInCount, setClockedInCount] = useState(0)
-  const [pendingCount, setPendingCount] = useState(0)
-  const [approvedCount, setApprovedCount] = useState(0)
-  const [lockedCount, setLockedCount] = useState(0)
-  const [totalHours, setTotalHours] = useState(0)
+  const [pendingReview, setPendingReview] = useState(0)
+  const [hoursThisWeek, setHoursThisWeek] = useState(0)
+  const [staffThisWeek, setStaffThisWeek] = useState(0)
 
   useEffect(() => {
     const controller = new AbortController()
-    // Use EXISTING time-clock endpoint that returns real data
-    apiClient.get<{ items: any[]; total: number }>('/api/v2/time-clock/clocked-in', { signal: controller.signal })
-      .then(res => setClockedInCount(res.data?.total ?? res.data?.items?.length ?? 0))
+    apiClient
+      .get<{ items: unknown[]; total: number }>('/api/v2/time-clock/clocked-in', { signal: controller.signal })
+      .then((res) => setClockedInCount(res.data?.total ?? res.data?.items?.length ?? 0))
+      .catch(() => {})
+
+    const { start, end } = weekBounds(new Date())
+    apiClient
+      .get<AttendanceResponse>('/api/v2/timesheets/attendance', {
+        params: { start, end },
+        signal: controller.signal,
+      })
+      .then((res) => {
+        const s = res.data?.summary
+        setPendingReview(s?.pending_review_count ?? 0)
+        setHoursThisWeek(Number(s?.total_worked_hours) || 0)
+        setStaffThisWeek(s?.total_staff ?? 0)
+      })
       .catch(() => {})
 
     return () => controller.abort()
-  }, [])
-
-  // Callback for TimesheetsTab to push period_summary up
-  const handlePeriodSummary = useCallback((summary: PeriodSummary) => {
-    setPendingCount(summary?.pending_count ?? 0)
-    setApprovedCount(summary?.approved_count ?? 0)
-    setLockedCount(summary?.locked_count ?? 0)
-    const ordinary = Number(summary?.total_ordinary_hours) || 0
-    const overtime = Number(summary?.total_overtime_hours) || 0
-    const publicHoliday = Number(summary?.total_public_holiday_hours) || 0
-    setTotalHours(ordinary + overtime + publicHoliday)
   }, [])
 
   return (
@@ -79,7 +108,7 @@ export default function TimesheetsPage() {
           <div className="eyebrow">Staff</div>
           <h1>Staff Timesheets</h1>
           <p className="sub">
-            Track work hours, manage approvals, and run payroll
+            Review hours weekly, then run payroll on each staff member's cycle
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -96,8 +125,8 @@ export default function TimesheetsPage() {
         </div>
       </div>
 
-      {/* Summary cards */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
+      {/* Summary cards — this week */}
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <div className="rounded-card border border-border bg-card p-4 shadow-card">
           <div className="flex items-center justify-between">
             <p className="text-xs font-medium uppercase tracking-wide text-muted">Clocked In</p>
@@ -112,51 +141,40 @@ export default function TimesheetsPage() {
         </div>
         <div className="rounded-card border border-border bg-card p-4 shadow-card">
           <div className="flex items-center justify-between">
-            <p className="text-xs font-medium uppercase tracking-wide text-muted">Pending Approval</p>
+            <p className="text-xs font-medium uppercase tracking-wide text-muted">Pending Review</p>
             <div className="rounded-full bg-warning/10 p-1.5">
               <svg className="h-3.5 w-3.5 text-warning" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
               </svg>
             </div>
           </div>
-          <p className="mt-2 text-2xl font-bold text-warning">{pendingCount}</p>
-          <p className="mt-0.5 text-xs text-muted">timesheets this period</p>
+          <p className={`mt-2 text-2xl font-bold ${pendingReview > 0 ? 'text-warning' : 'text-success'}`}>{pendingReview}</p>
+          <p className="mt-0.5 text-xs text-muted">shifts to approve this week</p>
         </div>
         <div className="rounded-card border border-border bg-card p-4 shadow-card">
           <div className="flex items-center justify-between">
-            <p className="text-xs font-medium uppercase tracking-wide text-muted">Approved</p>
-            <div className="rounded-full bg-success/10 p-1.5">
-              <svg className="h-3.5 w-3.5 text-success" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-            </div>
-          </div>
-          <p className="mt-2 text-2xl font-bold text-success">{approvedCount}</p>
-          <p className="mt-0.5 text-xs text-muted">ready to lock</p>
-        </div>
-        <div className="rounded-card border border-border bg-card p-4 shadow-card">
-          <div className="flex items-center justify-between">
-            <p className="text-xs font-medium uppercase tracking-wide text-muted">Locked</p>
-            <div className="rounded-full bg-accent/10 p-1.5">
-              <svg className="h-3.5 w-3.5 text-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
-              </svg>
-            </div>
-          </div>
-          <p className="mt-2 text-2xl font-bold text-text">{lockedCount}</p>
-          <p className="mt-0.5 text-xs text-muted">approved &amp; ready for pay run</p>
-        </div>
-        <div className="rounded-card border border-border bg-card p-4 shadow-card">
-          <div className="flex items-center justify-between">
-            <p className="text-xs font-medium uppercase tracking-wide text-muted">Total Hours</p>
+            <p className="text-xs font-medium uppercase tracking-wide text-muted">Hours Worked</p>
             <div className="rounded-full bg-muted/10 p-1.5">
               <svg className="h-3.5 w-3.5 text-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6l4 2" />
+                <circle cx="12" cy="12" r="9" />
               </svg>
             </div>
           </div>
-          <p className="mt-2 text-2xl font-bold text-text">{Number(totalHours || 0).toFixed(1)}</p>
-          <p className="mt-0.5 text-xs text-muted">this period</p>
+          <p className="mt-2 text-2xl font-bold text-text">{fmtHours(hoursThisWeek)}</p>
+          <p className="mt-0.5 text-xs text-muted">this week</p>
+        </div>
+        <div className="rounded-card border border-border bg-card p-4 shadow-card">
+          <div className="flex items-center justify-between">
+            <p className="text-xs font-medium uppercase tracking-wide text-muted">Staff</p>
+            <div className="rounded-full bg-accent/10 p-1.5">
+              <svg className="h-3.5 w-3.5 text-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z" />
+              </svg>
+            </div>
+          </div>
+          <p className="mt-2 text-2xl font-bold text-text">{staffThisWeek}</p>
+          <p className="mt-0.5 text-xs text-muted">worked this week</p>
         </div>
       </div>
 
@@ -187,9 +205,8 @@ export default function TimesheetsPage() {
 
         {/* Tab content */}
         <div className="p-4">
-          {activeTab === 'Attendance' && <AttendanceTab />}
+          {activeTab === 'Review Hours' && <AttendanceTab />}
           {activeTab === 'Clocked In' && <ClockedInTab />}
-          {activeTab === 'Timesheets' && <TimesheetsTab onPeriodSummary={handlePeriodSummary} />}
           {activeTab === 'Pay Runs' && <PayRunsTab />}
         </div>
       </div>

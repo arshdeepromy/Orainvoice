@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
 import apiClient from '@/api/client'
 import { useBranch } from '@/contexts/BranchContext'
 import { useToast, ToastContainer } from '@/components/ui'
@@ -436,7 +435,7 @@ interface ExpandPanelProps {
 }
 
 function ExpandPanel({ open, staffId, staffName, start, end, onReviewed, addToast }: ExpandPanelProps) {
-  const navigate = useNavigate()
+  void staffName
   const [detail, setDetail] = useState<AttendanceDetailResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -567,16 +566,6 @@ function ExpandPanel({ open, staffId, staffName, start, end, onReviewed, addToas
             <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
           </svg>
           Add day
-        </button>
-        <button
-          onClick={() => navigate(`/timesheets?tab=timesheets&staff=${encodeURIComponent(staffName)}`)}
-          title="Approve and lock for the pay run in the Timesheets tab"
-          className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-card px-3 text-xs font-medium text-text transition-colors hover:bg-canvas"
-        >
-          Open in Timesheets
-          <svg className="h-3.5 w-3.5 text-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
-          </svg>
         </button>
         {pending > 0 && (
           <button
