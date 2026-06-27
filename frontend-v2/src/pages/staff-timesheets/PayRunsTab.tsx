@@ -289,26 +289,27 @@ export default function PayRunsTab() {
       flash('error', 'Select a pay period first')
       return
     }
-    const lockedCount = summary?.locked_count ?? 0
-    if (lockedCount === 0) {
-      flash('error', 'No locked timesheets in this period. Lock approved timesheets in the Timesheets tab first.')
-      return
-    }
     setGeneratingRun(true)
     try {
       const res = await apiClient.post<{
         payslips_generated: number
         total_timesheets: number
         adjustments_included: number
+        skipped_pending_review?: { staff_id: string; pending: number }[]
         errors: string[]
       }>('/api/v2/pay-run/generate/', null, {
         params: { pay_period_id: selectedPeriod },
       })
       const data = res.data
+      const skipped = data?.skipped_pending_review?.length ?? 0
       flash(
-        'success',
-        `Pay run complete — ${data?.payslips_generated ?? 0} payslip draft(s) created from ${data?.total_timesheets ?? 0} locked timesheet(s)${
+        skipped > 0 ? 'error' : 'success',
+        `Pay run complete — ${data?.payslips_generated ?? 0} payslip draft(s) created from approved hours${
           data?.adjustments_included ? `, ${data.adjustments_included} adjustment(s) included` : ''
+        }${
+          skipped > 0
+            ? `. ${skipped} staff skipped — review and approve their hours on the Attendance tab first.`
+            : ''
         }`,
       )
       await loadPeriodDetail(selectedPeriod)

@@ -1464,6 +1464,7 @@ async def generate_payrun(
         "total_timesheets": summary.total_timesheets,
         "payslips_generated": summary.payslips_generated,
         "adjustments_included": summary.adjustments_included,
+        "skipped_pending_review": summary.skipped_pending_review,
         "errors": summary.errors,
     })
 

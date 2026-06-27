@@ -395,6 +395,13 @@ export default function TimesheetsTab({ onPeriodSummary }: TimesheetsTabProps) {
 
   return (
     <div className="space-y-4">
+      {/* How review/approval relates to pay cycle (cycle-decoupled approval). */}
+      <div className="rounded-lg border border-accent/20 bg-accent/5 px-4 py-2.5 text-xs text-muted">
+        Review and approve everyone's hours <span className="font-medium text-text">weekly on the Attendance tab</span> —
+        regardless of pay cycle. This tab shows pay-period timesheets per cycle, and the pay run uses those weekly
+        approvals automatically (no separate approve/lock step needed here).
+      </div>
+
       {/* Cycle-first period filter */}
       <div className="space-y-3">
         {activeCyclesOf(cycles).length === 0 ? (

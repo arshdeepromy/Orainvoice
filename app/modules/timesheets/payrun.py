@@ -12,10 +12,11 @@ Phase B implementation per design § Phase B Architecture Notes.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit_log
@@ -47,6 +48,10 @@ class PayRunSummary:
     payslips_generated: int = 0
     errors: list[dict] = field(default_factory=list)
     adjustments_included: int = 0
+    # Staff skipped because their hours for this period aren't fully reviewed
+    # (signed off) on the Attendance tab yet — each entry is
+    # ``{"staff_id": str, "pending": int}``.
+    skipped_pending_review: list[dict] = field(default_factory=list)
 
 
 async def generate_payslip_draft(
@@ -135,21 +140,30 @@ async def run_pay_period(
     pay_period_id: UUID,
     actor_id: UUID,
 ) -> PayRunSummary:
-    """Run payslip generation for all locked timesheets in a period.
+    """Run payslip generation for a period, driven by weekly Attendance sign-offs.
+
+    Review/approval is decoupled from the pay cycle: hours are reviewed and
+    signed off weekly on the Attendance tab (per-shift ``reviewed`` flag), for
+    all staff regardless of cadence. The pay run then simply consumes those
+    approved hours — there is no separate per-cycle approve/lock step.
 
     Steps:
-    1. Query all locked timesheets without a payslip_id.
-    2. Generate payslip drafts for each.
-    3. Include any timesheet_adjustments targeting this period.
-    4. Return summary.
-
-    Before any work, the period is loaded and its ``pay_cycle_id`` is checked:
-    a missing period or one with a ``NULL`` ``pay_cycle_id`` cannot be
-    cycle-scoped, so the run is refused with ``PayRunScopingError`` (REQ 8.5).
-    No per-staff filtering is needed beyond that — the period's timesheets are
-    already cycle-scoped by materialisation (REQ 7.1-7.3).
+    1. Null-cycle guard (REQ 8.5) — a period must belong to a cycle.
+    2. Materialise any missing timesheets for the period's cycle staff.
+    3. For each not-yet-locked timesheet, recompute its hours from the reviewed
+       shifts and — if every completed shift in the period has been signed off
+       on Attendance — auto-lock it (the approval of record). Staff with
+       un-reviewed shifts are skipped and reported in ``skipped_pending_review``.
+    4. Generate payslip drafts for all locked timesheets.
+    5. Include any timesheet_adjustments targeting this period.
     """
     from app.modules.payslips.models import PayPeriod
+    from app.modules.time_clock.models import TimeClockEntry
+    from app.modules.timesheets.service import (
+        _org_zoneinfo,
+        materialise_missing_timesheets,
+        recompute_timesheets_for_staff_date,
+    )
 
     # Null-cycle guard: the pay run scopes staff via the period's cycle, so a
     # missing or cycle-less period cannot proceed (REQ 8.5).
@@ -159,18 +173,71 @@ async def run_pay_period(
 
     summary = PayRunSummary(pay_period_id=pay_period_id)
 
-    # Get all locked timesheets for this period
+    # 2. Ensure timesheets exist for the period's cycle staff (clock-active +
+    #    fixed-arrangement). Cycle-scoped inside materialise.
+    await materialise_missing_timesheets(
+        db, org_id=org_id, pay_period_id=pay_period_id, include_all_active=False,
+    )
+
+    # Org-local → UTC window for the review-completeness query.
+    tz = await _org_zoneinfo(db, org_id)
+    start_dt = datetime.combine(period.start_date, time.min, tzinfo=tz).astimezone(timezone.utc)
+    end_dt = datetime.combine(
+        period.end_date + timedelta(days=1), time.min, tzinfo=tz
+    ).astimezone(timezone.utc)
+
     result = await db.execute(
         select(Timesheet).where(
             Timesheet.org_id == org_id,
             Timesheet.pay_period_id == pay_period_id,
-            Timesheet.status == "locked",
         )
     )
     timesheets = list(result.scalars().all())
     summary.total_timesheets = len(timesheets)
 
     for ts in timesheets:
+        # 3. Auto-lock review-complete timesheets from the weekly Attendance
+        #    sign-offs. Already-locked timesheets pass straight to generation.
+        if ts.status != "locked":
+            # Refresh payable hours from the reviewed shifts.
+            await recompute_timesheets_for_staff_date(
+                db, org_id=org_id, staff_id=ts.staff_id, work_date=period.start_date,
+            )
+            # Count completed, non-voided shifts NOT yet signed off in the period.
+            pending = (
+                await db.execute(
+                    select(func.count())
+                    .select_from(TimeClockEntry)
+                    .where(
+                        TimeClockEntry.org_id == org_id,
+                        TimeClockEntry.staff_id == ts.staff_id,
+                        TimeClockEntry.clock_in_at >= start_dt,
+                        TimeClockEntry.clock_in_at < end_dt,
+                        TimeClockEntry.clock_out_at.isnot(None),
+                        func.coalesce(TimeClockEntry.flags["voided"].astext, "false") != "true",
+                        func.coalesce(TimeClockEntry.flags["reviewed"].astext, "false") != "true",
+                    )
+                )
+            ).scalar() or 0
+
+            if pending > 0:
+                summary.skipped_pending_review.append(
+                    {"staff_id": str(ts.staff_id), "pending": int(pending)}
+                )
+                continue
+
+            # Approved on Attendance → auto-approve + lock (the gate the pay run
+            # consumes). Hours were just recomputed from the reviewed shifts.
+            now = datetime.now(timezone.utc)
+            ts.status = "locked"
+            ts.approved_by = actor_id
+            ts.approved_at = now
+            ts.locked_by = actor_id
+            ts.locked_at = now
+            ts.updated_at = now
+            await db.flush()
+            await db.refresh(ts)
+
         try:
             payslip_id = await generate_payslip_draft(
                 db, timesheet=ts, org_id=org_id, actor_id=actor_id,
@@ -205,6 +272,7 @@ async def run_pay_period(
             "timesheets_processed": summary.total_timesheets,
             "payslips_generated": summary.payslips_generated,
             "adjustments_included": summary.adjustments_included,
+            "skipped_pending_review": len(summary.skipped_pending_review),
             "errors": len(summary.errors),
         },
     )
