@@ -161,30 +161,24 @@ When adding line items to invoices, quotes, or bookings:
 
 ## Current Implementation Status
 
+Trade-family gating is **implemented and live** in `frontend-v2` (the active web app). See `trade-family-gating-for-new-features.md` for the canonical gating rules and the list of components already gated.
+
 **What EXISTS in the database:**
-- `trade_families` table with slugs like `automotive-transport`, `plumbing-gas`, `electrical-mechanical`, etc.
-- `trade_categories` table with slugs like `general-automotive`, `plumber`, `electrician`, etc. — each linked to a family via `family_id`
-- `organisations.trade_category_id` column (FK to trade_categories) — EXISTS but currently NULL for all orgs
-- `module_registry` with `inventory` module registered
-- `org_modules` table for per-org module enablement
+- `trade_families` table (slugs: `automotive-transport`, `plumbing-gas`, `electrical-mechanical`, etc.)
+- `trade_categories` table (slugs: `general-automotive`, `plumber`, `electrician`, etc.) linked to a family via `family_id`
+- `organisations.trade_category_id` column (FK to trade_categories)
+- `module_registry` with `inventory` module registered; `org_modules` for per-org enablement
 
-**What EXISTS in the frontend:**
-- `ModuleGate` component and `useModuleGuard` hook for module-based gating
-- `ModuleContext` that fetches enabled modules from `/api/v2/modules`
-- `TenantContext` that fetches org settings — but does NOT include trade family info yet
+**What EXISTS in the frontend (`frontend-v2`):**
+- `ModuleGate` / module context fetching enabled modules from `/api/v2/modules`
+- `TenantContext` (`useTenant()`) exposes **`tradeFamily`** and **`tradeCategory`** from the org settings API response
+- Many components already gate vehicle/parts/fluid UI on `tradeFamily === 'automotive-transport'` (App.tsx route guard, Sidebar, BookingForm, AssetList, etc.)
 
-**What DOES NOT EXIST yet (needs to be built):**
-- `trade_family` field in the org settings API response
-- `tradeFamily` in `TenantContext` / `useTenant()`
-- Any frontend component that checks trade family for conditional rendering
-- `trade_category_id` set on any actual org (all are NULL)
+**Gating model (current):**
+- **Trade family** (from `useTenant().tradeFamily`) decides WHAT trade-specific UI appears (vehicles, parts, fluids). Use the `?? 'automotive-transport'` fallback for orgs with a null trade family.
+- **Module enablement** (from `org_modules`) decides WHETHER an optional feature category (e.g. `inventory`) is on.
 
-**What needs to happen before trade-family gating works:**
-1. Backfill `trade_category_id` on existing orgs (at minimum the demo org)
-2. Add `trade_family` and `trade_category` to `GET /api/v1/org/settings` response
-3. Expose `tradeFamily` in `TenantContext`
-4. Create a `TradeGate` component or use `useTenant().tradeFamily` for conditional rendering
-5. Migrate existing `ModuleGate module="vehicles"` checks to trade family checks
+When adding trade-specific catalogue/inventory UI, gate it on `tradeFamily` (not on a `vehicles` module toggle) per `trade-family-gating-for-new-features.md` and `vehicle-carjam-module-gating.md`.
 
 The following existing components are built specifically for mechanics/workshops/garages and MUST be gated behind `tradeFamily === 'automotive'`:
 

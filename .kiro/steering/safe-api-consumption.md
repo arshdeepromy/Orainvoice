@@ -1,11 +1,13 @@
 ---
 inclusion: fileMatch
-fileMatchPattern: 'frontend/src/**/*.tsx'
+fileMatchPattern: 'frontend-v2/src/**/*.tsx,mobile/src/**/*.tsx,frontend/src/**/*.tsx'
 ---
 
 # Safe API Consumption — Mandatory Patterns for Frontend Code
 
 This file is loaded whenever a `.tsx` file is read or edited. It enforces the patterns that prevent the class of crash bugs documented in `#[[file:docs/API_RESPONSE_SAFETY_AUDIT.md]]` (60+ files affected, ISSUE-006/012/013/017/018/020).
+
+These patterns apply to **`frontend-v2/` (the ACTIVE web app)** and **`mobile/` (the Capacitor app)** first and foremost. `frontend/` is archived (`frontend/ARCHIVED.md`) — the rules still hold for any emergency hotfix there, but new work happens in `frontend-v2/`.
 
 Every API call in this codebase MUST follow these patterns. No exceptions.
 

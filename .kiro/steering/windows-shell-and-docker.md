@@ -74,7 +74,7 @@ On a completely fresh database, the docker entrypoint automatically creates the 
 
 **Pi details**: `192.168.1.90`, user `nerdy`, project dir `/home/nerdy/invoicing`, compose files `docker-compose.yml + docker-compose.pi.yml`, port 8999.
 
-Pi has **no git** — code is synced via `tar -cf - <files> | ssh nerdy@192.168.1.90 "cd /home/nerdy/invoicing && tar -xf -"`.
+> **Deploy method (authoritative): `git pull`.** The Pi is a git checkout of `arshdeepromy/Orainvoice` (`main`). Deploy by committing/pushing locally, then `ssh nerdy@192.168.1.90 "cd /home/nerdy/invoicing && git pull origin main"`. The docker entrypoint runs `alembic upgrade head` automatically on app start. See `deployment-environments.md` and `project-overview.md` for the canonical, full procedure (including the active `frontend-v2` / `nginx-v2` build on port 8998 behind Cloudflare). The legacy `tar`-based sync below is retained only as an emergency fallback for when the Pi cannot reach GitHub — prefer `git pull` in all normal cases.
 
 ### Pre-Deploy Checklist (MANDATORY)
 

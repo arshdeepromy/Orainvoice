@@ -7,6 +7,8 @@ fileMatchPattern: '**/dashboard/widgets/**'
 
 This steering doc is loaded when editing files in the dashboard widgets directory. It documents the architecture and step-by-step process for adding new dashboard widgets, including module gating, backend data, and frontend rendering.
 
+> **Active app is `frontend-v2/`.** Every `frontend/src/...` path in this document maps to the same path under **`frontend-v2/src/...`** — do all widget work there (`frontend/` is archived, see `frontend-redesign.md`). The widget components live in `frontend-v2/src/pages/dashboard/widgets/` (e.g. `CashFlowChartWidget.tsx`, `RecentInvoicesWidget.tsx`). The architecture and steps below are unchanged; only the directory prefix differs.
+
 ## Architecture Overview
 
 The automotive dashboard uses a two-layer gating system:

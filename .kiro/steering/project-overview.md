@@ -83,11 +83,11 @@ ssh nerdy@192.168.1.90 "cd /home/nerdy/invoicing && \
 - The `get_db_session` dependency uses `session.begin()` which auto-commits — use `flush()` not `commit()` in services
 - Integration API keys (Stripe, CarJam, Xero, SMS) are stored encrypted in the DB, configured via Global Admin GUI — never read from `.env` for API calls (see #[[file:.kiro/steering/integration-credentials-architecture.md]])
 
-## Current State (as of 2026-05-26)
+## Current State (as of 2026-06-28)
 
-- Alembic: revision 0194 (head) on Dev, Prod Standby (local), Pi Dev Standby. Pi PROD primary still at 0192 pending the next maintenance window.
+- Alembic: revision **0230** (head) on Dev, Prod Standby (local), Pi Dev Standby. Pi PROD primary lags behind pending the next maintenance window — always check `alembic current` on each node before deploying.
 - 132+ tables in the database
-- 106 issues tracked and resolved (ISSUE-133 added 2026-05-26 for QR partial payment regression-fixes)
+- Issues tracked and resolved up to **ISSUE-173** in `docs/ISSUE_TRACKER.md`
 - Pi PROD has 7 orgs, 611 customers, 72 invoices, 48 payments, 148 line items, 9 users (real production data — handle with care)
 - HA replication configured between Pi primary and local standby nodes
 - Xero accounting integration with webhooks deployed
@@ -96,4 +96,6 @@ ssh nerdy@192.168.1.90 "cd /home/nerdy/invoicing && \
 - COF (Certificate of Fitness) expiry support deployed alongside WOF
 - Kiosk vehicle check-in multi-step flow deployed (rego → vehicle summary → customer details)
 - QR partial payment flow shipped (May 2026 cut-over commit `9403258`)
-- App version: 1.13.0
+- Staff/payroll suite shipped: timesheets, attendance review (weekly review decoupled from pay cycle), pay runs, leave balances/eligibility, per-staff pay cycles, PAYE engine (`app/modules/timesheets/paye.py`)
+- Organisation employee portal shipped (separate identity store `employee_portal_users`, `/e/{slug}` routing, accept-invite, HttpOnly cookie scoped to `/e`)
+- App version: **1.26.0** (backend `pyproject.toml`, `frontend-v2/package.json`; mobile may differ — verify before release per `versioning-and-changelog.md`)

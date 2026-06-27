@@ -101,13 +101,21 @@ Reject any new migration that contains `op.create_index(` in `upgrade()` or `dow
 
 ## Mandatory Steps After Modifying Frontend Code
 
-After modifying any `.tsx` or `.ts` file in `frontend/src/`, you MUST rebuild the frontend inside the Docker container:
+The active web app is **`frontend-v2/`** (`frontend/` is archived — see `frontend-redesign.md`). In local dev, `frontend-v2` runs a Vite dev server with HMR, so source edits are normally picked up automatically.
+
+If a change does not appear after editing, rebuild/restart the active frontend container:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.dev.yml exec frontend npx vite build
+docker compose -f docker-compose.yml -f docker-compose.dev.yml restart frontend-v2
 ```
 
-The `watch-build.sh` watcher inside the container may not reliably detect changes on Windows Docker volume mounts. Always trigger a manual build after making changes.
+After a TypeScript change, confirm the build is clean (the dev server keeps serving the last good bundle if a build fails):
+
+```bash
+docker logs invoicing-frontend-v2-1 --tail 30
+```
+
+Do NOT rebuild the archived `frontend/` container — it is stopped and out of scope.
 
 ## Common Pitfalls
 
