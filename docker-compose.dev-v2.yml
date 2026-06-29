@@ -36,12 +36,13 @@ services:
       - mobile
       - frontend-v2
 
-  # HMR over the gateway: the browser loads the app from http://localhost/new/
-  # (port 80), so Vite's HMR websocket must target host:80, not :5174.
+  # HMR over the gateway: leave HMR_HOST / HMR_CLIENT_PORT / HMR_PROTOCOL unset
+  # so Vite derives the HMR websocket target from the browser's own location.
+  # nginx (nginx.dev-v2.conf `location /`) proxies the ws Upgrade to the Vite
+  # dev server, so this works for BOTH local `http://localhost/`
+  # (-> ws://localhost/) and the Cloudflare tunnel `https://devin.oraflows.co.nz/`
+  # (-> wss://devin.oraflows.co.nz/). Hardcoding localhost:80 broke tunnel access.
   frontend-v2:
     environment:
       - API_PROXY=http://app:8000
-      - HMR_HOST=localhost
-      - HMR_CLIENT_PORT=80
-      - HMR_PROTOCOL=ws
       - CHOKIDAR_USEPOLLING=true
