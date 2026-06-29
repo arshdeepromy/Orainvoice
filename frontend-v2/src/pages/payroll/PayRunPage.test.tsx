@@ -22,6 +22,14 @@ vi.mock('@/components/common/ModuleGate', () => ({
   default: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
 
+// PayRunPage reads the session via useAuth (org_admin gates the tax Settings
+// control); mock it so the page renders without the AuthProvider tree.
+vi.mock('@/contexts/AuthContext', () => ({
+  useAuth: () => ({
+    user: { id: 'u1', email: 'admin@test.com', name: 'Admin', role: 'org_admin', org_id: 'org-1' },
+  }),
+}))
+
 vi.mock('@/api/client', () => ({
   default: { get: vi.fn().mockResolvedValue({ data: { items: [], total: 0 } }) },
 }))
@@ -35,7 +43,7 @@ vi.mock('@/api/payslips', () => ({
 }))
 
 import { listPayPeriods, listPeriodPayslips } from '@/api/payslips'
-import PayRunPage from './PayRunPage'
+import PayRunPage, { pickDefaultPeriod } from './PayRunPage'
 
 const mockListPayPeriods = listPayPeriods as ReturnType<typeof vi.fn>
 const mockListPeriodPayslips = listPeriodPayslips as ReturnType<typeof vi.fn>
@@ -137,5 +145,60 @@ describe('PayRunPage — pay cycle labelling', () => {
 
     await screen.findAllByText(/Weekly · /)
     expect(screen.queryByTestId('cycle-filter')).toBeNull()
+  })
+})
+
+describe('pickDefaultPeriod — default to the current period', () => {
+  const mk = (over: Record<string, unknown>) => period(over) as any
+
+  it('selects the period that contains today', () => {
+    const chosen = pickDefaultPeriod(
+      [
+        mk({ id: 'past', start_date: '2026-05-01', end_date: '2026-05-31', status: 'finalised' }),
+        mk({ id: 'current', start_date: '2026-06-01', end_date: '2026-06-30', status: 'open' }),
+        mk({ id: 'future', start_date: '2026-07-01', end_date: '2026-07-31', status: 'open' }),
+      ],
+      '2026-06-15',
+    )
+    expect(chosen?.id).toBe('current')
+  })
+
+  it('prefers the tightest current period when several cycles cover today', () => {
+    const chosen = pickDefaultPeriod(
+      [
+        mk({ id: 'monthly', start_date: '2026-06-01', end_date: '2026-06-30' }),
+        mk({ id: 'fortnightly', start_date: '2026-06-08', end_date: '2026-06-21' }),
+        mk({ id: 'weekly', start_date: '2026-06-15', end_date: '2026-06-21' }),
+      ],
+      '2026-06-16',
+    )
+    // Most recently started current period wins.
+    expect(chosen?.id).toBe('weekly')
+  })
+
+  it('falls back to the nearest upcoming period when none contain today', () => {
+    const chosen = pickDefaultPeriod(
+      [
+        mk({ id: 'soon', start_date: '2026-07-01', end_date: '2026-07-31' }),
+        mk({ id: 'later', start_date: '2026-08-01', end_date: '2026-08-31' }),
+      ],
+      '2026-06-15',
+    )
+    expect(chosen?.id).toBe('soon')
+  })
+
+  it('falls back to the most recent open period when all are in the past', () => {
+    const chosen = pickDefaultPeriod(
+      [
+        mk({ id: 'old', start_date: '2026-01-01', end_date: '2026-01-31', status: 'finalised' }),
+        mk({ id: 'recent-open', start_date: '2026-03-01', end_date: '2026-03-31', status: 'open' }),
+      ],
+      '2026-06-15',
+    )
+    expect(chosen?.id).toBe('recent-open')
+  })
+
+  it('returns null for an empty list', () => {
+    expect(pickDefaultPeriod([], '2026-06-15')).toBeNull()
   })
 })

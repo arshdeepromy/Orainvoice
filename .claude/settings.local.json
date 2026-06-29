@@ -94,7 +94,8 @@
       "Bash(echo \"install-exit=$?\")",
       "Bash(sed -i 's/^version = \"1.22.1\"/version = \"1.23.0\"/' pyproject.toml)",
       "Bash(sed -i '0,/\"version\": \"1.22.1\"/s//\"version\": \"1.23.0\"/' frontend-v2/package.json)",
-      "Bash(sed -i '0,/\"version\": \"1.22.1\"/s//\"version\": \"1.23.0\"/' mobile/package.json)"
+      "Bash(sed -i '0,/\"version\": \"1.22.1\"/s//\"version\": \"1.23.0\"/' mobile/package.json)",
+      "Bash(echo \"=== exit: $? ===\")"
     ],
     "deny": []
   }

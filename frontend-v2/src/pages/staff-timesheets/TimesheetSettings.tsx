@@ -77,8 +77,56 @@ export default function TimesheetSettings() {
   // Pay cycles state
   const [payCycles, setPayCycles] = useState<{ id: string; name: string; frequency: string; anchor_date: string; pay_date_offset_days: number; is_default: boolean }[]>([])
   const [showCycleModal, setShowCycleModal] = useState(false)
+  const [editingCycleId, setEditingCycleId] = useState<string | null>(null)
   const [cycleForm, setCycleForm] = useState({ name: '', frequency: 'fortnightly', anchor_date: '', pay_date_offset_days: 3, is_default: false })
   const [savingCycle, setSavingCycle] = useState(false)
+
+  // Open the cycle modal in "create" mode (blank form).
+  const openCreateCycle = () => {
+    setEditingCycleId(null)
+    setCycleForm({ name: '', frequency: 'fortnightly', anchor_date: '', pay_date_offset_days: 3, is_default: false })
+    setShowCycleModal(true)
+  }
+
+  // Open the cycle modal in "edit" mode, pre-filled from the selected cycle.
+  const openEditCycle = (cycle: { id: string; name: string; frequency: string; anchor_date: string; pay_date_offset_days: number; is_default: boolean }) => {
+    setEditingCycleId(cycle.id)
+    setCycleForm({
+      name: cycle.name,
+      frequency: cycle.frequency,
+      anchor_date: cycle.anchor_date,
+      pay_date_offset_days: cycle.pay_date_offset_days,
+      is_default: cycle.is_default,
+    })
+    setShowCycleModal(true)
+  }
+
+  // Create or update the cycle depending on whether we're editing.
+  const submitCycle = async () => {
+    if (!cycleForm.name || !cycleForm.anchor_date) return
+    setSavingCycle(true)
+    try {
+      if (editingCycleId) {
+        const res = await apiClient.put(`/api/v2/pay-cycles/${editingCycleId}`, cycleForm)
+        const updated = res.data as typeof payCycles[number]
+        setPayCycles(payCycles.map((c) => (c.id === editingCycleId ? updated : (cycleForm.is_default ? { ...c, is_default: false } : c))))
+        setSuccessMsg('Pay cycle updated')
+      } else {
+        const res = await apiClient.post('/api/v2/pay-cycles/', cycleForm)
+        const created = res.data as typeof payCycles[number]
+        setPayCycles([...payCycles.map((c) => (cycleForm.is_default ? { ...c, is_default: false } : c)), created])
+        setSuccessMsg('Pay cycle created')
+      }
+      setShowCycleModal(false)
+      setEditingCycleId(null)
+      setCycleForm({ name: '', frequency: 'fortnightly', anchor_date: '', pay_date_offset_days: 3, is_default: false })
+      setTimeout(() => setSuccessMsg(null), 3000)
+    } catch {
+      setError(editingCycleId ? 'Failed to update pay cycle' : 'Failed to create pay cycle')
+    } finally {
+      setSavingCycle(false)
+    }
+  }
 
   useEffect(() => {
     const controller = new AbortController()
@@ -585,7 +633,7 @@ export default function TimesheetSettings() {
             </div>
             {!readOnly && (
               <button
-                onClick={() => setShowCycleModal(true)}
+                onClick={openCreateCycle}
                 className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border px-3 text-xs font-medium text-text hover:bg-canvas"
               >
                 <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
@@ -619,7 +667,15 @@ export default function TimesheetSettings() {
                       </p>
                     </div>
                   </div>
-                  {!readOnly && <button className="text-xs text-accent hover:underline">Edit</button>}
+                  {!readOnly && (
+                    <button
+                      type="button"
+                      onClick={() => openEditCycle(cycle)}
+                      className="text-xs text-accent hover:underline"
+                    >
+                      Edit
+                    </button>
+                  )}
                 </div>
               ))}
             </div>
@@ -884,11 +940,11 @@ export default function TimesheetSettings() {
         </div>
       )}
 
-      {/* Create Pay Cycle Modal */}
+      {/* Create / Edit Pay Cycle Modal */}
       {showCycleModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/50">
           <div className="w-full max-w-md rounded-card bg-card p-6 shadow-pop">
-            <h3 className="text-lg font-semibold text-text">New Pay Cycle</h3>
+            <h3 className="text-lg font-semibold text-text">{editingCycleId ? 'Edit Pay Cycle' : 'New Pay Cycle'}</h3>
             <p className="mt-1 text-sm text-muted">Define a recurring pay schedule for your staff.</p>
 
             <div className="mt-4 space-y-4">
@@ -949,33 +1005,20 @@ export default function TimesheetSettings() {
 
             <div className="mt-6 flex items-center justify-end gap-3">
               <button
-                onClick={() => setShowCycleModal(false)}
+                onClick={() => { setShowCycleModal(false); setEditingCycleId(null) }}
                 disabled={savingCycle}
                 className="inline-flex h-10 items-center rounded-lg border border-border bg-card px-4 text-sm font-medium text-text hover:bg-canvas transition-colors"
               >
                 Cancel
               </button>
               <button
-                onClick={async () => {
-                  if (!cycleForm.name || !cycleForm.anchor_date) return
-                  setSavingCycle(true)
-                  try {
-                    const res = await apiClient.post('/api/v2/pay-cycles/', cycleForm)
-                    setPayCycles([...payCycles, res.data as any])
-                    setShowCycleModal(false)
-                    setCycleForm({ name: '', frequency: 'fortnightly', anchor_date: '', pay_date_offset_days: 3, is_default: false })
-                    setSuccessMsg('Pay cycle created')
-                    setTimeout(() => setSuccessMsg(null), 3000)
-                  } catch {
-                    setError('Failed to create pay cycle')
-                  } finally {
-                    setSavingCycle(false)
-                  }
-                }}
+                onClick={submitCycle}
                 disabled={savingCycle || !cycleForm.name || !cycleForm.anchor_date}
                 className="inline-flex h-10 items-center rounded-lg bg-accent px-4 text-sm font-medium text-white hover:bg-accent/90 transition-colors disabled:opacity-50"
               >
-                {savingCycle ? 'Creating...' : 'Create Cycle'}
+                {savingCycle
+                  ? (editingCycleId ? 'Saving...' : 'Creating...')
+                  : (editingCycleId ? 'Save Changes' : 'Create Cycle')}
               </button>
             </div>
           </div>

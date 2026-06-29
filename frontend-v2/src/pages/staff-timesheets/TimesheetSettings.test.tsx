@@ -180,3 +180,58 @@ describe('TimesheetSettings — auto clock-out independent of alert toggles (Req
     expect(body.missed_clock_out_alert_enabled).toBe(true)
   })
 })
+
+describe('TimesheetSettings — edit pay cycle', () => {
+  const CYCLE = {
+    id: 'cycle-1',
+    name: 'Fortnightly',
+    frequency: 'fortnightly',
+    anchor_date: '2026-06-01',
+    pay_date_offset_days: 3,
+    is_default: false,
+  }
+
+  /** Seed the mount GETs with one existing pay cycle. */
+  function seedGetsWithCycle() {
+    mockGet.mockImplementation((url: string) => {
+      if (url === '/api/v2/timesheet-settings/') return Promise.resolve({ data: { org_default: {} } })
+      if (url === '/api/v2/pay-cycles/')
+        return Promise.resolve({ data: { items: [CYCLE], total: 1 } })
+      if (url === POLICY_ENDPOINT)
+        return Promise.resolve({ data: { clock_in_policy: defaultPolicy() } })
+      return Promise.resolve({ data: {} })
+    })
+  }
+
+  it('opens the modal pre-filled and PUTs the updated cycle (Edit is not a dead button)', async () => {
+    seedGetsWithCycle()
+    mockPut.mockResolvedValue({
+      data: { ...CYCLE, name: 'Fortnightly — All Staff', pay_date_offset_days: 5 },
+    })
+    renderSettings()
+
+    // The cycle row renders with its Edit control.
+    const editBtn = await screen.findByRole('button', { name: 'Edit' })
+    fireEvent.click(editBtn)
+
+    // The modal opens in edit mode, pre-filled from the cycle.
+    expect(screen.getByText('Edit Pay Cycle')).toBeInTheDocument()
+    const nameInput = screen.getByDisplayValue('Fortnightly') as HTMLInputElement
+    expect(nameInput).toBeInTheDocument()
+
+    // Change a couple of fields and save.
+    fireEvent.change(nameInput, { target: { value: 'Fortnightly — All Staff' } })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
+
+    await waitFor(() => expect(mockPut).toHaveBeenCalled())
+    const call = mockPut.mock.calls.find((c) => String(c[0]).startsWith('/api/v2/pay-cycles/'))
+    expect(call).toBeDefined()
+    expect(call![0]).toBe('/api/v2/pay-cycles/cycle-1')
+    expect(call![1]).toMatchObject({
+      name: 'Fortnightly — All Staff',
+      frequency: 'fortnightly',
+      anchor_date: '2026-06-01',
+    })
+  })
+})

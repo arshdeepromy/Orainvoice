@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import {
   Button,
@@ -18,6 +18,11 @@ import { SuspendModal } from '@/components/admin/SuspendModal'
 import { DeleteModal } from '@/components/admin/DeleteModal'
 import { MovePlanModal } from '@/components/admin/MovePlanModal'
 import { ApplyCouponModal } from '@/components/admin/ApplyCouponModal'
+import {
+  autoProvisionEsignConnection,
+  extractEsignError,
+  type EsignAutoProvisionResult,
+} from '@/api/esignAdmin'
 
 /* ── Types ── */
 
@@ -307,6 +312,121 @@ function BillingDateModal({
 
 /* ── ApplyCouponModal imported from @/components/admin/ApplyCouponModal ── */
 
+/* ── E-Signature Provision Result Modal ── */
+
+/**
+ * Shows the outcome of the per-row "Provision e-signature" action (Task 18.5,
+ * R19.6 / R20).
+ *
+ *   - success (`provisioned`): the org's connection is verified (`is_verified`)
+ *     and its webhook URL is surfaced to confirm/register (R20.2).
+ *   - failure (`partial`): the humanized `{ message, code }` is shown plus a
+ *     "Configure manually" link into the org's connection management view
+ *     (OrganisationDetail), pre-populated with whatever partial state was
+ *     recorded (R20.3).
+ *   - unavailable (`ESIGN_PROVISIONING_MODE=off`): indicates auto-provisioning
+ *     is unavailable and points to manual config (R20.5).
+ */
+function EsignProvisionResultModal({
+  open,
+  onClose,
+  orgId,
+  orgName,
+  result,
+}: {
+  open: boolean
+  onClose: () => void
+  orgId: string
+  orgName: string
+  result: EsignAutoProvisionResult | null
+}) {
+  const status = result?.status ?? null
+  const connection = result?.connection ?? null
+  const isVerified = connection?.is_verified ?? false
+  const webhookUrl = connection?.webhook_url ?? null
+  const message = result?.error ?? null
+  const code = result?.code ?? null
+
+  // The connection management view lives in OrganisationDetail (Task 18.3); the
+  // EsignConnectionCard there re-fetches the (partial) state on mount, so simply
+  // navigating to the org — anchored to the card — pre-populates it (R19.7).
+  const manualConfigTo = `/admin/organisations/${orgId}#esign-connection`
+
+  return (
+    <Modal open={open} onClose={onClose} title="Provision e-signature">
+      <div className="space-y-4">
+        {status === 'provisioned' && (
+          <>
+            <AlertBanner
+              variant={isVerified ? 'success' : 'warning'}
+              title={isVerified ? 'E-signature provisioned' : 'Provisioned — verification pending'}
+            >
+              {isVerified ? (
+                <>
+                  <span className="font-semibold">{orgName}</span>&apos;s Documenso
+                  connection was created and verified. This organisation can now send
+                  agreements for signature.
+                </>
+              ) : (
+                <>
+                  <span className="font-semibold">{orgName}</span>&apos;s Documenso
+                  connection was created, but the verification test did not pass yet.
+                  Confirm the webhook registration below, then re-run the connection
+                  test from the org&apos;s connection settings.
+                </>
+              )}
+            </AlertBanner>
+
+            <div>
+              <h3 className="text-sm font-semibold text-text mb-1">Webhook URL</h3>
+              {webhookUrl ? (
+                <>
+                  <p className="text-sm text-muted mb-2">
+                    Register this URL in the organisation&apos;s Documenso Team to
+                    confirm the subscription.
+                  </p>
+                  <div className="rounded-ctl border border-border bg-canvas px-3 py-2 mono text-xs break-all select-all">
+                    {webhookUrl}
+                  </div>
+                </>
+              ) : (
+                <p className="text-sm text-muted">
+                  No webhook URL was returned. Open the connection settings to finish setup.
+                </p>
+              )}
+            </div>
+          </>
+        )}
+
+        {status === 'unavailable' && (
+          <AlertBanner variant="warning" title="Auto-provisioning unavailable">
+            {message ??
+              'Automatic setup is turned off in this environment. Please configure the connection manually.'}
+            {code && <span className="block mt-1 text-xs mono text-muted">{code}</span>}
+          </AlertBanner>
+        )}
+
+        {status === 'partial' && (
+          <AlertBanner variant="error" title="Auto-provisioning didn't finish">
+            {message ??
+              "We couldn't finish setting up Documenso automatically. Any progress was saved — please complete the connection manually."}
+            {code && <span className="block mt-1 text-xs mono text-muted">{code}</span>}
+          </AlertBanner>
+        )}
+
+        <div className="flex flex-wrap justify-end gap-3 pt-2">
+          {(status === 'partial' || status === 'unavailable' || (status === 'provisioned' && !isVerified)) && (
+            <Link to={manualConfigTo}>
+              <Button type="button" variant="ghost">Configure manually</Button>
+            </Link>
+          )}
+          <Button type="button" onClick={onClose}>Close</Button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
 /* ── Main Page ── */
 
 export function Organisations() {
@@ -326,6 +446,13 @@ export function Organisations() {
   const [billingDateOrg, setBillingDateOrg] = useState<Organisation | null>(null)
   const [applyCouponOrg, setApplyCouponOrg] = useState<Organisation | null>(null)
   const [saving, setSaving] = useState(false)
+
+  // E-signature per-row auto-provision state (Task 18.5).
+  const [provisioningOrgId, setProvisioningOrgId] = useState<string | null>(null)
+  const [provisionResult, setProvisionResult] = useState<
+    { org: Organisation; result: EsignAutoProvisionResult } | null
+  >(null)
+  const provisionAbortRef = useRef<AbortController | null>(null)
 
   const { toasts, addToast, dismissToast } = useToast()
 
@@ -515,6 +642,42 @@ export function Organisations() {
     fetchData()
   }
 
+  // Abort any in-flight provisioning request on unmount (R: AbortController cleanup).
+  useEffect(() => {
+    return () => provisionAbortRef.current?.abort()
+  }, [])
+
+  const handleProvisionEsign = async (org: Organisation) => {
+    // Cancel any previous in-flight provision before starting a new one.
+    provisionAbortRef.current?.abort()
+    const controller = new AbortController()
+    provisionAbortRef.current = controller
+    setProvisioningOrgId(org.id)
+    try {
+      const result = await autoProvisionEsignConnection(org.id, controller.signal)
+      if (controller.signal.aborted) return
+      setProvisionResult({ org, result })
+      if (result.status === 'provisioned') {
+        addToast(
+          result.connection.is_verified ? 'success' : 'warning',
+          result.connection.is_verified
+            ? `E-signature provisioned for "${org.name}"`
+            : `Provisioned "${org.name}" — verification still pending`,
+        )
+      } else if (result.status === 'unavailable') {
+        addToast('warning', `Auto-provisioning unavailable — configure "${org.name}" manually`)
+      } else {
+        addToast('error', result.error ?? `Couldn't auto-provision "${org.name}"`)
+      }
+    } catch (err: unknown) {
+      if (controller.signal.aborted) return
+      const { message } = extractEsignError(err)
+      addToast('error', message)
+    } finally {
+      if (!controller.signal.aborted) setProvisioningOrgId(null)
+    }
+  }
+
   /* ── Table columns ── */
 
   const columns: Column<Organisation>[] = [
@@ -602,6 +765,17 @@ export function Organisations() {
           {row.status !== 'deleted' && (
             <Button size="sm" variant="ghost" onClick={() => setApplyCouponOrg(row)}>
               Apply Coupon
+            </Button>
+          )}
+          {row.status !== 'deleted' && (
+            <Button
+              size="sm"
+              variant="ghost"
+              loading={provisioningOrgId === row.id}
+              disabled={provisioningOrgId !== null}
+              onClick={() => handleProvisionEsign(row)}
+            >
+              Provision e-signature
             </Button>
           )}
           {row.status !== 'deleted' && (
@@ -741,6 +915,13 @@ export function Organisations() {
         onSuccess={handleApplyCouponSuccess}
         orgName={applyCouponOrg?.name ?? ''}
         orgId={applyCouponOrg?.id ?? ''}
+      />
+      <EsignProvisionResultModal
+        open={!!provisionResult}
+        onClose={() => setProvisionResult(null)}
+        orgId={provisionResult?.org.id ?? ''}
+        orgName={provisionResult?.org.name ?? ''}
+        result={provisionResult?.result ?? null}
       />
     </div>
   )

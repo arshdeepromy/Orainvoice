@@ -4,7 +4,32 @@ All notable changes to OraInvoice are documented in this file.
 
 ---
 
-## [1.26.0] - 2026-06-22
+## [1.28.0] - 2026-06-28
+
+### Added — E-Signature field-placement editor
+
+- **Drag-and-drop field-placement editor.** Sending an invoice, quote, or staff agreement for signature now opens an in-app, drag-and-drop editor where the sender places a defined set of fields (signature, initials, name, date, email, text) directly on a client-rendered PDF preview, assigns each to a recipient, and toggles required/optional — replacing the single auto-placed signature for sends that carry a field set. The PDF is rendered locally and never transmitted during placement; coordinates are stored normalized so fields stay correct across viewport and render-scale changes. The base auto-placement path is preserved as a backward-compatible fallback when no fields are placed.
+- **Edit fields after send.** Authorised users can edit the field set on an already-sent, unsigned agreement: the live field set is re-read from Documenso, amended in the same editor, and replaced atomically (delete + recreate). A Non-Editable-State banner and Void & recreate flow cover agreements that can no longer be edited.
+- **Advisory conditional / dependent fields.** Fields can declare dependencies on other fields, with self-loop and cycle detection and an advisory inspector. Enforcement is advisory only — an advisory "require" effect degrades to optional at signing — since Documenso has no cross-field conditional primitive.
+- **Signing-order UI.** Senders choose parallel or sequential signing and reorder recipients; the selection maps to Documenso's per-recipient signing order and `PARALLEL` / `SEQUENTIAL` distribution mode (degrading to parallel with an advisory note where unsupported).
+- **Mobile field-placement editor.** The Capacitor mobile app gains a touch-first field-placement editor (`EsignSendScreen`) sharing the same pure coordinate/validation/dependency core and the same backend contract as the web editor.
+- **Saved field templates.** Senders can save a field set + recipient-role layout as a reusable template (per-org, optionally scoped to an agreement type) and apply it to a new send, mapping template roles onto the send's recipients.
+- **RBAC, module gate, and humanized errors** are inherited unchanged from the e-signature integration: field-placement send/edit/templates require `org_admin` / `branch_admin` / `location_manager`, remain behind the module gate and per-org connection-verified gate, and surface only leak-free, human-readable error messages.
+
+Backed by one new table, `esign_field_templates` (Alembic migration **0234**, `tenant_isolation` RLS mirroring 0232). The per-send field set, edit-after-send, advisory dependencies, and signing order all reflect into the existing `esign_envelopes` / `esign_recipients` rows. `pdfjs-dist` is pinned to the exact same version (`5.7.284`) in both `frontend-v2` and `mobile`.
+
+## [1.27.0] - 2026-06-28
+
+### Added — E-Signature (Agreements) integration
+
+- **Per-org Documenso connection.** Each organisation connects its own Documenso instance (API base URL + API key, stored encrypted in the DB per the integration-credentials architecture) so e-signature requests are sent under the org's own account. The connection is configured and managed independently of other orgs.
+- **Send invoices, quotes, and staff agreements for signature.** Users can dispatch an invoice, quote, or staff agreement to Documenso for signing directly from the relevant record, creating a tracked Agreement tied to the source document.
+- **Agreements dashboard.** A new Agreements view lists every signature request with its current status, signer details, and source document, filterable and drill-downable to the individual agreement.
+- **Void.** Authorised users can void an in-flight agreement, cancelling the outstanding signature request.
+- **Webhook-driven status.** Documenso webhooks update each agreement's status (sent / viewed / signed / completed / voided) automatically, keeping the dashboard in sync without manual polling.
+- **Global-Admin per-org connection settings + optional auto-provisioning.** Global Admins manage each org's Documenso connection settings from the Global Admin surface, with optional auto-provisioning to stand up an org's e-signature connection automatically.
+
+
 
 ### Added — Leave Balances & Eligibility
 

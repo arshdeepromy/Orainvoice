@@ -131,6 +131,9 @@ const AdminSecurityPage = lazy(() => import('@/pages/admin/AdminSecurityPage').t
 // original frontend/src/App.tsx admin route tree.
 const BrandingConfig = lazy(() => import('@/pages/admin/BrandingConfig').then((m) => ({ default: m.BrandingConfig })))
 const Integrations = lazy(() => import('@/pages/admin/Integrations').then((m) => ({ default: m.Integrations })))
+// Payroll Tax Default (payroll-tax-settings Task 11) — global-admin editor for the
+// platform-tier NZ payroll tax baseline, mounted under /admin alongside Integrations.
+const PayrollTaxDefault = lazy(() => import('@/pages/admin/PayrollTaxDefault').then((m) => ({ default: m.PayrollTaxDefault })))
 const MigrationTool = lazy(() => import('@/pages/admin/MigrationTool').then((m) => ({ default: m.MigrationTool })))
 const LiveMigrationTool = lazy(() => import('@/pages/admin/LiveMigrationTool').then((m) => ({ default: m.LiveMigrationTool })))
 const HAReplication = lazy(() => import('@/pages/admin/HAReplication').then((m) => ({ default: m.HAReplication })))
@@ -541,6 +544,11 @@ const ClaimDetail = lazy(() => import('@/pages/claims/ClaimDetail'))
 // SummaryCards / DocumentTable / UploadForm / Edit + Delete + Preview modals).
 const ComplianceDashboard = lazy(() => import('@/pages/compliance/ComplianceDashboard'))
 
+// Agreements (esignature-integration Task 17.2) — module-gated (`esignatures`),
+// the org-wide e-signature dashboard at /agreements matching the sidebar entry
+// (Task 16.2). Lazy-loaded for per-route code-splitting.
+const AgreementsDashboardPage = lazy(() => import('@/pages/agreements/AgreementsDashboardPage'))
+
 // Projects (Task 67) — module-gated (`projects`), mirroring frontend/src/App.tsx:
 // /projects → ProjectList (filterable list) and /projects/:id →
 // ProjectDashboard (via ProjectDashboardRoute, which reads :id and passes it as
@@ -588,6 +596,13 @@ const DataPage = lazy(() => import('@/pages/data/DataPage'))
 // code-splitting (PayRunPage lazy-loads PayslipDetail for its drawer).
 const PayRunPage = lazy(() => import('@/pages/payroll/PayRunPage'))
 const PayslipDetailPage = lazy(() => import('@/pages/payroll/PayslipDetail'))
+// Payroll Tax Settings (payroll-tax-settings Task 12) — org-settings view for
+// the org-tier NZ payroll tax baseline, mounted at /payroll/tax-settings
+// alongside the pay-run console. The page enforces org_admin read-only
+// behaviour internally, so the route uses the same `payroll` module gate as its
+// sibling payroll routes (no extra role guard). Lazy-loaded for per-route
+// code-splitting.
+const PayrollTaxSettings = lazy(() => import('@/pages/payroll/PayrollTaxSettings'))
 
 // Recurring invoices (Task 70) — module-gated (`recurring_invoices`), mirroring
 // frontend/src/App.tsx: /recurring → RecurringList (schedule management list +
@@ -937,6 +952,7 @@ function AppRoutes() {
             <Route path="feature-flags" element={<FeatureFlags />} />
             <Route path="branding" element={<BrandingConfig />} />
             <Route path="integrations" element={<Integrations />} />
+            <Route path="payroll-tax-default" element={<PayrollTaxDefault />} />
             <Route path="settings" element={<AdminSettings />} />
             <Route path="security" element={<AdminSecurityPage />} />
 
@@ -1269,6 +1285,16 @@ function AppRoutes() {
             element={<ModuleRoute moduleSlug="compliance_docs"><ComplianceDashboard /></ModuleRoute>}
           />
 
+          {/* Agreements (esignature-integration Task 17.2) — module-gated
+              (`esignatures`, R2.3/R2.4, no trade-family gate). /agreements →
+              AgreementsDashboardPage, matching the sidebar "Agreements" entry
+              (Task 16.2). Relative child path under the OrgLayout `path="/"`
+              parent. */}
+          <Route
+            path="agreements"
+            element={<ModuleRoute moduleSlug="esignatures"><AgreementsDashboardPage /></ModuleRoute>}
+          />
+
           {/* Projects (Task 67) — module-gated (`projects`), mirroring
               frontend/src/App.tsx exactly: /projects (ProjectList) + /projects/:id
               (ProjectDashboard via ProjectDashboardRoute, which reads :id and
@@ -1355,6 +1381,10 @@ function AppRoutes() {
           <Route
             path="payroll/payslips/:id"
             element={<ModuleRoute moduleSlug="payroll"><PayslipDetailPage /></ModuleRoute>}
+          />
+          <Route
+            path="payroll/tax-settings"
+            element={<ModuleRoute moduleSlug="payroll"><PayrollTaxSettings /></ModuleRoute>}
           />
 
           {/* Recurring Invoices (Task 70) — module-gated (`recurring_invoices`),

@@ -396,6 +396,89 @@ async def create_pay_cycle(
     return cycle
 
 
+async def update_pay_cycle(
+    db: AsyncSession,
+    *,
+    org_id: UUID,
+    cycle_id: UUID,
+    name: str,
+    frequency: PayCycleFrequency,
+    anchor_date: date,
+    pay_date_offset_days: int = 3,
+    is_default: bool = False,
+    actor_id: UUID,
+) -> PayCycle:
+    """Update an existing pay cycle for an org.
+
+    Loads the cycle scoped to ``org_id`` (so one org can never edit another's
+    cycle), applies the new field values, and audits the before/after. When the
+    cycle is promoted to the org Default_Cycle, every *other* cycle in the org
+    has its ``is_default`` cleared so there is never more than one default.
+
+    Raises :class:`PayCycleValidationError` with code ``pay_cycle_not_found``
+    when no cycle with ``cycle_id`` exists for the org.
+    """
+    cycle = (
+        await db.execute(
+            select(PayCycle).where(
+                PayCycle.id == cycle_id, PayCycle.org_id == org_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if cycle is None:
+        raise PayCycleValidationError("pay_cycle_not_found")
+
+    before = {
+        "name": cycle.name,
+        "frequency": cycle.frequency,
+        "anchor_date": str(cycle.anchor_date),
+        "pay_date_offset_days": cycle.pay_date_offset_days,
+        "is_default": cycle.is_default,
+    }
+
+    cycle.name = name
+    cycle.frequency = frequency
+    cycle.anchor_date = anchor_date
+    cycle.pay_date_offset_days = pay_date_offset_days
+    cycle.is_default = is_default
+
+    # Exactly one default per org: clear the flag on every other cycle when this
+    # one becomes the default.
+    if is_default:
+        others = (
+            await db.execute(
+                select(PayCycle).where(
+                    PayCycle.org_id == org_id, PayCycle.id != cycle_id,
+                )
+            )
+        ).scalars().all()
+        for other in others:
+            if other.is_default:
+                other.is_default = False
+
+    await db.flush()
+    await db.refresh(cycle)
+
+    await write_audit_log(
+        db,
+        action="pay_cycle.updated",
+        entity_type="pay_cycle",
+        org_id=org_id,
+        user_id=actor_id,
+        entity_id=cycle.id,
+        before_value=before,
+        after_value={
+            "name": name,
+            "frequency": frequency,
+            "anchor_date": str(anchor_date),
+            "pay_date_offset_days": pay_date_offset_days,
+            "is_default": is_default,
+        },
+    )
+
+    return cycle
+
+
 async def assign_pay_cycle(
     db: AsyncSession,
     *,

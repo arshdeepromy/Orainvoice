@@ -1,7 +1,7 @@
 {
   "name": "orainvoice-frontend-v2",
   "private": true,
-  "version": "1.26.0",
+  "version": "1.28.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -24,6 +24,7 @@
     "@tiptap/starter-kit": "3.24.0",
     "axios": "^1.15.0",
     "firebase": "^12.12.0",
+    "pdfjs-dist": "5.7.284",
     "qrcode.react": "^4.2.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

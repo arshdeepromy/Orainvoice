@@ -38,6 +38,7 @@ const adminNavItems: AdminNavItem[] = [
   { to: '/admin/feature-flags', label: 'Feature Flags' },
   { to: '/admin/branding', label: 'Branding' },
   { to: '/admin/integrations', label: 'Integrations' },
+  { to: '/admin/payroll-tax-default', label: 'Payroll Tax Default' },
   { to: '/admin/settings', label: 'Settings' },
   { to: '/admin/security', label: 'Security' },
   { type: 'section', label: 'Content' },

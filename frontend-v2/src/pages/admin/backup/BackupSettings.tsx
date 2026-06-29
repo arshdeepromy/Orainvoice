@@ -928,6 +928,145 @@ function numOrNull(value: string): number | null {
   return Number.isFinite(n) ? n : null
 }
 
+/* ── Simple-schedule ⇄ cron translation ───────────────────────────────────
+ * The UI presents a plain Frequency + Time (+ day) picker. We translate that
+ * to/from the standard 5-field cron the backend already stores in
+ * `schedule_cron` (min hour day-of-month month day-of-week). Any cron that
+ * doesn't match one of the simple shapes falls back to "Custom" so an existing
+ * advanced schedule is never silently rewritten.
+ */
+type Frequency = 'off' | 'hourly' | 'daily' | 'weekly' | 'monthly' | 'custom'
+
+interface SimpleSchedule {
+  frequency: Frequency
+  /** HH:MM (local). For hourly only the minutes are used. */
+  time: string
+  /** Cron day-of-week 0–6 (0 = Sunday) for weekly. */
+  dayOfWeek: string
+  /** Day-of-month 1–28 for monthly. */
+  dayOfMonth: string
+}
+
+const SCHEDULE_DEFAULTS: SimpleSchedule = {
+  frequency: 'daily',
+  time: '02:00',
+  dayOfWeek: '1',
+  dayOfMonth: '1',
+}
+
+const FREQUENCY_OPTIONS = [
+  { value: 'off', label: 'Off — manual backups only' },
+  { value: 'hourly', label: 'Hourly' },
+  { value: 'daily', label: 'Daily' },
+  { value: 'weekly', label: 'Weekly' },
+  { value: 'monthly', label: 'Monthly' },
+  { value: 'custom', label: 'Custom (advanced)' },
+]
+
+const DAY_OF_WEEK_OPTIONS = [
+  { value: '1', label: 'Monday' },
+  { value: '2', label: 'Tuesday' },
+  { value: '3', label: 'Wednesday' },
+  { value: '4', label: 'Thursday' },
+  { value: '5', label: 'Friday' },
+  { value: '6', label: 'Saturday' },
+  { value: '0', label: 'Sunday' },
+]
+
+const DAY_OF_MONTH_OPTIONS = Array.from({ length: 28 }, (_, i) => ({
+  value: String(i + 1),
+  label: String(i + 1),
+}))
+
+/** True when a cron field is a single non-negative integer (no `*`,`,`,`-`,`/`). */
+function isCronInt(field: string): boolean {
+  return /^\d+$/.test(field)
+}
+
+function pad2(n: number): string {
+  return String(n).padStart(2, '0')
+}
+
+/** Parse a stored cron string into the simple picker shape, or `custom`. */
+function cronToSimple(cron: string | null | undefined): SimpleSchedule {
+  const expr = (cron ?? '').trim()
+  if (!expr) return { ...SCHEDULE_DEFAULTS, frequency: 'off' }
+
+  const f = expr.split(/\s+/)
+  if (f.length !== 5) return { ...SCHEDULE_DEFAULTS, frequency: 'custom' }
+  const [mi, hr, dom, mon, dow] = f
+
+  // All simple shapes require an unrestricted month.
+  if (mon === '*' && isCronInt(mi)) {
+    const minutes = Number(mi)
+    // Hourly: every hour at minute `mi`.
+    if (hr === '*' && dom === '*' && dow === '*' && minutes <= 59) {
+      return { ...SCHEDULE_DEFAULTS, frequency: 'hourly', time: `00:${pad2(minutes)}` }
+    }
+    if (isCronInt(hr)) {
+      const hours = Number(hr)
+      const time = `${pad2(hours)}:${pad2(minutes)}`
+      if (hours <= 23) {
+        // Daily.
+        if (dom === '*' && dow === '*') {
+          return { ...SCHEDULE_DEFAULTS, frequency: 'daily', time }
+        }
+        // Weekly.
+        if (dom === '*' && isCronInt(dow) && Number(dow) <= 7) {
+          const normalised = Number(dow) === 7 ? '0' : dow
+          return { ...SCHEDULE_DEFAULTS, frequency: 'weekly', time, dayOfWeek: normalised }
+        }
+        // Monthly.
+        if (dow === '*' && isCronInt(dom) && Number(dom) >= 1 && Number(dom) <= 28) {
+          return { ...SCHEDULE_DEFAULTS, frequency: 'monthly', time, dayOfMonth: dom }
+        }
+      }
+    }
+  }
+  return { ...SCHEDULE_DEFAULTS, frequency: 'custom' }
+}
+
+/** Build a cron string from the simple picker. Returns '' for `off`/`custom`. */
+function simpleToCron(s: SimpleSchedule): string {
+  const [hhRaw, mmRaw] = (s.time || '00:00').split(':')
+  const hh = Number(hhRaw) || 0
+  const mm = Number(mmRaw) || 0
+  switch (s.frequency) {
+    case 'hourly':
+      return `${mm} * * * *`
+    case 'daily':
+      return `${mm} ${hh} * * *`
+    case 'weekly':
+      return `${mm} ${hh} * * ${s.dayOfWeek}`
+    case 'monthly':
+      return `${mm} ${hh} ${s.dayOfMonth} * *`
+    default:
+      return '' // off / custom (custom uses the raw cron field directly)
+  }
+}
+
+/** One-line plain-English summary of the current simple schedule. */
+function describeSchedule(s: SimpleSchedule, customCron: string): string {
+  switch (s.frequency) {
+    case 'off':
+      return 'Automatic backups are off — run backups manually from the Overview tab.'
+    case 'hourly':
+      return `Every hour at ${pad2(Number((s.time || '00:00').split(':')[1]) || 0)} minutes past.`
+    case 'daily':
+      return `Every day at ${s.time}.`
+    case 'weekly': {
+      const day = DAY_OF_WEEK_OPTIONS.find((d) => d.value === s.dayOfWeek)?.label ?? ''
+      return `Every ${day} at ${s.time}.`
+    }
+    case 'monthly':
+      return `On day ${s.dayOfMonth} of every month at ${s.time}.`
+    default:
+      return customCron.trim()
+        ? `Custom schedule: ${customCron.trim()}`
+        : 'Custom schedule — enter a cron expression below.'
+  }
+}
+
 function ScheduleTab() {
   const { toasts, addToast, dismissToast } = useToast()
   const [config, setConfig] = useState<BackupConfig | null>(null)
@@ -936,16 +1075,27 @@ function ScheduleTab() {
   const [saving, setSaving] = useState(false)
   const [warnings, setWarnings] = useState<string[]>([])
 
-  const [cron, setCron] = useState('')
+  // Simple schedule controls.
+  const [schedule, setSchedule] = useState<SimpleSchedule>(SCHEDULE_DEFAULTS)
+  const [retentionCount, setRetentionCount] = useState('')
+
+  // Advanced (preserved) controls.
+  const [cron, setCron] = useState('') // raw cron — only used in Custom mode
   const [windowStart, setWindowStart] = useState('')
   const [windowEnd, setWindowEnd] = useState('')
-  const [retentionCount, setRetentionCount] = useState('')
   const [retentionDays, setRetentionDays] = useState('')
   const [rpo, setRpo] = useState('')
   const [rto, setRto] = useState('')
 
+  const patchSchedule = useCallback(
+    (patch: Partial<SimpleSchedule>) => setSchedule((prev) => ({ ...prev, ...patch })),
+    [],
+  )
+
   const applyConfig = useCallback((c: BackupConfig) => {
     setConfig(c)
+    const simple = cronToSimple(c.schedule_cron)
+    setSchedule(simple)
     setCron(c.schedule_cron ?? '')
     setWindowStart(toTimeInput(c.backup_window_start))
     setWindowEnd(toTimeInput(c.backup_window_end))
@@ -970,11 +1120,18 @@ function ScheduleTab() {
     return () => controller.abort()
   }, [applyConfig])
 
+  // The effective cron we'll persist: the raw field in Custom mode, otherwise
+  // the cron generated from the simple picker.
+  const effectiveCron = useMemo(
+    () => (schedule.frequency === 'custom' ? cron.trim() : simpleToCron(schedule)),
+    [schedule, cron],
+  )
+
   const handleSave = useCallback(async () => {
     setSaving(true)
     setWarnings([])
     const body: ConfigUpdate = {
-      schedule_cron: cron.trim() || null,
+      schedule_cron: effectiveCron || null,
       backup_window_start: windowStart.trim() || null,
       backup_window_end: windowEnd.trim() || null,
       retention_count: numOrNull(retentionCount),
@@ -992,7 +1149,10 @@ function ScheduleTab() {
     } finally {
       setSaving(false)
     }
-  }, [cron, windowStart, windowEnd, retentionCount, retentionDays, rpo, rto, applyConfig, addToast])
+  }, [
+    effectiveCron, windowStart, windowEnd, retentionCount, retentionDays,
+    rpo, rto, applyConfig, addToast,
+  ])
 
   if (loading) {
     return (
@@ -1010,6 +1170,10 @@ function ScheduleTab() {
     )
   }
 
+  const showTime = schedule.frequency === 'daily' ||
+    schedule.frequency === 'weekly' ||
+    schedule.frequency === 'monthly'
+
   return (
     <div className="max-w-2xl space-y-5">
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
@@ -1024,66 +1188,114 @@ function ScheduleTab() {
         </AlertBanner>
       )}
 
+      {/* ── Simple schedule ─────────────────────────────────────────── */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <Select
+          label="How often"
+          value={schedule.frequency}
+          options={FREQUENCY_OPTIONS}
+          onChange={(e) => patchSchedule({ frequency: e.target.value as Frequency })}
+        />
+        {showTime && (
+          <Input
+            label="Time of day"
+            type="time"
+            value={schedule.time}
+            onChange={(e) => patchSchedule({ time: e.target.value })}
+          />
+        )}
+        {schedule.frequency === 'weekly' && (
+          <Select
+            label="Day of week"
+            value={schedule.dayOfWeek}
+            options={DAY_OF_WEEK_OPTIONS}
+            onChange={(e) => patchSchedule({ dayOfWeek: e.target.value })}
+          />
+        )}
+        {schedule.frequency === 'monthly' && (
+          <Select
+            label="Day of month"
+            value={schedule.dayOfMonth}
+            options={DAY_OF_MONTH_OPTIONS}
+            onChange={(e) => patchSchedule({ dayOfMonth: e.target.value })}
+          />
+        )}
+      </div>
+
+      {schedule.frequency === 'custom' && (
+        <Input
+          label="Cron expression"
+          value={cron}
+          onChange={(e) => setCron(e.target.value)}
+          placeholder="0 2 * * *"
+          helperText="Standard 5-field cron (local time)."
+        />
+      )}
+
+      <p className="text-sm text-muted">{describeSchedule(schedule, cron)}</p>
+
       <Input
-        label="Backup schedule (cron)"
-        value={cron}
-        onChange={(e) => setCron(e.target.value)}
-        placeholder="0 2 * * *"
-        helperText="Standard 5-field cron. Example: “0 2 * * *” runs daily at 02:00."
+        label="Keep this many recent backups"
+        type="number"
+        min={0}
+        value={retentionCount}
+        onChange={(e) => setRetentionCount(e.target.value)}
+        placeholder="e.g. 30"
+        helperText="Older backups beyond this count are automatically removed."
       />
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <Input
-          label="Backup window start"
-          type="time"
-          value={windowStart}
-          onChange={(e) => setWindowStart(e.target.value)}
-        />
-        <Input
-          label="Backup window end"
-          type="time"
-          value={windowEnd}
-          onChange={(e) => setWindowEnd(e.target.value)}
-        />
-      </div>
-
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <Input
-          label="Retention — keep last N backups"
-          type="number"
-          min={0}
-          value={retentionCount}
-          onChange={(e) => setRetentionCount(e.target.value)}
-          placeholder="e.g. 30"
-        />
-        <Input
-          label="Retention — keep for N days"
-          type="number"
-          min={0}
-          value={retentionDays}
-          onChange={(e) => setRetentionDays(e.target.value)}
-          placeholder="e.g. 90"
-        />
-      </div>
-
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <Input
-          label="Recovery Point Objective (RPO, seconds)"
-          type="number"
-          min={0}
-          value={rpo}
-          onChange={(e) => setRpo(e.target.value)}
-          helperText="Target maximum data loss window."
-        />
-        <Input
-          label="Recovery Time Objective (RTO, seconds)"
-          type="number"
-          min={0}
-          value={rto}
-          onChange={(e) => setRto(e.target.value)}
-          helperText="Target maximum time to restore."
-        />
-      </div>
+      {/* ── Advanced (optional) ─────────────────────────────────────── */}
+      <details className="rounded-ctl border border-border bg-card/40 px-4 py-3">
+        <summary className="cursor-pointer text-sm font-medium text-text">
+          Advanced options
+        </summary>
+        <div className="mt-4 space-y-4">
+          <p className="text-xs text-muted">
+            Optional limits for larger deployments. Leave blank to use the
+            platform defaults.
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <Input
+              label="Only run between (start)"
+              type="time"
+              value={windowStart}
+              onChange={(e) => setWindowStart(e.target.value)}
+            />
+            <Input
+              label="Only run between (end)"
+              type="time"
+              value={windowEnd}
+              onChange={(e) => setWindowEnd(e.target.value)}
+            />
+          </div>
+          <Input
+            label="Also delete backups older than (days)"
+            type="number"
+            min={0}
+            value={retentionDays}
+            onChange={(e) => setRetentionDays(e.target.value)}
+            placeholder="e.g. 90"
+          />
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <Input
+              label="Recovery Point Objective (RPO, seconds)"
+              type="number"
+              min={0}
+              value={rpo}
+              onChange={(e) => setRpo(e.target.value)}
+              helperText="Target maximum data loss window."
+            />
+            <Input
+              label="Recovery Time Objective (RTO, seconds)"
+              type="number"
+              min={0}
+              value={rto}
+              onChange={(e) => setRto(e.target.value)}
+              helperText="Target maximum time to restore."
+            />
+          </div>
+        </div>
+      </details>
 
       <div className="flex justify-end">
         <Button variant="primary" size="sm" onClick={handleSave} loading={saving} disabled={saving}>

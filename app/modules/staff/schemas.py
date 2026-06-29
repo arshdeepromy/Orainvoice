@@ -460,7 +460,23 @@ class StaffPayRateListResponse(BaseModel):
 
 
 class StaffDocumentItem(BaseModel):
-    """A document linked to a staff member, for the Staff → Documents table."""
+    """A document linked to a staff member, for the Staff → Documents table.
+
+    Rows come from two sources, distinguished by ``source``:
+
+    - ``compliance`` — an onboarding / working-rights ``ComplianceDocument``
+      (stored unencrypted on disk). Downloaded via the staff compliance
+      download endpoint. ``esign_envelope_id`` / ``download_url`` are ``None``.
+    - ``esign`` — a completed, signed e-signature PDF whose originating entity
+      is this staff member (``signed_doc_status='stored'``). The signed PDF
+      lives only on the envelope's encrypted ``file_key`` (never the plaintext
+      compliance store), so the frontend must fetch it through the org-checked
+      ``GET /api/v2/esign/envelopes/{esign_envelope_id}/signed-document``
+      endpoint (surfaced here as ``download_url``).
+
+    Backward compatibility: existing compliance rows keep ``source='compliance'``
+    with both esign handles ``None``; the new fields are additive and optional.
+    """
 
     id: UUID
     document_type: str
@@ -469,6 +485,11 @@ class StaffDocumentItem(BaseModel):
     file_size: int | None = None
     created_at: datetime
     expiry_date: date | None = None
+    # Source discriminator + esign fetch handle (additive; default to the
+    # legacy compliance shape so existing consumers are unaffected).
+    source: Literal["compliance", "esign"] = "compliance"
+    esign_envelope_id: UUID | None = None
+    download_url: str | None = None
 
 
 class StaffDocumentListResponse(BaseModel):

@@ -8,6 +8,7 @@ import { useTenant } from '@/contexts/TenantContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { CreditNoteModal } from '@/components/invoices/CreditNoteModal'
 import { RefundModal } from '@/components/invoices/RefundModal'
+import { SendForSignatureModal } from '@/components/esign/SendForSignatureModal'
 import {
   computeCreditableAmount,
   computePaymentSummary,
@@ -316,6 +317,7 @@ export default function InvoiceDetail() {
   const { isEnabled: isModuleEnabled } = useModules()
   const { user } = useAuth()
   const smsEnabled = isModuleEnabled('sms')
+  const esignEnabled = isModuleEnabled('esignatures')
   const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
   const canViewMargins = user?.role === 'org_admin' || user?.role === 'global_admin'
 
@@ -344,6 +346,9 @@ export default function InvoiceDetail() {
   /* Credit Note & Refund modals */
   const [creditNoteModalOpen, setCreditNoteModalOpen] = useState(false)
   const [refundModalOpen, setRefundModalOpen] = useState(false)
+  /* Send for signature (e-signature) modal — shown only when the
+     `esignatures` module is enabled (R10.1/R10.5). */
+  const [sendForSignatureOpen, setSendForSignatureOpen] = useState(false)
 
   /* Stripe payment link */
   const [stripeStatus, setStripeStatus] = useState<OnlinePaymentsStatus | null>(null)
@@ -794,6 +799,11 @@ export default function InvoiceDetail() {
           <Button size="sm" variant="ghost" onClick={handleDuplicate} loading={duplicating}>
             Duplicate
           </Button>
+          {esignEnabled && (
+            <Button size="sm" variant="ghost" onClick={() => setSendForSignatureOpen(true)}>
+              Send for signature
+            </Button>
+          )}
           {canVoid && (
             <Button size="sm" variant="danger" onClick={() => setVoidModalOpen(true)}>
               Void
@@ -1490,6 +1500,16 @@ export default function InvoiceDetail() {
         invoiceId={invoice.id}
         refundableAmount={refundableAmount}
       />
+
+      {esignEnabled && (
+        <SendForSignatureModal
+          open={sendForSignatureOpen}
+          onClose={() => setSendForSignatureOpen(false)}
+          originatingEntityType="invoice"
+          originatingEntityId={invoice.id}
+          onSent={() => setActionMessage('Document sent for signature.')}
+        />
+      )}
 
       <PrinterErrorModal
         open={printerError.open}

@@ -1364,7 +1364,51 @@ async def create_pay_cycle_endpoint(
     }, status_code=201)
 
 
-@pay_cycles_router.post("/{cycle_id}/generate-periods/")
+@pay_cycles_router.put("/{cycle_id}/")
+@pay_cycles_router.put("/{cycle_id}")
+async def update_pay_cycle_endpoint(
+    cycle_id: UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Update an existing pay cycle (org_admin only)."""
+    from datetime import date as date_type
+    org_id = _get_org_id(request)
+    user_id = _get_user_id(request)
+    role = getattr(request.state, "role", None)
+    if role not in ("org_admin", "global_admin"):
+        raise HTTPException(status_code=403, detail="org_admin role required")
+
+    from app.modules.timesheets.pay_cycles import (
+        PayCycleValidationError,
+        update_pay_cycle,
+    )
+    body = await request.json()
+
+    try:
+        cycle = await update_pay_cycle(
+            db,
+            org_id=org_id,
+            cycle_id=cycle_id,
+            name=body["name"],
+            frequency=body.get("frequency", "fortnightly"),
+            anchor_date=date_type.fromisoformat(body["anchor_date"]),
+            pay_date_offset_days=body.get("pay_date_offset_days", 3),
+            is_default=body.get("is_default", False),
+            actor_id=user_id,
+        )
+    except PayCycleValidationError as exc:
+        status = 404 if exc.code == "pay_cycle_not_found" else 422
+        raise HTTPException(status_code=status, detail={"detail": exc.code})
+
+    return JSONResponse(content={
+        "id": str(cycle.id),
+        "name": cycle.name,
+        "frequency": cycle.frequency,
+        "anchor_date": str(cycle.anchor_date),
+        "pay_date_offset_days": cycle.pay_date_offset_days,
+        "is_default": cycle.is_default,
+    })
 async def generate_periods_endpoint(
     cycle_id: UUID,
     request: Request,

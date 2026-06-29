@@ -421,6 +421,15 @@ const SMSComposeScreen = lazy(() =>
   })),
 )
 
+// E-Signatures (esignature-field-placement R16) — send composer + field-placement
+// editor. Screen implemented in task 24.2; this lazy route (task 24.3) resolves
+// it by its expected path. Content is gated via ModuleGate inside the screen.
+const EsignSendScreen = lazy(() =>
+  import('@/screens/esign/EsignSendScreen').catch(() => ({
+    default: () => <ScreenPlaceholder name="E-Signatures" />,
+  })),
+)
+
 // Settings
 const SettingsScreen = lazy(() =>
   import('@/screens/settings/SettingsScreen').catch(() => ({
@@ -719,6 +728,7 @@ export function StackRoutes() {
         <Route path="/projects/:id" element={<AuthGuard><ProjectDashboardScreen /></AuthGuard>} />
         <Route path="/schedule" element={<AuthGuard><ScheduleCalendarScreen /></AuthGuard>} />
         <Route path="/sms" element={<AuthGuard><SMSComposeScreen /></AuthGuard>} />
+        <Route path="/esign/send" element={<AuthGuard><EsignSendScreen /></AuthGuard>} />
         <Route path="/settings" element={<AuthGuard><SettingsScreen /></AuthGuard>} />
         <Route path="/portal" element={<AuthGuard><PortalScreen /></AuthGuard>} />
         <Route path="/fleet" element={<AuthGuard><FleetDashboardScreen /></AuthGuard>} />

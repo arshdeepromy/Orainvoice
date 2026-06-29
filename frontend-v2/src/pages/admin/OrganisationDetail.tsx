@@ -16,6 +16,7 @@ import { SuspendModal } from '@/components/admin/SuspendModal'
 import { DeleteModal } from '@/components/admin/DeleteModal'
 import { MovePlanModal } from '@/components/admin/MovePlanModal'
 import { ApplyCouponModal } from '@/components/admin/ApplyCouponModal'
+import { EsignConnectionCard } from '@/components/admin/EsignConnectionCard'
 import type { Plan } from '@/pages/admin/Organisations'
 
 /* ── TypeScript Interfaces ── */
@@ -1380,6 +1381,9 @@ export function OrganisationDetail() {
 
           {/* Security & Audit */}
           <SecurityAuditCard security={data.security} />
+
+          {/* E-Signature (Documenso) connection — Global-Admin per-org settings */}
+          <EsignConnectionCard orgId={orgId ?? ''} />
         </div>
 
         {/* Quick Actions */}

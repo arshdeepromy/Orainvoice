@@ -27,6 +27,8 @@
 import React, { useEffect, useRef, useState } from 'react'
 import apiClient from '@/api/client'
 import { Modal } from '@/components/ui'
+import { useModules } from '@/contexts/ModuleContext'
+import { SendForSignatureModal } from '@/components/esign/SendForSignatureModal'
 import {
   STAFF_DOC_TYPES,
   docTypeConfig,
@@ -150,6 +152,8 @@ function extractHexFromFileKey(fileKey: string): string | null {
 }
 
 export default function DocumentsTab({ staffId }: DocumentsTabProps) {
+  const { isEnabled } = useModules()
+  const esignEnabled = isEnabled('esignatures')
   const [staff, setStaff] = useState<StaffSummary | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -176,6 +180,9 @@ export default function DocumentsTab({ staffId }: DocumentsTabProps) {
 
   // Manual upload modal (document type + detail + optional expiry + file).
   const [uploadModalOpen, setUploadModalOpen] = useState(false)
+  // Send for signature (e-signature) modal — shown only when the
+  // `esignatures` module is enabled (R10.2/R10.5).
+  const [sendForSignatureOpen, setSendForSignatureOpen] = useState(false)
   const [uploadType, setUploadType] = useState('working_rights')
   const [uploadDetailSelect, setUploadDetailSelect] = useState('')
   const [uploadDetailText, setUploadDetailText] = useState('')
@@ -663,17 +670,31 @@ export default function DocumentsTab({ staffId }: DocumentsTabProps) {
               as working-rights or identity documents. You can also upload more here.
             </p>
           </div>
-          <button
-            type="button"
-            onClick={openUploadModal}
-            disabled={docUploading}
-            className="shrink-0 inline-flex items-center gap-1.5 rounded-ctl bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent-press focus:outline-none focus:ring-2 focus:ring-accent min-h-[44px] disabled:opacity-50"
-          >
-            <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 5v14M5 12h14" />
-            </svg>
-            Upload document
-          </button>
+          <div className="flex shrink-0 items-center gap-2">
+            {esignEnabled && (
+              <button
+                type="button"
+                onClick={() => setSendForSignatureOpen(true)}
+                className="inline-flex items-center gap-1.5 rounded-ctl border border-border bg-card px-3 py-2 text-sm font-medium text-text hover:bg-canvas focus:outline-none focus:ring-2 focus:ring-accent min-h-[44px]"
+              >
+                <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                </svg>
+                Send for signature
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={openUploadModal}
+              disabled={docUploading}
+              className="inline-flex items-center gap-1.5 rounded-ctl bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent-press focus:outline-none focus:ring-2 focus:ring-accent min-h-[44px] disabled:opacity-50"
+            >
+              <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 5v14M5 12h14" />
+              </svg>
+              Upload document
+            </button>
+          </div>
           <input
             ref={docInputRef}
             type="file"
@@ -1075,6 +1096,20 @@ export default function DocumentsTab({ staffId }: DocumentsTabProps) {
           </div>
         )}
       </Modal>
+
+      {/* Send for signature (e-signature) modal — module-gated (R10.2/R10.5) */}
+      {esignEnabled && (
+        <SendForSignatureModal
+          open={sendForSignatureOpen}
+          onClose={() => setSendForSignatureOpen(false)}
+          originatingEntityType="staff"
+          originatingEntityId={staffId}
+          onSent={() => {
+            const controller = new AbortController()
+            void loadDocs.current(controller.signal)
+          }}
+        />
+      )}
     </div>
   )
 }

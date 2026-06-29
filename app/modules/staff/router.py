@@ -32,6 +32,7 @@ from app.core.encryption import envelope_decrypt_str
 from app.modules.admin.models import Organisation
 from app.modules.compliance_docs.file_storage import ComplianceFileStorage
 from app.modules.compliance_docs.service import ComplianceService
+from app.modules.esignatures.models import EsignEnvelope
 from app.modules.employee_portal import employee_portal_delivery
 from app.modules.employee_portal.services import account_service
 from app.modules.organisations.service import get_org_settings
@@ -1675,6 +1676,19 @@ async def get_pay_rate_history(
 # ---------------------------------------------------------------------------
 
 
+# Human-readable labels for the merged e-signature signed documents, keyed by
+# the envelope's ``agreement_type`` (R9.3). Staff-origin agreements are NDAs,
+# employment agreements, and contractor agreements; sales/purchase types are
+# included for completeness in case an envelope is mis-attributed.
+_ESIGN_AGREEMENT_LABELS: dict[str, str] = {
+    "nda": "Signed NDA",
+    "employment_agreement": "Signed employment agreement",
+    "contractor_agreement": "Signed contractor agreement",
+    "sales_agreement": "Signed sales agreement",
+    "purchase_agreement": "Signed purchase agreement",
+}
+
+
 @router.get(
     "/{staff_id}/documents",
     response_model=StaffDocumentListResponse,
@@ -1687,8 +1701,18 @@ async def list_staff_documents(
 ):
     """Return the documents linked to ``staff_id`` (onboarding working-rights
     uploads + any manually-attached files), wrapped as ``{ items, total }``.
-    Each item carries the on-disk ``file_size`` (compliance files are stored
-    unencrypted, so the stored size equals the original).
+    Each compliance item carries the on-disk ``file_size`` (compliance files are
+    stored unencrypted, so the stored size equals the original).
+
+    This listing also **merges in** the staff member's completed e-signature
+    agreements (R9.3): envelopes originating from this staff member whose signed
+    PDF has been stored via the encrypted uploads pipeline
+    (``signed_doc_status='stored'``). Those rows carry ``source='esign'`` and a
+    ``download_url`` pointing at the org-checked
+    ``GET /api/v2/esign/envelopes/{id}/signed-document`` endpoint (which decrypts
+    at read time) — never a plaintext compliance path. Existing compliance rows
+    keep ``source='compliance'`` with null esign handles (backward compatible).
+    ``total`` reflects the merged count.
 
     Module-gated on ``staff_management`` (NOT ``compliance_docs``) and 404
     when the staff member doesn't exist or belongs to another org.
@@ -1700,7 +1724,7 @@ async def list_staff_documents(
     if staff is None:
         raise HTTPException(status_code=404, detail="Staff member not found")
     compliance = ComplianceService(db)
-    documents, total = await compliance.list_documents_filtered(
+    documents, _compliance_total = await compliance.list_documents_filtered(
         org_id=org_id, staff_id=staff_id, sort_by="created_at", sort_dir="desc",
     )
     storage = ComplianceFileStorage()
@@ -1715,9 +1739,54 @@ async def list_staff_documents(
                 file_size=await storage.file_size(d.file_key),
                 created_at=d.created_at,
                 expiry_date=d.expiry_date,
+                source="compliance",
             )
         )
-    return StaffDocumentListResponse(items=items, total=total)
+
+    # Merge in this staff member's e-signature signed documents (R9.3). These
+    # are envelopes whose originating entity is this staff member and whose
+    # signed PDF has been stored via the encrypted uploads pipeline
+    # (signed_doc_status='stored'). The bytes live ONLY on the envelope's
+    # encrypted file_key — never in the plaintext compliance store — so the row
+    # carries no file_key and points its download_url at the org-checked esign
+    # endpoint, which decrypts at read time. Org-scoped under RLS; we also pin
+    # org_id explicitly for defence-in-depth.
+    esign_result = await db.execute(
+        select(EsignEnvelope)
+        .where(
+            EsignEnvelope.org_id == org_id,
+            EsignEnvelope.originating_entity_type == "staff",
+            EsignEnvelope.originating_entity_id == staff_id,
+            EsignEnvelope.signed_doc_status == "stored",
+        )
+        .order_by(EsignEnvelope.created_at.desc())
+    )
+    esign_envelopes = esign_result.scalars().all()
+    for env in esign_envelopes:
+        items.append(
+            StaffDocumentItem(
+                id=env.id,
+                document_type=env.agreement_type,
+                description=_ESIGN_AGREEMENT_LABELS.get(
+                    env.agreement_type, "Signed agreement"
+                ),
+                file_name=f"{env.agreement_type}-signed.pdf",
+                file_size=None,
+                created_at=env.created_at,
+                expiry_date=None,
+                source="esign",
+                esign_envelope_id=env.id,
+                download_url=(
+                    f"/api/v2/esign/envelopes/{env.id}/signed-document"
+                ),
+            )
+        )
+
+    # Keep the listing ordered most-recent-first across both sources so the
+    # merged esign rows interleave sensibly with compliance uploads (mirrors
+    # the existing created_at DESC ordering).
+    items.sort(key=lambda it: it.created_at, reverse=True)
+    return StaffDocumentListResponse(items=items, total=len(items))
 
 
 @router.post(

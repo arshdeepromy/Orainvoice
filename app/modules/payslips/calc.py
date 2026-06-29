@@ -700,12 +700,36 @@ async def compute_payslip(
         + casual_8pct
     ).quantize(_CENTS)
 
+    # ---------------- Resolved tax configuration ----------------
+    # Resolve the org's effective NZ tax configuration once per payslip
+    # (Org override → Platform default → Safety_Net, field by field). The
+    # same resolved config drives PAYE/ACC/SL/IETC via compute_paye AND the
+    # KiwiSaver default fallback below (Req 5.1, 6.1-6.7).
+    from app.modules.payroll_tax.resolution import resolve_tax_config
+
+    tax_config = await resolve_tax_config(db, org_id)
+
     # ---------------- KiwiSaver (R6) ----------------
     kiwisaver_employee = Decimal("0.00")
     kiwisaver_employer = Decimal("0.00")
     if staff.kiwisaver_enrolled:
-        emp_rate = _q(staff.kiwisaver_employee_rate) / Decimal(100)
-        empl_rate = _q(staff.kiwisaver_employer_rate) / Decimal(100)
+        # Req 6.6/6.7 — when the staff profile does not specify a KiwiSaver
+        # rate, fall back to the resolved Default_KiwiSaver_*_rate rather
+        # than treating an unset rate as 0% (the old ``_q(None)`` → 0.00 bug).
+        # Staff rates and the resolved defaults are both expressed as
+        # percentages (e.g. 3.00 == 3%).
+        emp_pct = (
+            _q(staff.kiwisaver_employee_rate)
+            if staff.kiwisaver_employee_rate is not None
+            else _q(tax_config.default_kiwisaver_employee_rate)
+        )
+        empl_pct = (
+            _q(staff.kiwisaver_employer_rate)
+            if staff.kiwisaver_employer_rate is not None
+            else _q(tax_config.default_kiwisaver_employer_rate)
+        )
+        emp_rate = emp_pct / Decimal(100)
+        empl_rate = empl_pct / Decimal(100)
         kiwisaver_employee = (gross * emp_rate).quantize(_CENTS)
         kiwisaver_employer = (gross * empl_rate).quantize(_CENTS)
 
@@ -727,13 +751,14 @@ async def compute_payslip(
         kiwisaver_employee_rate=(
             _q(staff.kiwisaver_employee_rate)
             if staff.kiwisaver_employee_rate is not None
-            else Decimal("3")
+            else None
         ),
         kiwisaver_employer_rate=(
             _q(staff.kiwisaver_employer_rate)
             if staff.kiwisaver_employer_rate is not None
-            else Decimal("3")
+            else None
         ),
+        config=tax_config,
     )
     paye = paye_result.paye_tax
     acc_levy = paye_result.acc_levy

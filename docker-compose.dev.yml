@@ -13,6 +13,18 @@ services:
       - PYTHONUNBUFFERED=1
       - WATCHFILES_FORCE_POLLING=true
       - HA_LOCAL_PG_PORT=5434
+      # Allow OraInvoice -> Documenso API calls over internal HTTP (the
+      # Documenso container shares the `documenso_default` network and is
+      # reached as http://documenso:3030). Public hosts still require HTTPS.
+      - ESIGN_ALLOW_INSECURE_INTERNAL_BASE_URL=true
+      # Public origin of the Documenso instance (its NEXT_PUBLIC_WEBAPP_URL),
+      # used to build signer links (`{public}/sign/{token}`). The per-org
+      # connection base_url is the INTERNAL host (http://documenso:3030); the
+      # public signer URL is served at the address below.
+      - ESIGN_PUBLIC_DOCUMENSO_URL=https://esignd.oraflows.co.nz
+    networks:
+      - default
+      - documenso_default
     volumes:
       - ./app:/app/app:delegated
       - ./alembic:/app/alembic:delegated
@@ -42,3 +54,11 @@ services:
       - frontend_dist:/app/dist
     # Watch source files and rebuild on change (uses Node fs.watch, works on Alpine)
     command: ["sh", "/app/watch-build.sh"]
+
+# Shared with the side-by-side Documenso stack (compose project `documenso`,
+# network `documenso_default`) so the app can reach it as http://documenso:3030
+# for OraInvoice -> Documenso API calls (signer links/webhooks stay on the
+# public https://esignd.oraflows.co.nz hostname Documenso is configured with).
+networks:
+  documenso_default:
+    external: true

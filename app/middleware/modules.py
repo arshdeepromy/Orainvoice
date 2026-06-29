@@ -56,6 +56,13 @@ MODULE_ENDPOINT_MAP: dict[str, str] = {
     "/api/v2/retentions": "retentions",
     "/api/v2/variations": "variations",
     "/api/v2/compliance-docs": "compliance_docs",
+    # E-Signature Integration (esignatures module). Prefix entry covering all
+    # esign endpoints. The webhook path (/api/v2/esign/webhook/{routing_id})
+    # carries no org session, so ModuleMiddleware skips it (no org_id) and it is
+    # naturally ungated — no special-casing needed. Slug MUST stay "esignatures"
+    # to match the module_registry seed, the router-level is_enabled dependency,
+    # and the frontend isEnabled('esignatures') check (single canonical slug).
+    "/api/v2/esign": "esignatures",
     "/api/v2/ppsr": "ppsr",
     "/api/v2/multi-currency": "multi_currency",
     "/api/v2/loyalty": "loyalty",

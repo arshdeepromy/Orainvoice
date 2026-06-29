@@ -20,7 +20,9 @@ import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import apiClient from '@/api/client'
 import { useTenant } from '@/contexts/TenantContext'
+import { useModules } from '@/contexts/ModuleContext'
 import { Button } from '@/components/ui'
+import { SendForSignatureModal } from '@/components/esign/SendForSignatureModal'
 import QuoteAttachmentList from '@/components/quotes/QuoteAttachmentList'
 import CancelQuoteModal from '@/components/quotes/CancelQuoteModal'
 import { SendEmailModal } from '@/components/email/SendEmailModal'
@@ -220,6 +222,8 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const { tradeFamily } = useTenant()
+  const { isEnabled } = useModules()
+  const esignEnabled = isEnabled('esignatures')
   const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
   const [quote, setQuote] = useState<QuoteData | null>(null)
   const [loading, setLoading] = useState(true)
@@ -233,6 +237,9 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
   const [cancelLoading, setCancelLoading] = useState(false)
   /* --- Send Email composer modal (shared SendEmailModal) --- */
   const [emailModalOpen, setEmailModalOpen] = useState(false)
+  /* --- Send for signature (e-signature) modal — shown only when the
+     `esignatures` module is enabled (R10.1/R10.5). --- */
+  const [sendForSignatureOpen, setSendForSignatureOpen] = useState(false)
 
   /* --- Preview "scale to fit" --- */
   // The quote document preview keeps its native width (DESIGN_W) and is
@@ -478,6 +485,11 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
           {quote.acceptance_token && (
             <Button variant="ghost" onClick={handleCopyLink}>
               {copied ? 'Copied!' : 'Copy Link'}
+            </Button>
+          )}
+          {esignEnabled && (
+            <Button variant="ghost" onClick={() => setSendForSignatureOpen(true)}>
+              Send for signature
             </Button>
           )}
           {canSend && (
@@ -920,6 +932,17 @@ export default function QuoteDetail({ quoteId }: QuoteDetailProps) {
           entityId={quote.id}
           surfaceLabel={SURFACE_REGISTRY['quote_sent']?.surfaceLabel ?? 'Email Quote'}
           onSent={() => { fetchQuote() }}
+        />
+      )}
+
+      {/* Send for signature (e-signature) modal — module-gated (R10.1/R10.5) */}
+      {esignEnabled && (
+        <SendForSignatureModal
+          open={sendForSignatureOpen}
+          onClose={() => setSendForSignatureOpen(false)}
+          originatingEntityType="quote"
+          originatingEntityId={quote.id}
+          onSent={() => setSuccessMsg('Document sent for signature.')}
         />
       )}
     </div>

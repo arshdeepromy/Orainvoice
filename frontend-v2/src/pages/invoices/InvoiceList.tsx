@@ -5,6 +5,8 @@ import { Button, Spinner, Modal, Badge } from '@/components/ui'
 import { useTenant } from '@/contexts/TenantContext'
 import { useBranch } from '@/contexts/BranchContext'
 import { useAuth } from '@/contexts/AuthContext'
+import { useModules } from '@/contexts/ModuleContext'
+import { SendForSignatureModal } from '@/components/esign/SendForSignatureModal'
 import { checkNavigationGuard } from '@/utils/navigationGuard'
 import { CreditNoteModal } from '@/components/invoices/CreditNoteModal'
 import { RefundModal } from '@/components/invoices/RefundModal'
@@ -412,6 +414,8 @@ export default function InvoiceList() {
   const { tradeFamily, settings } = useTenant()
   const { branches: branchList, selectedBranchId } = useBranch()
   const { user } = useAuth()
+  const { isEnabled } = useModules()
+  const esignEnabled = isEnabled('esignatures')
   // Null tradeFamily treated as automotive for backward compat
   const isAutomotive = (tradeFamily ?? 'automotive-transport') === 'automotive-transport'
   const canViewMargins = user?.role === 'org_admin' || user?.role === 'global_admin'
@@ -502,6 +506,9 @@ export default function InvoiceList() {
   /* Credit Note & Refund modals */
   const [creditNoteModalOpen, setCreditNoteModalOpen] = useState(false)
   const [refundModalOpen, setRefundModalOpen] = useState(false)
+  /* Send for signature (e-signature) modal — shown only when the
+     `esignatures` module is enabled (R10.1/R10.5). */
+  const [sendForSignatureOpen, setSendForSignatureOpen] = useState(false)
   const [deleteModalOpen, setDeleteModalOpen] = useState(false)
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null)
   const [deleteTargetNumber, setDeleteTargetNumber] = useState('')
@@ -1507,6 +1514,14 @@ export default function InvoiceList() {
                       >
                         Copy Link
                       </button>
+                      {esignEnabled && (
+                        <button
+                          onClick={() => { setSendForSignatureOpen(true); setMoreMenuOpen(false) }}
+                          className="w-full text-left px-4 py-2 text-sm text-text hover:bg-canvas"
+                        >
+                          Send for signature
+                        </button>
+                      )}
                       {invoice && (invoice.status === 'paid' || invoice.status === 'partially_paid') && (
                         <button
                           onClick={handleSendReceipt}
@@ -2376,6 +2391,15 @@ export default function InvoiceList() {
                 fetchDetail(invoice.id)
                 fetchInvoices(searchQuery, statusFilter, page)
               }}
+            />
+          )}
+          {esignEnabled && (
+            <SendForSignatureModal
+              open={sendForSignatureOpen}
+              onClose={() => setSendForSignatureOpen(false)}
+              originatingEntityType="invoice"
+              originatingEntityId={invoice.id}
+              onSent={() => { showMsg('Document sent for signature.') }}
             />
           )}
         </>

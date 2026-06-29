@@ -121,6 +121,9 @@ const ICON = {
   kitchen: 'M3 3v6a2 2 0 002 2 2 2 0 002-2V3M5 11v10M17 3c-1.7 0-3 2-3 5s1 4 3 4v9',
   franchise: 'M3 21h18M5 21V7l7-4 7 4v14M9 9h.01M9 13h.01M9 17h.01M15 9h.01M15 13h.01M15 17h.01',
   assets: 'M7 7h.01M7 3h5a2 2 0 011.4.6l7 7a2 2 0 010 2.8l-5.6 5.6a2 2 0 01-2.8 0l-7-7A2 2 0 013 7.6V5a2 2 0 012-2z',
+  // Agreements (e-signature module). Pen drawing a line above an underline —
+  // evokes "sign here" without colliding with the document/job/quote icons.
+  esign: 'M15.5 3.5a2.12 2.12 0 013 3L8.5 16.5l-4 1 1-4L15.5 3.5zM4 21h16',
   bell: 'M15 17h5l-1.4-1.4A2 2 0 0118 14.2V11a6 6 0 00-4-5.7V5a2 2 0 10-4 0v.3A6 6 0 006 11v3.2c0 .5-.2 1-.6 1.4L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9',
   data: 'M4 7c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3zm0 0v10c0 1.7 3.6 3 8 3s8-1.3 8-3V7M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3',
 } as const
@@ -224,6 +227,11 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { id: 'claims', to: '/claims', label: 'Claims', icon: ICON.claims, module: 'customer_claims' },
       { id: 'compliance', to: '/compliance', label: 'Compliance', icon: ICON.compliance, module: 'compliance_docs', flagKey: 'compliance_docs' },
+      // Agreements (e-signature) — module-gated on `esignatures` only (R2.3/R2.4).
+      // No `flagKey`, `tradeFamily`, or `adminOnly`: a pure, universal module gate
+      // (isVisible returns isEnabled('esignatures')). Points at the Agreements
+      // dashboard route built by task 17.2.
+      { id: 'agreements', to: '/agreements', label: 'Agreements', icon: ICON.esign, module: 'esignatures' },
       { id: 'loyalty', to: '/loyalty', label: 'Loyalty', icon: ICON.loyalty, module: 'loyalty', flagKey: 'loyalty' },
       { id: 'franchise', to: '/franchise', label: 'Franchise', icon: ICON.franchise, module: 'franchise', flagKey: 'franchise' },
       { id: 'ecommerce', to: '/ecommerce', label: 'Ecommerce', icon: ICON.ecommerce, module: 'ecommerce', flagKey: 'ecommerce' },

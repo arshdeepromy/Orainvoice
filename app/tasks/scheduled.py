@@ -2654,6 +2654,11 @@ from app.modules.backup_restore.service import (
 # Leave Balances & Eligibility — daily eligibility sweep (vests entitlements +
 # writes onset notes/notifications). WRITE task; primary-only.
 from app.modules.leave.rules.sweep import evaluate_leave_eligibility_task
+# E-Signature Integration — scheduled retry sweep for signed-document retrieval
+# (esignature-integration spec, task 13.3 / R9.5, R9.7). Re-drives retrieval +
+# encrypted-pipeline storage for completed envelopes not yet stored, across all
+# orgs. WRITE task; primary-only.
+from app.modules.esignatures.signed_document import sweep_pending_signed_documents
 
 # Tasks that write to the database and must be skipped on standby nodes.
 # ALL tasks that INSERT, UPDATE, or DELETE rows must be listed here.
@@ -2700,6 +2705,11 @@ WRITE_TASKS: set[str] = {
     "backup_scheduled",            # run_scheduled_backup_task — creates Backup_Jobs + backups + blobs
     "backup_blob_gc",              # run_blob_gc_task — prunes/deletes backups + blobs (retention + orphan GC)
     "backup_rehearsal",            # run_rehearsal_task — writes restore_rehearsals rows
+    # E-Signature Integration (esignature-integration spec, task 13.3 / R9.5,
+    # R9.7). Re-drives signed-document retrieval + encrypted-pipeline storage,
+    # which UPDATEs esign_envelopes (signed_doc_status/file_key/last_error) and
+    # writes an audit_log row on success — so it must be primary-only.
+    "esign_signed_doc_sweep",      # sweep_pending_signed_documents — retries completed-but-unstored envelopes
 }
 
 # (task_fn, interval_seconds, name)
@@ -2762,6 +2772,15 @@ _DAILY_TASKS: list[tuple] = [
     (run_scheduled_backup_task, 60, "backup_scheduled"),
     (run_blob_gc_task, 3600, "backup_blob_gc"),
     (run_rehearsal_task, 60, "backup_rehearsal"),
+    # E-Signature Integration (esignature-integration spec, task 13.3). Hourly
+    # backstop for signed-document retrieval: the webhook DOCUMENT_COMPLETED
+    # path is the primary trigger, but if retrieval/storage failed (or the
+    # webhook never fired it) the envelope sits `completed` with
+    # signed_doc_status != 'stored'. This sweep re-drives the idempotent
+    # `retrieve_and_store_signed_document` for those laggards across all orgs.
+    # Idempotent + no-op-safe, so a same-tick race with a webhook retrieval is
+    # harmless. WRITE task → skipped on standby nodes (R9.5, R9.7).
+    (sweep_pending_signed_documents, 3600, "esign_signed_doc_sweep"),
 ]
 
 _stop_event: asyncio.Event | None = None

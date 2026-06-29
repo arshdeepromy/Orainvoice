@@ -39,6 +39,7 @@ import {
 } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import apiClient from '@/api/client'
+import { useAuth } from '@/contexts/AuthContext'
 import { ModuleGate } from '@/components/common/ModuleGate'
 import {
   Button,
@@ -130,6 +131,49 @@ function formatShortDate(iso: string | null | undefined): string {
   })
 }
 
+/** Today as a local ISO date (YYYY-MM-DD). Pay-period dates are ISO strings, so
+ *  plain string comparison orders them correctly. */
+function todayIso(): string {
+  const d = new Date()
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+  return `${d.getFullYear()}-${mm}-${dd}`
+}
+
+/**
+ * Choose the pay period to select by default. Preference order:
+ *   1. the **current** period — the one whose [start_date, end_date] contains
+ *      today. When several cycles each have a current period (weekly +
+ *      fortnightly + monthly all cover today), the most recently started
+ *      (tightest) one wins.
+ *   2. the nearest **upcoming** period (starts in the future), soonest first.
+ *   3. the most recent still-**open** period, else the most recent period.
+ *
+ * Exported for unit testing; ``today`` is injectable so tests aren't clock-
+ * dependent (defaults to the real today).
+ */
+export function pickDefaultPeriod(
+  items: PayPeriod[],
+  today: string = todayIso(),
+): PayPeriod | null {
+  if (!items || items.length === 0) return null
+
+  const current = items
+    .filter((p) => p.start_date <= today && today <= p.end_date)
+    .sort((a, b) => b.start_date.localeCompare(a.start_date))
+  if (current.length > 0) return current[0]
+
+  const upcoming = items
+    .filter((p) => p.start_date > today)
+    .sort((a, b) => a.start_date.localeCompare(b.start_date))
+  if (upcoming.length > 0) return upcoming[0]
+
+  const byRecency = [...items].sort((a, b) =>
+    b.start_date.localeCompare(a.start_date),
+  )
+  return byRecency.find((p) => p.status === 'open') ?? byRecency[0] ?? null
+}
+
 /** Initials for the avatar chip — first letters of the first two words. */
 function initials(name: string | null | undefined): string {
   const parts = (name ?? '').trim().split(/\s+/).filter(Boolean)
@@ -164,6 +208,17 @@ function periodStatusLabel(status: PayPeriodStatus | string): string {
   if (status === 'finalised') return 'Finalised'
   if (status === 'paid') return 'Paid'
   return status
+}
+
+/** Badge tone for a pay-period status — open=needs action, finalised=locked,
+ *  paid=complete. Keeps status colour consistent with the step progress. */
+function periodStatusBadgeVariant(
+  status: PayPeriodStatus | string,
+): 'success' | 'warn' | 'info' | 'neutral' {
+  if (status === 'paid') return 'success'
+  if (status === 'finalised') return 'info'
+  if (status === 'open') return 'warn'
+  return 'neutral'
 }
 
 function readErrorMessage(err: unknown): string {
@@ -268,6 +323,12 @@ const WalletIcon = (p: IconProps) => (
 const UsersIcon = (p: IconProps) => (
   <Svg {...p}>
     <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2M9 11a4 4 0 100-8 4 4 0 000 8zM23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75" />
+  </Svg>
+)
+const SettingsIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+    <path d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
   </Svg>
 )
 
@@ -538,6 +599,8 @@ const STATUS_FILTERS: { id: StatusFilter; label: string }[] = [
 
 function PayRunPageInner() {
   const navigate = useNavigate()
+  const { user } = useAuth()
+  const isOrgAdmin = user?.role === 'org_admin'
   const [searchParams] = useSearchParams()
   const periodParam = searchParams.get('period')
 
@@ -591,10 +654,10 @@ function PayRunPageInner() {
   // Refresh tick — bumped when a mutation should re-fetch the payslip list.
   const [refreshTick, setRefreshTick] = useState<number>(0)
 
-  // ── Load all pay periods (open + finalised + paid) ──
+  // ── Detect whether the org runs the Timesheets → Pay Runs workflow ──
   useEffect(() => {
     const controller = new AbortController()
-    // Detect whether the org runs the Timesheets → Pay Runs workflow.
+    // A configured pay cycle signals the Timesheets-managed workflow.
     apiClient
       .get<{ items: unknown[]; total: number }>('/api/v2/pay-cycles/', { signal: controller.signal })
       .then((res) => setUsesTimesheets((res.data?.items?.length ?? 0) > 0))
@@ -616,12 +679,12 @@ function PayRunPageInner() {
 
         // Auto-select: a ?period= deep link wins (e.g. arriving from the
         // Timesheets → Pay Runs "Review in Payroll" link), else keep the
-        // current selection, else the first 'open' period.
+        // current selection, else default to the *current* pay period (the one
+        // that contains today) rather than an arbitrary open period.
         setSelectedPeriodId((prev) => {
           if (periodParam && items.some((p) => p.id === periodParam)) return periodParam
           if (prev && items.some((p) => p.id === prev)) return prev
-          const firstOpen = items.find((p) => p.status === 'open')
-          return firstOpen?.id ?? items[0]?.id ?? null
+          return pickDefaultPeriod(items)?.id ?? null
         })
       } catch (err) {
         if (isAbortError(err)) return
@@ -707,12 +770,12 @@ function PayRunPageInner() {
   )
 
   // If an active cycle filter hides the currently selected period, fall back
-  // to the first visible period so the navigator never points at a hidden row.
+  // to that cycle's current period (contains today), not just its newest one.
   useEffect(() => {
     if (cycleFilter === 'all') return
     if (!selectedPeriodId) return
     if (visiblePeriods.some((p) => p.id === selectedPeriodId)) return
-    setSelectedPeriodId(visiblePeriods[0]?.id ?? null)
+    setSelectedPeriodId(pickDefaultPeriod(visiblePeriods)?.id ?? null)
   }, [cycleFilter, visiblePeriods, selectedPeriodId])
 
   const selectedPeriod = useMemo<PayPeriod | null>(
@@ -926,11 +989,22 @@ function PayRunPageInner() {
           <h1>Payroll</h1>
           <p className="sub">
             {selectedPeriod
-              ? `Pay period · ${formatDateRange(selectedPeriod)} · ${totals.count} ${totals.count === 1 ? 'employee' : 'employees'}`
+              ? `${totals.count} ${totals.count === 1 ? 'employee' : 'employees'} in the selected pay period`
               : 'Generate, review and finalise payslips for a pay period.'}
           </p>
         </div>
         <div className="head-actions">
+          {isOrgAdmin && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => navigate('/payroll/tax-settings')}
+              data-testid="tax-settings-button"
+            >
+              <SettingsIcon className="h-4 w-4" />
+              Settings
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="sm"
@@ -975,54 +1049,55 @@ function PayRunPageInner() {
           <button
             type="button"
             className={navBtn}
-            aria-label="Previous period"
+            aria-label="Older period"
+            title="Older period"
             onClick={() => goToPeriod(1)}
             disabled={selectedIndex < 0 || selectedIndex >= sortedPeriods.length - 1}
           >
             <ChevronLeftIcon className="h-4 w-4" />
           </button>
-          <div>
-            <div className="mono text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-2">
-              {selectedPeriod
-                ? periodStatusLabel(selectedPeriod.status)
-                : 'No period'}
-            </div>
-            <div className="mono text-[13px] font-semibold text-text">
-              {selectedPeriod ? formatPeriodLabel(selectedPeriod) : '—'}
-            </div>
-          </div>
+
+          {/* Single source of truth for the selected period: the date range
+              (and cycle name when set). The status is shown once, as the badge
+              after the picker — not repeated here. */}
+          <label className="sr-only" htmlFor="period-selector">
+            Pay period
+          </label>
+          <select
+            id="period-selector"
+            value={selectedPeriodId ?? ''}
+            onChange={(e) => setSelectedPeriodId(e.target.value || null)}
+            data-testid="period-selector"
+            disabled={periodsLoading || sortedPeriods.length === 0}
+            className="mono h-[36px] min-w-[240px] rounded-ctl border border-border bg-card px-3 text-[13px] font-semibold text-text focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50"
+          >
+            {sortedPeriods.length === 0 && (
+              <option value="">No pay periods yet</option>
+            )}
+            {sortedPeriods.map((p) => (
+              <option key={p.id} value={p.id}>
+                {formatPeriodLabel(p)}
+              </option>
+            ))}
+          </select>
+
           <button
             type="button"
             className={navBtn}
-            aria-label="Next period"
+            aria-label="Newer period"
+            title="Newer period"
             onClick={() => goToPeriod(-1)}
             disabled={selectedIndex <= 0}
           >
             <ChevronRightIcon className="h-4 w-4" />
           </button>
-        </div>
 
-        {/* Direct period jump for keyboard / many-period orgs. */}
-        <label className="sr-only" htmlFor="period-selector">
-          Pay period
-        </label>
-        <select
-          id="period-selector"
-          value={selectedPeriodId ?? ''}
-          onChange={(e) => setSelectedPeriodId(e.target.value || null)}
-          data-testid="period-selector"
-          disabled={periodsLoading || sortedPeriods.length === 0}
-          className="mono h-[34px] rounded-ctl border border-border bg-card px-3 text-[13px] text-text focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50"
-        >
-          {sortedPeriods.length === 0 && (
-            <option value="">No pay periods yet</option>
+          {selectedPeriod && (
+            <Badge variant={periodStatusBadgeVariant(selectedPeriod.status)}>
+              {periodStatusLabel(selectedPeriod.status)}
+            </Badge>
           )}
-          {sortedPeriods.map((p) => (
-            <option key={p.id} value={p.id}>
-              {formatPeriodLabel(p)} · {periodStatusLabel(p.status)}
-            </option>
-          ))}
-        </select>
+        </div>
 
         {/* Cycle filter — only when the loaded periods span >1 pay cycle. */}
         {showCycleFilter && (

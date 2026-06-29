@@ -1,7 +1,7 @@
 {
   "name": "orainvoice-mobile",
   "private": true,
-  "version": "1.23.0",
+  "version": "1.28.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -47,6 +47,7 @@
     "capacitor-native-biometric": "^4.2.0",
     "firebase": "^12.12.0",
     "konsta": "^5.0.9",
+    "pdfjs-dist": "5.7.284",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-router-dom": "^7.0.0"

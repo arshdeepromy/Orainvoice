@@ -495,6 +495,46 @@ def create_app() -> FastAPI:
         prefix="/api/v2/organisations",
         tags=["v2-organisations-portal"],
     )
+    # E-Signature per-org Documenso connection management (Global-Admin only).
+    # Mounted under `/api/v2/admin` (a global-admin-only, tenant-context-exempt
+    # prefix) so a Global Admin can manage a specific org's connection by org id
+    # in the path. Intentionally OUTSIDE the `/api/v2/esign` module-gate prefix:
+    # connection setup works regardless of module-enabled state. The router
+    # enforces `require_role("global_admin")` on every route.
+    from app.modules.esignatures.connection_router import (
+        router as esign_connection_admin_router,
+    )
+    app.include_router(
+        esign_connection_admin_router,
+        prefix="/api/v2/admin",
+        tags=["v2-esign-connection-admin"],
+    )
+
+    # E-Signature org-user endpoints (the Agreements API surface): send / list /
+    # detail / void / signed-document. Mounted under `/api/v2/esign` behind the
+    # standard JWT auth + tenant-context middleware. Every route is module-gated
+    # (router-level `require_esign_module` + the `MODULE_ENDPOINT_MAP`
+    # `"/api/v2/esign": "esignatures"` middleware entry → 403 when disabled);
+    # send/void additionally require an Org_Sender role. The public per-org
+    # webhook router (task 12.x) is mounted separately and is NOT gated here.
+    from app.modules.esignatures.router import router as esign_router
+    app.include_router(
+        esign_router,
+        prefix="/api/v2/esign",
+        tags=["v2-esign"],
+    )
+
+    # E-Signature inbound Documenso webhooks (per-org routed, shared-secret
+    # gated). PUBLIC route (Documenso cannot present a JWT) — mounted at its
+    # full path `/api/v2/esign/webhook/{routing_id}` with NO extra prefix, same
+    # pattern as the Xero / Connexus public webhook routers. The path is in
+    # `PUBLIC_PREFIXES` (bypasses JWT) and carries no org session, so
+    # ModuleMiddleware skips it (no org_id) — it is intentionally NOT
+    # module-gated. The handler resolves the org from the routing id and
+    # verifies that org's webhook secret before any DB write (task 12.1).
+    from app.modules.esignatures.webhook_router import router as esign_webhook_router
+    app.include_router(esign_webhook_router, tags=["v2-esign-webhook"])
+
     # --- New universal-platform module routers ---
     from app.modules.feature_flags.router import admin_router as ff_admin_router
     from app.modules.feature_flags.router import org_router as ff_org_router
@@ -610,6 +650,26 @@ def create_app() -> FastAPI:
     app.include_router(settings_router, prefix="/api/v2/timesheet-settings", tags=["v2-timesheet-settings"])
     app.include_router(pay_cycles_router, prefix="/api/v2/pay-cycles", tags=["v2-pay-cycles"])
     app.include_router(payrun_router, prefix="/api/v2/pay-run", tags=["v2-pay-run"])
+
+    # --- Payroll Tax Settings module (two-tier NZ tax config) ---
+    # Platform tier: Global_Admin only (RBACMiddleware path gate on /api/v2/admin/*
+    # plus route-level require_role). Org tier: Org_Admin only (gated by the
+    # audit_denied_tax_access dependency on the router). Collection routes are
+    # defined relative to these prefixes (bare "" paths).
+    from app.modules.payroll_tax.router import (
+        platform_router as payroll_tax_platform_router,
+        org_router as payroll_tax_org_router,
+    )
+    app.include_router(
+        payroll_tax_platform_router,
+        prefix="/api/v2/admin/platform-tax-default",
+        tags=["v2-platform-tax-default"],
+    )
+    app.include_router(
+        payroll_tax_org_router,
+        prefix="/api/v2/payroll-tax-settings",
+        tags=["v2-payroll-tax-settings"],
+    )
 
     # --- Public staff roster viewer (no auth, token-gated, G5 rate-limited) ---
     from app.modules.staff.public_router import (

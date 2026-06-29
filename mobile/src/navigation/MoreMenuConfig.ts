@@ -55,6 +55,10 @@ const ICON_PURCHASE_ORDERS =
   'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01'
 const ICON_POS =
   'M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 100 4 2 2 0 000-4z'
+// Agreements / e-signature. Pen drawing a line above an underline — matches the
+// frontend-v2 sidebar "Agreements" icon (ICON.esign) for cross-app consistency.
+const ICON_ESIGN =
+  'M15.5 3.5a2.12 2.12 0 013 3L8.5 16.5l-4 1 1-4L15.5 3.5zM4 21h16'
 const ICON_INVENTORY =
   'M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4'
 const ICON_CATALOGUE =
@@ -147,6 +151,21 @@ export const MORE_MENU_ITEMS: MoreMenuItem[] = [
     moduleSlug: 'pos',
     tradeFamily: null,
     allowedRoles: [],
+    adminOnly: false,
+    category: 'Sales',
+  },
+  {
+    // E-signature field-placement / send editor (esignature-field-placement R16).
+    // Pure module gate on `esignatures` (R16.1) + org-sender role gate (R16.2,
+    // R16.3): only org_admin / branch_admin / location_manager may see/open it.
+    // No trade-family gate (matches the frontend-v2 "Agreements" sidebar entry).
+    id: 'esign-send',
+    label: 'E-Signatures',
+    icon: ICON_ESIGN,
+    path: '/esign/send',
+    moduleSlug: 'esignatures',
+    tradeFamily: null,
+    allowedRoles: ['org_admin', 'branch_admin', 'location_manager'],
     adminOnly: false,
     category: 'Sales',
   },

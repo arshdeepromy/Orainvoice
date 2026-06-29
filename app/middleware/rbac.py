@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 
 from sqlalchemy import select
 from starlette.requests import Request
@@ -36,6 +37,56 @@ logger = logging.getLogger(__name__)
 # Cache permission overrides for 60 seconds per user
 _PERM_CACHE_TTL = 60
 _PERM_CACHE_PREFIX = "rbac:perms:"
+
+# Platform-tier tax-settings prefix. RBACMiddleware 403s every non-global_admin
+# role on /api/v2/admin/* *before* the route runs, so a route-level dependency
+# can never observe (and therefore never audit) those rejected platform-tier
+# attempts. The denial audit for the platform tier must therefore be emitted from
+# the middleware itself (Req 2.3).
+_PLATFORM_TAX_DEFAULT_PREFIX = "/api/v2/admin/platform-tax-default"
+
+
+async def _audit_platform_tax_denial(request: Request, *, denial_reason: str) -> None:
+    """Record a ``payroll_tax.platform.access_denied`` entry on a denied request.
+
+    Written out-of-band on a fresh session/transaction and fully guarded: any
+    failure here is logged and swallowed so an audit problem can never convert a
+    correct ``403`` into a ``500`` (Req 2.3). The ``audit_log`` table has no RLS
+    (append-only), so no org GUC is required for the insert.
+    """
+    from app.core.audit import write_audit_log
+
+    user_id_raw = getattr(request.state, "user_id", None)
+    try:
+        user_id = uuid.UUID(str(user_id_raw)) if user_id_raw else None
+    except (ValueError, TypeError):
+        user_id = None
+    role = getattr(request.state, "role", None)
+    ip_address = getattr(request.state, "client_ip", None)
+    user_agent = request.headers.get("user-agent")
+    try:
+        async with async_session_factory() as session:
+            async with session.begin():
+                await write_audit_log(
+                    session=session,
+                    action="payroll_tax.platform.access_denied",
+                    entity_type="platform_tax_default",
+                    org_id=None,
+                    user_id=user_id,
+                    after_value={
+                        "path": request.url.path,
+                        "method": request.method,
+                        "role": role,
+                        "reason": denial_reason,
+                    },
+                    ip_address=ip_address,
+                    device_info=user_agent,
+                )
+    except Exception:  # pragma: no cover - audit must never break the request
+        logger.exception(
+            "Failed to write platform tax access-denied audit for path=%s",
+            request.url.path,
+        )
 
 
 class RBACMiddleware:
@@ -71,6 +122,10 @@ class RBACMiddleware:
 
         # Org-scoped roles must have org membership
         if role in (ORG_ADMIN, SALESPERSON, LOCATION_MANAGER, STAFF_MEMBER) and not org_id:
+            if path.startswith(_PLATFORM_TAX_DEFAULT_PREFIX):
+                await _audit_platform_tax_denial(
+                    request, denial_reason="Organisation membership required"
+                )
             response = JSONResponse(
                 status_code=403,
                 content={"detail": "Organisation membership required"},
@@ -81,6 +136,8 @@ class RBACMiddleware:
         # Check path-based role access
         denial_reason = check_role_path_access(role, path, method=request.method)
         if denial_reason:
+            if path.startswith(_PLATFORM_TAX_DEFAULT_PREFIX):
+                await _audit_platform_tax_denial(request, denial_reason=denial_reason)
             response = JSONResponse(
                 status_code=403,
                 content={"detail": denial_reason},

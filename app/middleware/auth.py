@@ -124,6 +124,11 @@ PUBLIC_PREFIXES: tuple[str, ...] = (
     "/api/v2/setup-wizard/org-logo/",
     "/fleet/api/",  # Fleet portal uses cookie auth, not JWT
     "/e/api/",  # Organisation employee portal uses cookie auth, not JWT
+    # E-Signature per-org Documenso webhook. Documenso cannot present a JWT; the
+    # handler authenticates by resolving the org from the routing id and
+    # constant-time comparing that org's stored webhook secret against the
+    # X-Documenso-Secret header (see esignatures/webhook_router.py).
+    "/api/v2/esign/webhook/",
 )
 
 # Portal prefixes that require token expiry validation (REM-15).

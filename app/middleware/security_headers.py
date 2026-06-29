@@ -54,6 +54,10 @@ _CSRF_EXEMPT_PATHS: set[str] = {
 _CSRF_EXEMPT_PREFIXES: tuple[str, ...] = (
     "/fleet/api/auth/",
     "/e/api/auth/",
+    # E-Signature per-org Documenso webhook (dynamic {routing_id} path) — an
+    # external callback that carries no session cookie, so the CSRF check below
+    # never fires for it; exempt by prefix for clarity and defence-in-depth.
+    "/api/v2/esign/webhook/",
 )
 
 

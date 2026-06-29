@@ -98,6 +98,94 @@ _PRIMARY_CODES = {"M", "ME"}
 _SECONDARY_CODES = set(_SECONDARY_FLAT_RATES.keys())
 
 
+# ---------------------------------------------------------------------------
+# Resolved tax configuration value objects
+# ---------------------------------------------------------------------------
+#
+# These dataclasses describe the fully-populated, calculation-ready tax
+# configuration the PAYE engine will eventually be driven from. For now the
+# engine still reads the legacy module constants directly (see task 1.2);
+# this step only introduces the value objects and the ``SAFETY_NET`` instance
+# built from those same constants, so behaviour is unchanged.
+
+
+@dataclass(frozen=True)
+class PAYEBracket:
+    """One progressive income-tax band.
+
+    ``upper_limit`` is the annual income ceiling of the band; ``None``
+    marks the open-ended top band (previously ``Decimal("Infinity")``).
+    """
+
+    upper_limit: Decimal | None
+    rate: Decimal
+
+
+@dataclass(frozen=True)
+class IETCParams:
+    """Independent Earner Tax Credit parameters for the ``ME`` code."""
+
+    amount: Decimal
+    lower: Decimal
+    abatement_start: Decimal
+    abatement_rate: Decimal
+    upper: Decimal
+
+
+@dataclass(frozen=True)
+class ResolvedTaxConfig:
+    """Fully-populated, calculation-ready NZ payroll tax configuration.
+
+    Every field is non-optional: construction is only ever via the
+    resolution service or the :data:`SAFETY_NET` constant, so the engine
+    can assume completeness.
+    """
+
+    paye_brackets: tuple[PAYEBracket, ...]
+    secondary_rates: dict[str, Decimal]  # keys: SB, S, SH, ST, SA
+    acc_levy_rate: Decimal
+    acc_max_liable_earnings: Decimal
+    student_loan_rate: Decimal
+    student_loan_threshold: Decimal
+    ietc: IETCParams
+    default_kiwisaver_employee_rate: Decimal
+    default_kiwisaver_employer_rate: Decimal
+    tax_year_label: str
+
+
+#: The hard-coded fallback configuration (the current 2024/25 constants),
+#: used as the last-resort tier when neither an organisation override nor a
+#: platform default value is available for a Tax_Field. Built from the legacy
+#: module constants above, which remain the single source for this instance.
+#: The open-ended top band is expressed with ``upper_limit=None`` (converted
+#: from the legacy ``Decimal("Infinity")`` top band); the IETC upper bound
+#: (48000) is extracted here from the inline literal in ``_ietc_annual``.
+SAFETY_NET: ResolvedTaxConfig = ResolvedTaxConfig(
+    paye_brackets=tuple(
+        PAYEBracket(
+            upper_limit=(None if upper == Decimal("Infinity") else upper),
+            rate=rate,
+        )
+        for upper, rate in _INCOME_TAX_BRACKETS
+    ),
+    secondary_rates=dict(_SECONDARY_FLAT_RATES),
+    acc_levy_rate=_ACC_LEVY_RATE,
+    acc_max_liable_earnings=_ACC_MAX_LIABLE_EARNINGS,
+    student_loan_rate=_STUDENT_LOAN_RATE,
+    student_loan_threshold=_STUDENT_LOAN_ANNUAL_THRESHOLD,
+    ietc=IETCParams(
+        amount=_IETC_AMOUNT,
+        lower=_IETC_LOWER,
+        abatement_start=_IETC_ABATEMENT_START,
+        abatement_rate=_IETC_ABATEMENT_RATE,
+        upper=Decimal("48000"),
+    ),
+    default_kiwisaver_employee_rate=Decimal("3.00"),
+    default_kiwisaver_employer_rate=Decimal("3.00"),
+    tax_year_label="2024/25",
+)
+
+
 @dataclass
 class PAYEResult:
     """Result of a PAYE calculation for a single pay period.
@@ -127,28 +215,40 @@ def _q(value: Decimal) -> Decimal:
     return value.quantize(_CENTS, rounding=ROUND_HALF_UP)
 
 
-def _annual_income_tax(annual: Decimal) -> Decimal:
-    """Progressive income tax on an annual taxable income."""
+def _annual_income_tax(annual: Decimal, brackets: tuple[PAYEBracket, ...]) -> Decimal:
+    """Progressive income tax on an annual taxable income.
+
+    ``brackets`` come from the resolved tax configuration; a bracket whose
+    ``upper_limit is None`` is the open-ended top band (treated as infinity),
+    so the band ceiling is the income itself.
+    """
     if annual <= 0:
         return Decimal("0")
     tax = Decimal("0")
     lower = Decimal("0")
-    for upper, rate in _INCOME_TAX_BRACKETS:
+    for bracket in brackets:
         if annual <= lower:
             break
-        band_top = annual if annual < upper else upper
-        tax += (band_top - lower) * rate
+        upper = bracket.upper_limit
+        # ``None`` marks the open-ended top band: never cap below ``annual``.
+        if upper is None or annual < upper:
+            band_top = annual
+        else:
+            band_top = upper
+        tax += (band_top - lower) * bracket.rate
+        if upper is None:
+            break
         lower = upper
     return tax
 
 
-def _ietc_annual(annual: Decimal) -> Decimal:
+def _ietc_annual(annual: Decimal, ietc: IETCParams) -> Decimal:
     """Independent Earner Tax Credit for the ``ME`` code (annual)."""
-    if annual < _IETC_LOWER or annual > Decimal("48000"):
+    if annual < ietc.lower or annual > ietc.upper:
         return Decimal("0")
-    credit = _IETC_AMOUNT
-    if annual > _IETC_ABATEMENT_START:
-        credit -= (annual - _IETC_ABATEMENT_START) * _IETC_ABATEMENT_RATE
+    credit = ietc.amount
+    if annual > ietc.abatement_start:
+        credit -= (annual - ietc.abatement_start) * ietc.abatement_rate
     return credit if credit > 0 else Decimal("0")
 
 
@@ -177,14 +277,22 @@ def compute_paye(
     period_days: int = 14,
     student_loan: bool = False,
     kiwisaver_enrolled: bool = False,
-    kiwisaver_employee_rate: Decimal = Decimal("3.00"),
-    kiwisaver_employer_rate: Decimal = Decimal("3.00"),
+    kiwisaver_employee_rate: Decimal | None = None,
+    kiwisaver_employer_rate: Decimal | None = None,
+    config: ResolvedTaxConfig = SAFETY_NET,
 ) -> PAYEResult:
     """Compute PAYE / ACC / student loan / KiwiSaver for one pay period.
 
     ``period_days`` is the inclusive length of the pay period (7 for
     weekly, 14 for fortnightly, ~30/31 for monthly); it drives the
     annualisation factor so any cadence is supported.
+
+    Every statutory rate is read from ``config`` (a fully-populated
+    :class:`ResolvedTaxConfig`). It defaults to :data:`SAFETY_NET` — the
+    hard-coded 2024/25 constants — so existing callers and tests produce
+    identical numbers. When ``kiwisaver_employee_rate`` /
+    ``kiwisaver_employer_rate`` is ``None`` the resolved
+    ``default_kiwisaver_*_rate`` is used.
     """
     gross = Decimal(gross_pay or 0)
     if gross < 0:
@@ -201,11 +309,11 @@ def compute_paye(
     # ---- Income tax (PAYE) ----
     ietc_period = Decimal("0")
     if base_code in _SECONDARY_CODES:
-        annual_tax = annual_gross * _SECONDARY_FLAT_RATES[base_code]
+        annual_tax = annual_gross * config.secondary_rates[base_code]
     else:
-        annual_tax = _annual_income_tax(annual_gross)
+        annual_tax = _annual_income_tax(annual_gross, config.paye_brackets)
         if base_code == "ME":
-            ietc_annual = _ietc_annual(annual_gross)
+            ietc_annual = _ietc_annual(annual_gross, config.ietc)
             annual_tax -= ietc_annual
             ietc_period = ietc_annual / periods_per_year
         if annual_tax < 0:
@@ -213,24 +321,34 @@ def compute_paye(
     paye_period = annual_tax / periods_per_year
 
     # ---- ACC earner levy (capped) ----
-    acc_cap_period = _ACC_MAX_LIABLE_EARNINGS / periods_per_year
+    acc_cap_period = config.acc_max_liable_earnings / periods_per_year
     acc_liable = gross if gross < acc_cap_period else acc_cap_period
-    acc_period = acc_liable * _ACC_LEVY_RATE
+    acc_period = acc_liable * config.acc_levy_rate
 
     # ---- Student loan (above pay-period threshold) ----
     student_loan_period = Decimal("0")
     if apply_student_loan:
-        sl_threshold_period = _STUDENT_LOAN_ANNUAL_THRESHOLD / periods_per_year
+        sl_threshold_period = config.student_loan_threshold / periods_per_year
         sl_liable = gross - sl_threshold_period
         if sl_liable > 0:
-            student_loan_period = sl_liable * _STUDENT_LOAN_RATE
+            student_loan_period = sl_liable * config.student_loan_rate
 
     # ---- KiwiSaver ----
     ks_employee = Decimal("0")
     ks_employer = Decimal("0")
     if kiwisaver_enrolled:
-        ks_employee = gross * (Decimal(kiwisaver_employee_rate or 0) / Decimal("100"))
-        ks_employer = gross * (Decimal(kiwisaver_employer_rate or 0) / Decimal("100"))
+        emp_rate = (
+            kiwisaver_employee_rate
+            if kiwisaver_employee_rate is not None
+            else config.default_kiwisaver_employee_rate
+        )
+        empr_rate = (
+            kiwisaver_employer_rate
+            if kiwisaver_employer_rate is not None
+            else config.default_kiwisaver_employer_rate
+        )
+        ks_employee = gross * (Decimal(emp_rate or 0) / Decimal("100"))
+        ks_employer = gross * (Decimal(empr_rate or 0) / Decimal("100"))
 
     paye_q = _q(paye_period)
     acc_q = _q(acc_period)
