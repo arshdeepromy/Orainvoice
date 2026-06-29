@@ -137,13 +137,22 @@ export function usePdfDocument(
   const { availableWidth } = options
 
   const [pdf, setPdf] = useState<PDFDocumentProxy | null>(null)
+  // Intrinsic (scale-1) page geometry, captured once when the document opens.
+  // Width changes recompute the render scale from this WITHOUT reopening the
+  // document — reopening on every resize caused a scrollbar/ResizeObserver
+  // feedback loop that made the editor flash and never finish loading.
+  const [pageBases, setPageBases] = useState<{ width: number; height: number }[]>([])
   const [pages, setPages] = useState<RenderedPage[]>([])
   const [loading, setLoading] = useState<boolean>(false)
   const [error, setError] = useState<string | null>(null)
 
+  // ── Effect 1: open the document. Depends ONLY on `file`. ────────────────
+  // Reads the bytes, opens the PDF, and captures each page's intrinsic
+  // (scale-1) viewport. Never re-runs on width changes.
   useEffect(() => {
     if (!file) {
       setPdf(null)
+      setPageBases([])
       setPages([])
       setLoading(false)
       setError(null)
@@ -157,6 +166,7 @@ export function usePdfDocument(
     setLoading(true)
     setError(null)
     setPdf(null)
+    setPageBases([])
     setPages([])
 
     const load = async () => {
@@ -177,9 +187,9 @@ export function usePdfDocument(
         loadedDoc = doc
 
         // Cheap per-page geometry: getViewport never rasterises, so we can
-        // size every page up-front and let the canvas render lazily.
+        // capture each page's intrinsic size up-front.
         const numPages = doc.numPages
-        const rendered: RenderedPage[] = []
+        const bases: { width: number; height: number }[] = []
         for (let pageNumber = 1; pageNumber <= numPages; pageNumber += 1) {
           const page = await doc.getPage(pageNumber)
           if (cancelled) {
@@ -187,19 +197,7 @@ export function usePdfDocument(
             return
           }
           const baseViewport = page.getViewport({ scale: 1 })
-          const renderScale = computeRenderScale(
-            baseViewport.width,
-            availableWidth ?? MIN_VIEWPORT_WIDTH,
-            numPages,
-          )
-          const viewport = page.getViewport({ scale: renderScale })
-          rendered.push({
-            pageNumber,
-            cssWidth: viewport.width,
-            cssHeight: viewport.height,
-            renderScale,
-            status: 'pending',
-          })
+          bases.push({ width: baseViewport.width, height: baseViewport.height })
         }
 
         if (cancelled) {
@@ -207,13 +205,14 @@ export function usePdfDocument(
           return
         }
         setPdf(doc)
-        setPages(rendered)
+        setPageBases(bases)
         setLoading(false)
       } catch {
         if (cancelled) return
         // Any failure to read/open/measure the document blocks the send (R1.4).
         setError(RENDER_FAILED)
         setPdf(null)
+        setPageBases([])
         setPages([])
         setLoading(false)
       }
@@ -227,7 +226,53 @@ export function usePdfDocument(
       if (loadingTask) void loadingTask.destroy()
       if (loadedDoc) void loadedDoc.destroy()
     }
-  }, [file, availableWidth])
+  }, [file])
+
+  // ── Effect 2: (re)compute per-page render scale + CSS geometry. ─────────
+  // Depends on the intrinsic bases (set once per document) and the available
+  // width. A width change only resizes pages here; it never reopens the PDF.
+  useEffect(() => {
+    if (pageBases.length === 0) {
+      setPages([])
+      return
+    }
+    const numPages = pageBases.length
+    setPages((prev) => {
+      const next: RenderedPage[] = pageBases.map((base, i) => {
+        const pageNumber = i + 1
+        const renderScale = computeRenderScale(
+          base.width,
+          availableWidth ?? MIN_VIEWPORT_WIDTH,
+          numPages,
+        )
+        const cssWidth = base.width * renderScale
+        const cssHeight = base.height * renderScale
+        const existing = prev.find((p) => p.pageNumber === pageNumber)
+        // Preserve a page's render lifecycle when its scale is unchanged so a
+        // no-op width fluctuation never forces a re-rasterise; only reset to
+        // 'pending' when the scale actually changed.
+        const status: PageRenderStatus =
+          existing && existing.renderScale === renderScale ? existing.status : 'pending'
+        return { pageNumber, cssWidth, cssHeight, renderScale, status }
+      })
+      // Bail out of the state update entirely if nothing changed (keeps the
+      // reference stable and avoids re-render churn).
+      const unchanged =
+        prev.length === next.length &&
+        next.every((p, i) => {
+          const q = prev[i]
+          return (
+            q &&
+            q.pageNumber === p.pageNumber &&
+            q.cssWidth === p.cssWidth &&
+            q.cssHeight === p.cssHeight &&
+            q.renderScale === p.renderScale &&
+            q.status === p.status
+          )
+        })
+      return unchanged ? prev : next
+    })
+  }, [pageBases, availableWidth])
 
   const setPageStatus = useCallback(
     (pageNumber: number, status: PageRenderStatus) => {

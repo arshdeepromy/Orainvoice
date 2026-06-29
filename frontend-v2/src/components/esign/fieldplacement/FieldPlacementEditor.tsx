@@ -321,7 +321,12 @@ export function FieldPlacementEditor({
   useLayoutEffect(() => {
     const el = pageColumnRef.current
     if (!el) return
-    const measure = () => setAvailableWidth(el.clientWidth)
+    // Round to whole px and only update on a real change so a sub-pixel or
+    // no-op ResizeObserver tick never re-triggers downstream work.
+    const measure = () => {
+      const next = Math.round(el.clientWidth)
+      setAvailableWidth((prev) => (prev === next ? prev : next))
+    }
     measure()
     if (typeof ResizeObserver === 'undefined') return
     const ro = new ResizeObserver(() => measure())
@@ -804,6 +809,11 @@ export function FieldPlacementEditor({
         <div
           ref={pageColumnRef}
           className="flex min-w-0 flex-1 flex-col items-center gap-4 overflow-auto rounded-ctl bg-canvas-2 p-4"
+          // Reserve the scrollbar gutter so the vertical scrollbar appearing
+          // once pages render never changes clientWidth — that width change
+          // used to feed back through the ResizeObserver and reload the PDF in
+          // a flashing loop.
+          style={{ scrollbarGutter: 'stable' }}
           data-testid="page-column"
         >
           {(loading || editLoading) && (
