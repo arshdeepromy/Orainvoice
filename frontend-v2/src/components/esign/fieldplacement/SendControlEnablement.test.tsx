@@ -211,4 +211,35 @@ describe('send-control enablement from validateFieldSet', () => {
     expect(screen.getByTestId('send')).toBeEnabled()
     expect(screen.getByTestId('issues').children).toHaveLength(0)
   })
+
+  // A radio field with no options blocks send (mirrors the backend
+  // field_options_missing rule); adding one option clears the failure.
+  it('blocks send when a radio field has no options, and enables it once an option is added', () => {
+    const fields = [
+      makeField({ type: 'signature', recipientKey: SIGNER.key }),
+      makeField({ type: 'radio', recipientKey: SIGNER.key, options: [] }),
+    ]
+    const radioId = fields[1].clientId
+
+    render(
+      <SendControlHarness
+        initialFields={fields}
+        recipients={[SIGNER]}
+        corrections={{
+          'add-option': (fs) =>
+            fs.map((f) => (f.clientId === radioId ? { ...f, options: ['Yes'] } : f)),
+        }}
+      />,
+    )
+
+    // The radio with no options is invalid → disabled, with the options code.
+    expect(screen.getByTestId('send')).toBeDisabled()
+    const issue = screen.getByText(/Add at least one option to the radio field/i)
+    expect(issue).toHaveAttribute('data-code', 'field_options_missing')
+
+    // Authoring one option clears the only failure → enabled.
+    fireEvent.click(screen.getByTestId('fix-add-option'))
+    expect(screen.getByTestId('send')).toBeEnabled()
+    expect(screen.getByTestId('issues').children).toHaveLength(0)
+  })
 })

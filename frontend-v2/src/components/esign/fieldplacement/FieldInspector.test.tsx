@@ -41,6 +41,7 @@ function setup(field: PlacedField | null) {
     onAssign: vi.fn(),
     onSetRequired: vi.fn(),
     onSetTextMeta: vi.fn(),
+    onSetOptions: vi.fn(),
     onDelete: vi.fn(),
   }
   render(<FieldInspector field={field} recipients={RECIPIENTS} {...handlers} />)
@@ -91,5 +92,44 @@ describe('FieldInspector', () => {
     const { onDelete } = setup(makeField())
     fireEvent.click(screen.getByRole('button', { name: /delete this signature field/i }))
     expect(onDelete).toHaveBeenCalledWith('f_1')
+  })
+
+  it('shows label + placeholder inputs for number fields too', () => {
+    const { onSetTextMeta } = setup(makeField({ type: 'number', required: true }))
+    const label = screen.getByLabelText('Label')
+    fireEvent.change(label, { target: { value: 'Mileage' } })
+    expect(onSetTextMeta).toHaveBeenCalledWith('f_1', 'Mileage', undefined)
+  })
+
+  it('hides the options editor for non-option field types', () => {
+    setup(makeField({ type: 'text' }))
+    expect(screen.queryByTestId('field-options-editor')).not.toBeInTheDocument()
+  })
+
+  it('shows the options editor for a radio field and adds an option', () => {
+    const { onSetOptions } = setup(makeField({ type: 'radio', options: [] }))
+    expect(screen.getByTestId('field-options-editor')).toBeInTheDocument()
+    // No options yet — the empty hint shows.
+    expect(screen.getByTestId('field-options-empty')).toBeInTheDocument()
+    // Adding an option appends an empty row through onSetOptions.
+    fireEvent.click(screen.getByTestId('field-option-add'))
+    expect(onSetOptions).toHaveBeenCalledWith('f_1', [''])
+  })
+
+  it('edits and removes options for a radio field, carrying them on the field', () => {
+    // The field already carries two options.
+    const { onSetOptions } = setup(makeField({ type: 'dropdown', options: ['Yes', 'No'] }))
+
+    // Editing the first option rebuilds the whole list.
+    fireEvent.change(screen.getByTestId('field-option-input-0'), { target: { value: 'Maybe' } })
+    expect(onSetOptions).toHaveBeenCalledWith('f_1', ['Maybe', 'No'])
+
+    // Removing the second option drops it from the list.
+    fireEvent.click(screen.getByTestId('field-option-remove-1'))
+    expect(onSetOptions).toHaveBeenCalledWith('f_1', ['Yes'])
+
+    // Reordering moves an option up.
+    fireEvent.click(screen.getByTestId('field-option-down-0'))
+    expect(onSetOptions).toHaveBeenCalledWith('f_1', ['No', 'Yes'])
   })
 })

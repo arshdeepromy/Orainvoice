@@ -346,6 +346,7 @@ export function FieldPlacementEditor({
     assignField,
     setRequired,
     setTextMeta,
+    setOptions,
     deleteField,
     removeRecipient,
     seedFields,
@@ -894,6 +895,7 @@ export function FieldPlacementEditor({
               onAssign={assignField}
               onSetRequired={setRequired}
               onSetTextMeta={setTextMeta}
+              onSetOptions={setOptions}
               onDelete={(clientId) => {
                 deleteField(clientId)
                 setSelectedClientId((cur) => (cur === clientId ? null : cur))

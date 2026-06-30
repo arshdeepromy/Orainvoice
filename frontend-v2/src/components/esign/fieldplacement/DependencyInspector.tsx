@@ -46,6 +46,10 @@ const FIELD_TYPE_LABELS: Record<PlacedField['type'], string> = {
   date: 'Date',
   email: 'Email',
   text: 'Text',
+  number: 'Number',
+  radio: 'Radio',
+  checkbox: 'Checkbox',
+  dropdown: 'Dropdown',
 }
 
 /** The Dependency_Condition set (R14.3), in display order, with labels. */

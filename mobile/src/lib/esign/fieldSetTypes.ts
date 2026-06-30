@@ -16,7 +16,18 @@ import type { NormalizedRect } from './coordinateMapping'
 /** Signer recipients require ≥1 signature field; viewers are exempt (R4.6). Mirrors `@/api/esign`. */
 export type SigningRole = 'signer' | 'viewer'
 
-export const FIELD_TYPES = ['signature', 'initials', 'name', 'date', 'email', 'text'] as const
+export const FIELD_TYPES = [
+  'signature',
+  'initials',
+  'name',
+  'date',
+  'email',
+  'text',
+  'number',
+  'radio',
+  'checkbox',
+  'dropdown',
+] as const
 
 /** The kind of a placed field. Maps 1:1 to a Documenso field type on send (R2.4). */
 export type FieldType = (typeof FIELD_TYPES)[number]
@@ -35,8 +46,10 @@ export interface PlacedField {
   recipientKey: number
   /** Required/optional flag; defaults per type on add (R2.3, R5.1). */
   required: boolean
-  /** Label for `text` fields only (R5.2). */
+  /** Label for `text` / `number` fields only (R5.2). */
   label?: string
-  /** Placeholder for `text` fields only (R5.2). */
+  /** Placeholder for `text` / `number` fields only (R5.2). */
   placeholder?: string
+  /** Sender-authored options for `radio` / `dropdown` fields only. */
+  options?: string[]
 }

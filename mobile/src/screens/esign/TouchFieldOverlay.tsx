@@ -64,6 +64,10 @@ const FIELD_TYPE_LABELS: Record<FieldType, string> = {
   date: 'Date',
   email: 'Email',
   text: 'Text',
+  number: 'Number',
+  radio: 'Radio',
+  checkbox: 'Checkbox',
+  dropdown: 'Dropdown',
 }
 
 const DEFAULT_NUDGE_STEP_PX = 8

@@ -111,8 +111,8 @@ afterEach(() => {
 /* ------------------------------------------------------------------ */
 
 describe('Field palette and required/optional indicator', () => {
-  // R2.1 — the palette offers all six supported field types.
-  it('offers all six field-type controls in the editor palette', async () => {
+  // R2.1 — the palette offers all ten supported field types.
+  it('offers all field-type controls in the editor palette', async () => {
     render(<FieldPlacementEditor file={makePdfFile()} recipients={RECIPIENTS} />)
 
     // Wait for the page to render so the editor is fully mounted.
@@ -121,14 +121,18 @@ describe('Field palette and required/optional indicator', () => {
     for (const type of FIELD_TYPES) {
       expect(screen.getByTestId(`palette-${type}`)).toBeInTheDocument()
     }
-    // Exactly six types, no more, no fewer.
-    expect(FIELD_TYPES).toHaveLength(6)
+    // Exactly ten types, no more, no fewer.
+    expect(FIELD_TYPES).toHaveLength(10)
     expect(screen.getByTestId('palette-signature')).toBeInTheDocument()
     expect(screen.getByTestId('palette-initials')).toBeInTheDocument()
     expect(screen.getByTestId('palette-name')).toBeInTheDocument()
     expect(screen.getByTestId('palette-date')).toBeInTheDocument()
     expect(screen.getByTestId('palette-email')).toBeInTheDocument()
     expect(screen.getByTestId('palette-text')).toBeInTheDocument()
+    expect(screen.getByTestId('palette-number')).toBeInTheDocument()
+    expect(screen.getByTestId('palette-radio')).toBeInTheDocument()
+    expect(screen.getByTestId('palette-checkbox')).toBeInTheDocument()
+    expect(screen.getByTestId('palette-dropdown')).toBeInTheDocument()
   })
 
   // R5.5 — a placed required field (signature) shows a visible required marker.

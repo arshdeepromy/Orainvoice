@@ -33,6 +33,7 @@ from app.integrations.documenso import (
     DocumensoNotConfiguredError,
 )
 from app.modules.esignatures.field_validation import (
+    CODE_FIELD_OPTIONS_MISSING,
     CODE_FIELD_OUT_OF_BOUNDS,
     CODE_FIELD_UNASSIGNED,
     CODE_INVALID_FIELD_TYPE,
@@ -125,6 +126,9 @@ ESIGN_ERROR_MESSAGES: dict[str, str] = {
     CODE_SIGNATURE_FIELD_MISSING: (
         "Add a signature field for each signer before sending."
     ),
+    CODE_FIELD_OPTIONS_MISSING: (
+        "Add at least one option to the radio or dropdown field before sending."
+    ),
     # --- Expanded-contract messages (R13/R14/R15/R17) --------------------
     CODE_NOT_EDITABLE: (
         "This agreement can no longer be edited because signing has begun or "
@@ -171,6 +175,7 @@ ESIGN_ERROR_STATUS: dict[str, int] = {
     CODE_FIELD_OUT_OF_BOUNDS: 422,
     CODE_INVALID_FIELD_TYPE: 422,
     CODE_SIGNATURE_FIELD_MISSING: 422,
+    CODE_FIELD_OPTIONS_MISSING: 422,
     # Expanded-contract codes (R13/R14/R15/R17).
     CODE_NOT_EDITABLE: 422,
     CODE_DEPENDENCY_CYCLE: 422,

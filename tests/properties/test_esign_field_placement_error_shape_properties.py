@@ -95,10 +95,11 @@ _SENSITIVE_FRAGMENTS = [
     "INSERT INTO esign_fields (page, position_x) VALUES (1, 0.5)",
 ]
 
-#: The six supported field types plus a pool of unsupported ones (to drive the
-#: invalid_field_type path in validate_field_set).
+#: The supported field types plus a pool of unsupported ones (to drive the
+#: invalid_field_type path in validate_field_set). ``checkbox`` / ``radio`` are
+#: now SUPPORTED, so they are excluded from the unsupported pool.
 _SUPPORTED_TYPES = ["signature", "initials", "name", "date", "email", "text"]
-_UNSUPPORTED_TYPES = ["SIGNATURE", "checkbox", "radio", "", "Signature", "sig", "  text"]
+_UNSUPPORTED_TYPES = ["SIGNATURE", "slider", "select", "", "Signature", "sig", "  text"]
 
 
 # ---------------------------------------------------------------------------

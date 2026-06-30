@@ -171,10 +171,16 @@ export interface FieldIn {
   height: number
   /** Per-field required flag (R5.1). */
   required: boolean
-  /** Label for `text` fields only (R5.2). */
+  /** Label for `text` / `number` fields only (R5.2). */
   label?: string
-  /** Placeholder for `text` fields only (R5.2). */
+  /** Placeholder for `text` / `number` fields only (R5.2). */
   placeholder?: string
+  /**
+   * Sender-authored option list for `radio` / `dropdown` fields. Mirrors
+   * `FieldIn.options`; the backend builds the Documenso `fieldMeta.values` from
+   * these. Additive and optional.
+   */
+  options?: string[]
   /**
    * Stable per-field key used to reference this field from a {@link DependencyIn}
    * (`dependent_client_id` / `trigger_client_id`, R14). Additive and optional.
@@ -302,6 +308,8 @@ export interface PlacedFieldLike {
   required: boolean
   label?: string
   placeholder?: string
+  /** Sender-authored options for `radio` / `dropdown` fields. */
+  options?: string[]
   /**
    * Stable per-field client id, threaded onto the wire as {@link FieldIn.client_id}
    * so a {@link DependencyIn} can reference this field. Structurally satisfied by
@@ -359,6 +367,7 @@ export function placedFieldsToFieldIns(
     }
     if (field.label !== undefined) out.label = field.label
     if (field.placeholder !== undefined) out.placeholder = field.placeholder
+    if (field.options !== undefined) out.options = field.options
     if (field.clientId !== undefined) out.client_id = field.clientId
     return out
   })

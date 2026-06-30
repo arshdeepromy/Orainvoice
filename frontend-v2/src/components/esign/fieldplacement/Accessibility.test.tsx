@@ -157,6 +157,10 @@ describe('Field-placement accessibility — selected field accessible name (R10.
       date: 'Date',
       email: 'Email',
       text: 'Text',
+      number: 'Number',
+      radio: 'Radio',
+      checkbox: 'Checkbox',
+      dropdown: 'Dropdown',
     }
     for (const type of FIELD_TYPES) {
       const { unmount } = render(

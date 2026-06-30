@@ -3,9 +3,10 @@
  * (feature: esignature-field-placement, task 6.1).
  *
  * Offers every supported Field_Type (`signature`, `initials`, `name`, `date`,
- * `email`, `text`) as a source the Org_Sender can add to the document (R2.1).
- * Each source supports two equivalent placement gestures so the editor is
- * usable with a mouse, a keyboard, and on touch:
+ * `email`, `text`, `number`, `radio`, `checkbox`, `dropdown`) as a source the
+ * Org_Sender can add to the document (R2.1). Each source supports two
+ * equivalent placement gestures so the editor is usable with a mouse, a
+ * keyboard, and on touch:
  *
  *   - **drag-to-add** — the control is `draggable`; on drag start it writes the
  *     chosen {@link FieldType} onto the drag payload under
@@ -43,6 +44,10 @@ const FIELD_TYPE_LABELS: Record<FieldType, string> = {
   date: 'Date',
   email: 'Email',
   text: 'Text',
+  number: 'Number',
+  radio: 'Radio',
+  checkbox: 'Checkbox',
+  dropdown: 'Dropdown',
 }
 
 /** A short, leak-free description of what each field collects (for the title/aria). */
@@ -53,6 +58,10 @@ const FIELD_TYPE_HINTS: Record<FieldType, string> = {
   date: 'The date the recipient completes the document',
   email: "The recipient's email address",
   text: 'A free-text input you can label',
+  number: 'A number input you can label',
+  radio: 'A set of options the recipient chooses one of',
+  checkbox: 'A single box the recipient can check',
+  dropdown: 'A list of options the recipient picks from',
 }
 
 /**
@@ -141,6 +150,51 @@ function FieldTypeIcon({ type }: { type: FieldType }) {
           />
         </svg>
       )
+    case 'number':
+      return (
+        <svg {...common}>
+          <path
+            d="M9 4 7 20M17 4l-2 16M4 9h16M3 15h16"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      )
+    case 'radio':
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="8" stroke="currentColor" strokeWidth="1.8" />
+          <circle cx="12" cy="12" r="3.2" fill="currentColor" />
+        </svg>
+      )
+    case 'checkbox':
+      return (
+        <svg {...common}>
+          <rect x="4" y="4" width="16" height="16" rx="3" stroke="currentColor" strokeWidth="1.8" />
+          <path
+            d="m8 12 2.5 2.5L16 9"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      )
+    case 'dropdown':
+      return (
+        <svg {...common}>
+          <rect x="4" y="6" width="16" height="12" rx="2" stroke="currentColor" strokeWidth="1.8" />
+          <path
+            d="m9 11 3 3 3-3"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      )
     default:
       return null
   }
@@ -162,7 +216,7 @@ export interface FieldPaletteProps {
 }
 
 /**
- * The Field_Palette. Renders all six supported field-type sources as
+ * The Field_Palette. Renders all supported field-type sources as
  * drag-to-add / tap-to-arm controls, each a ≥44×44 px target (R2.1, R10.1).
  */
 export default function FieldPalette({

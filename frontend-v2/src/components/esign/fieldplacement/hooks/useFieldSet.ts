@@ -37,8 +37,26 @@ import {
   type PageDims,
 } from '../lib/coordinateMapping'
 
-/** The supported field types (R2.1), in palette order. */
-export const FIELD_TYPES = ['signature', 'initials', 'name', 'date', 'email', 'text'] as const
+/**
+ * The supported field types (R2.1), in palette order. The first six are the
+ * original palette; the four advanced types (`number`, `radio`, `checkbox`,
+ * `dropdown`) extend it to match Documenso's full palette. `number` behaves
+ * like `text` (label/placeholder); `radio` / `dropdown` carry a sender-authored
+ * options list; `checkbox` is a single box. All additive — the original six are
+ * unchanged.
+ */
+export const FIELD_TYPES = [
+  'signature',
+  'initials',
+  'name',
+  'date',
+  'email',
+  'text',
+  'number',
+  'radio',
+  'checkbox',
+  'dropdown',
+] as const
 
 /** The kind of a placed field. Maps 1:1 to a Documenso field type on send (R2.4). */
 export type FieldType = (typeof FIELD_TYPES)[number]
@@ -65,10 +83,12 @@ export interface PlacedField {
   recipientKey: number
   /** Required/optional flag; defaults per type on add (R2.3, R5.1). */
   required: boolean
-  /** Label for `text` fields only (R5.2). */
+  /** Label for `text` / `number` fields only (R5.2). */
   label?: string
-  /** Placeholder for `text` fields only (R5.2). */
+  /** Placeholder for `text` / `number` fields only (R5.2). */
   placeholder?: string
+  /** Sender-authored options for `radio` / `dropdown` fields only. */
+  options?: string[]
 }
 
 /** The Field_Set: a flat array of placed fields. */
@@ -94,6 +114,7 @@ export type FieldSetAction =
   | { kind: 'assign'; clientId: string; recipientKey: number }
   | { kind: 'setRequired'; clientId: string; required: boolean }
   | { kind: 'setTextMeta'; clientId: string; label?: string; placeholder?: string }
+  | { kind: 'setOptions'; clientId: string; options: string[] }
   | { kind: 'delete'; clientId: string }
   | { kind: 'removeRecipient'; recipientKey: number } // cascade delete (R4.5)
   | { kind: 'seed'; fields: PlacedField[] } // edit-after-send seeding (R13.1)
@@ -171,11 +192,18 @@ export function fieldSetReducer(state: FieldSetState, action: FieldSetAction): F
     }
 
     case 'setTextMeta': {
-      // Label/placeholder are meaningful for `text` fields only (R5.2).
+      // Label/placeholder are meaningful for `text` / `number` fields only (R5.2).
       return state.map((f) =>
         f.clientId === action.clientId
           ? { ...f, label: action.label, placeholder: action.placeholder }
           : f,
+      )
+    }
+
+    case 'setOptions': {
+      // Options are meaningful for `radio` / `dropdown` fields only.
+      return state.map((f) =>
+        f.clientId === action.clientId ? { ...f, options: action.options } : f,
       )
     }
 
@@ -244,8 +272,10 @@ export interface UseFieldSetResult {
   assignField: (clientId: string, recipientKey: number) => void
   /** Toggle a field required/optional. */
   setRequired: (clientId: string, required: boolean) => void
-  /** Set a `text` field's label/placeholder. */
+  /** Set a `text` / `number` field's label/placeholder. */
   setTextMeta: (clientId: string, label?: string, placeholder?: string) => void
+  /** Set a `radio` / `dropdown` field's sender-authored options. */
+  setOptions: (clientId: string, options: string[]) => void
   /** Delete a field from the set. */
   deleteField: (clientId: string) => void
   /** Cascade-delete every field assigned to a recipient. */
@@ -297,6 +327,10 @@ export function useFieldSet(): UseFieldSetResult {
     [],
   )
 
+  const setOptions = useCallback<UseFieldSetResult['setOptions']>((clientId, options) => {
+    dispatch({ kind: 'setOptions', clientId, options })
+  }, [])
+
   const deleteField = useCallback<UseFieldSetResult['deleteField']>((clientId) => {
     dispatch({ kind: 'delete', clientId })
   }, [])
@@ -324,6 +358,7 @@ export function useFieldSet(): UseFieldSetResult {
       assignField,
       setRequired,
       setTextMeta,
+      setOptions,
       deleteField,
       removeRecipient,
       seedFields,
@@ -337,6 +372,7 @@ export function useFieldSet(): UseFieldSetResult {
       assignField,
       setRequired,
       setTextMeta,
+      setOptions,
       deleteField,
       removeRecipient,
       seedFields,

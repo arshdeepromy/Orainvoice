@@ -16,12 +16,16 @@ import FieldPalette, { FIELD_TYPE_DRAG_MIME } from './FieldPalette'
 import { FIELD_TYPES } from './hooks/useFieldSet'
 
 describe('FieldPalette', () => {
-  it('offers all six supported field types (R2.1)', () => {
+  it('offers all supported field types (R2.1)', () => {
     render(<FieldPalette armedType={null} onArm={() => {}} />)
     for (const type of FIELD_TYPES) {
       expect(screen.getByTestId(`palette-${type}`)).toBeInTheDocument()
     }
-    expect(FIELD_TYPES).toHaveLength(6)
+    expect(FIELD_TYPES).toHaveLength(10)
+    // The four advanced types are present alongside the original six.
+    for (const type of ['number', 'radio', 'checkbox', 'dropdown'] as const) {
+      expect(screen.getByTestId(`palette-${type}`)).toBeInTheDocument()
+    }
   })
 
   it('arms a type on tap and reports it to the parent (R2.1)', () => {

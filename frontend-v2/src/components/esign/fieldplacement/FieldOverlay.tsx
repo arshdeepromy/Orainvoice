@@ -68,6 +68,10 @@ const FIELD_TYPE_LABEL: Record<FieldType, string> = {
   date: 'Date',
   email: 'Email',
   text: 'Text',
+  number: 'Number',
+  radio: 'Radio',
+  checkbox: 'Checkbox',
+  dropdown: 'Dropdown',
 }
 
 /**
@@ -139,6 +143,18 @@ export default function FieldOverlay({
   const typeLabel = FIELD_TYPE_LABEL[field.type]
   const displayName = recipientDisplayName(recipient)
   const accessibleName = `${typeLabel} field for ${displayName}`
+
+  // The text shown inside the box: a labelled text/number field shows its
+  // label; a radio/dropdown shows its type plus the number of authored options
+  // so the sender can see at a glance whether options are set; everything else
+  // shows the plain type label.
+  const optionCount = field.options?.filter((o) => o.trim()).length ?? 0
+  let boxLabel = typeLabel
+  if ((field.type === 'text' || field.type === 'number') && field.label) {
+    boxLabel = field.label
+  } else if (field.type === 'radio' || field.type === 'dropdown') {
+    boxLabel = `${typeLabel} (${optionCount})`
+  }
 
   // Live gesture state is kept in refs so pointer-move handling never depends on
   // a re-render landing first (the committed rect flows back through props).
@@ -320,7 +336,7 @@ export default function FieldOverlay({
         className="pointer-events-none flex items-center gap-1 px-1 text-[11px] font-medium leading-tight"
         style={{ color: color.solid }}
       >
-        <span className="truncate">{field.type === 'text' && field.label ? field.label : typeLabel}</span>
+        <span className="truncate">{boxLabel}</span>
         {field.required ? (
           <span
             aria-hidden="true"

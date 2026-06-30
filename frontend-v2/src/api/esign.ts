@@ -97,13 +97,23 @@ export const ENVELOPE_STATUSES: readonly EnvelopeStatus[] = [
 ]
 
 /**
- * The six sender-placeable field types (R2.1), accepted by the API in
+ * The sender-placeable field types (R2.1), accepted by the API in
  * **lowercase**. The backend maps each to its UPPERCASE Documenso type
- * (`SIGNATURE` / `INITIALS` / `NAME` / `DATE` / `EMAIL` / `TEXT`) in
- * `field_mapping.map_field_type`. Mirrors the `FieldType` Literal in
- * `app/modules/esignatures/schemas.py`.
+ * (`SIGNATURE` / `INITIALS` / `NAME` / `DATE` / `EMAIL` / `TEXT` / `NUMBER` /
+ * `RADIO` / `CHECKBOX` / `DROPDOWN`) in `field_mapping.map_field_type`. Mirrors
+ * the `FieldType` Literal in `app/modules/esignatures/schemas.py`.
  */
-export type FieldType = 'signature' | 'initials' | 'name' | 'date' | 'email' | 'text'
+export type FieldType =
+  | 'signature'
+  | 'initials'
+  | 'name'
+  | 'date'
+  | 'email'
+  | 'text'
+  | 'number'
+  | 'radio'
+  | 'checkbox'
+  | 'dropdown'
 
 /** Ordered list of field types for stable UI rendering (palette order). */
 export const FIELD_TYPES: readonly FieldType[] = [
@@ -113,6 +123,10 @@ export const FIELD_TYPES: readonly FieldType[] = [
   'date',
   'email',
   'text',
+  'number',
+  'radio',
+  'checkbox',
+  'dropdown',
 ]
 
 /**
@@ -203,10 +217,16 @@ export interface FieldIn {
   height: number
   /** Per-field required flag (R5.1). */
   required: boolean
-  /** Label for `text` fields only (R5.2). */
+  /** Label for `text` / `number` fields only (R5.2). */
   label?: string
-  /** Placeholder for `text` fields only (R5.2). */
+  /** Placeholder for `text` / `number` fields only (R5.2). */
   placeholder?: string
+  /**
+   * Sender-authored option list for `radio` / `dropdown` fields. Mirrors
+   * `FieldIn.options`; the backend builds the Documenso `fieldMeta.values` from
+   * these. Additive and optional — the other field types never carry options.
+   */
+  options?: string[]
   /**
    * Stable per-field key used to reference this field from a {@link DependencyIn}
    * (`dependent_client_id` / `trigger_client_id`, R14). Additive and optional:
@@ -347,6 +367,8 @@ export interface PlacedFieldLike {
   required: boolean
   label?: string
   placeholder?: string
+  /** Sender-authored options for `radio` / `dropdown` fields. */
+  options?: string[]
   /**
    * Stable per-field client id, threaded onto the wire as {@link FieldIn.client_id}
    * so a {@link DependencyIn} can reference this field by
@@ -398,6 +420,8 @@ export function placedFieldsToFieldIns(
     }
     if (field.label !== undefined) out.label = field.label
     if (field.placeholder !== undefined) out.placeholder = field.placeholder
+    // Carry the sender-authored option list for radio/dropdown fields.
+    if (field.options !== undefined) out.options = field.options
     // Thread the stable per-field client id so advisory dependencies resolve to
     // this field on the wire (`dependent_client_id` / `trigger_client_id`, R14).
     if (field.clientId !== undefined) out.client_id = field.clientId

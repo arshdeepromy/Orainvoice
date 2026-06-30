@@ -8,14 +8,17 @@ effects.
 
 Two responsibilities:
 
-* :func:`map_field_type` — translate one of the six supported OraInvoice
+* :func:`map_field_type` — translate one of the ten supported OraInvoice
   (lowercase) field types to its Documenso (UPPERCASE) field type, raising
   :class:`UnsupportedFieldType` on anything else. This is the authoritative
   type gate that guarantees an unsupported type can never reach the
   ``field/create-many`` wire (R2.4).
 * :func:`build_field_meta` — build the Documenso ``fieldMeta`` object for a
-  placed field. It **always** carries ``required`` and, **only** for ``text``
-  fields, carries ``label`` / ``placeholder`` when present (R5.3, R5.4).
+  placed field. It **always** carries ``required``; ``text`` / ``number``
+  fields additionally carry ``label`` / ``placeholder`` (when present) and a
+  ``type`` discriminator; ``radio`` / ``checkbox`` / ``dropdown`` carry a
+  sender-authored ``values`` options list and a ``type`` discriminator; the
+  remaining types carry only ``required`` (R5.3, R5.4).
 
 **Capability note (design "Documenso capability assumptions" #2).** The working
 ``DocumensoClient`` never sends ``fieldMeta`` today, and whether
@@ -49,9 +52,16 @@ __all__ = [
 # ---------------------------------------------------------------------------
 # OraInvoice field type (lowercase) → Documenso field type (UPPERCASE). (R2.4)
 # ---------------------------------------------------------------------------
-#: The complete, authoritative mapping of the six supported field types. Any
+#: The complete, authoritative mapping of the supported field types. Any
 #: type string outside these keys is unsupported and is rejected by
 #: :func:`map_field_type`.
+#:
+#: The first six (``signature`` … ``text``) are the original palette; the four
+#: advanced types (``number`` / ``radio`` / ``checkbox`` / ``dropdown``) extend
+#: it to match Documenso's full field-type palette. ``number`` behaves like
+#: ``text`` (label/placeholder); ``radio`` / ``dropdown`` carry a sender-authored
+#: options list; ``checkbox`` is a single box. All additive — the original six
+#: keep their exact behaviour.
 FIELD_TYPE_MAP: dict[str, str] = {
     "signature": "SIGNATURE",
     "initials": "INITIALS",
@@ -59,6 +69,10 @@ FIELD_TYPE_MAP: dict[str, str] = {
     "date": "DATE",
     "email": "EMAIL",
     "text": "TEXT",
+    "number": "NUMBER",
+    "radio": "RADIO",
+    "checkbox": "CHECKBOX",
+    "dropdown": "DROPDOWN",
 }
 
 #: The set of supported OraInvoice (lowercase) field types, for callers that
@@ -82,8 +96,9 @@ def map_field_type(t: str) -> str:
     """Map an OraInvoice (lowercase) field type to its Documenso (UPPERCASE) type.
 
     ``signature`` → ``SIGNATURE``, ``initials`` → ``INITIALS``, ``name`` →
-    ``NAME``, ``date`` → ``DATE``, ``email`` → ``EMAIL``, ``text`` → ``TEXT``
-    (R2.4).
+    ``NAME``, ``date`` → ``DATE``, ``email`` → ``EMAIL``, ``text`` → ``TEXT``,
+    ``number`` → ``NUMBER``, ``radio`` → ``RADIO``, ``checkbox`` → ``CHECKBOX``,
+    ``dropdown`` → ``DROPDOWN`` (R2.4).
 
     The lookup is **exact** on the documented lowercase keys — it does not
     coerce case or strip whitespace, so any other value (including an
@@ -94,7 +109,7 @@ def map_field_type(t: str) -> str:
     Pure function — no I/O.
 
     Raises:
-        UnsupportedFieldType: when ``t`` is not one of the six supported types.
+        UnsupportedFieldType: when ``t`` is not one of the supported types.
     """
     try:
         return FIELD_TYPE_MAP[t]
@@ -120,11 +135,23 @@ def _get(field: Any, name: str) -> Any:
 def build_field_meta(field: Any, *, force_optional: bool = False) -> dict:
     """Build the Documenso ``fieldMeta`` object for one placed field.
 
-    The returned object **always** carries ``required`` (R5.3). **Only** when
-    the field's type is ``text`` (Documenso ``TEXT``) does it additionally
-    carry ``label`` and/or ``placeholder``, and only for whichever of those is
-    actually present (truthy) on the field (R5.4). Non-text fields never carry
-    ``label`` / ``placeholder`` even if those attributes happen to be set.
+    The returned object **always** carries ``required`` (R5.3). Beyond that, the
+    shape depends on the field's Documenso type:
+
+    * ``TEXT`` / ``NUMBER`` — carry ``label`` and/or ``placeholder`` for
+      whichever is actually present (truthy) on the field (R5.4), and a ``type``
+      discriminator (``"text"`` / ``"number"``). ``NUMBER`` behaves exactly like
+      ``TEXT`` for label/placeholder.
+    * ``RADIO`` / ``CHECKBOX`` — carry ``values``: one entry per sender-authored
+      option as ``{"id": i, "value": str(opt), "checked": False}`` (an empty list
+      when no options are present), plus a ``type`` discriminator
+      (``"radio"`` / ``"checkbox"``).
+    * ``DROPDOWN`` — carries ``values``: one entry per option as
+      ``{"value": str(opt)}``, plus a ``"dropdown"`` ``type`` discriminator.
+    * The remaining types (``SIGNATURE`` / ``INITIALS`` / ``NAME`` / ``DATE`` /
+      ``EMAIL``) carry **only** ``required`` — no ``type`` discriminator and
+      never ``label`` / ``placeholder`` / ``values`` even if those happen to be
+      set on the field (their ``fieldMeta`` is exactly ``{"required": ...}``).
 
     ``required`` is coerced to a plain ``bool`` so the wire value is always a
     JSON boolean regardless of how the caller represented it.
@@ -141,7 +168,8 @@ def build_field_meta(field: Any, *, force_optional: bool = False) -> dict:
     put on the wire (``fieldMeta`` is itself capability-gated).
 
     ``field`` may be a Pydantic ``FieldIn`` (attribute access) or a mapping
-    with ``type`` / ``required`` / ``label`` / ``placeholder`` keys.
+    with ``type`` / ``required`` / ``label`` / ``placeholder`` / ``options``
+    keys.
 
     Pure function — no I/O.
 
@@ -155,12 +183,29 @@ def build_field_meta(field: Any, *, force_optional: bool = False) -> dict:
     required = False if force_optional else bool(_get(field, "required"))
     meta: dict[str, Any] = {"required": required}
 
-    if documenso_type == "TEXT":
+    if documenso_type in ("TEXT", "NUMBER"):
+        # TEXT and NUMBER share the label/placeholder behaviour (R5.4); NUMBER
+        # is identical to TEXT. Both carry a ``type`` discriminator.
         label = _get(field, "label")
         placeholder = _get(field, "placeholder")
         if label:
             meta["label"] = label
         if placeholder:
             meta["placeholder"] = placeholder
+        meta["type"] = "text" if documenso_type == "TEXT" else "number"
+    elif documenso_type in ("RADIO", "CHECKBOX"):
+        # Sender-authored options become checkable values (none checked by
+        # default). CHECKBOX is modelled as a single box in the UI but carries
+        # the same ``values`` shape so the wire stays uniform.
+        options = _get(field, "options") or []
+        meta["values"] = [
+            {"id": index, "value": str(option), "checked": False}
+            for index, option in enumerate(options)
+        ]
+        meta["type"] = "radio" if documenso_type == "RADIO" else "checkbox"
+    elif documenso_type == "DROPDOWN":
+        options = _get(field, "options") or []
+        meta["values"] = [{"value": str(option)} for option in options]
+        meta["type"] = "dropdown"
 
     return meta

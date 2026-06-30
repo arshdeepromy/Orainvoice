@@ -19,6 +19,9 @@ The rules enforced by :func:`validate_field_set`:
 * **R6.1** — every signer recipient (Documenso ``SIGNER`` / ``APPROVER``) has at
   least one signature-type field. This is the same safety rule as
   ``esignature-integration`` R17, re-expressed over the sender Field_Set.
+* **Options present** — every ``radio`` / ``dropdown`` field carries at least
+  one non-empty sender-authored option (so a recipient is never shown an empty
+  chooser); ``checkbox`` and ``number`` need none.
 * **R4.6** — viewer recipients are exempt: a viewer may have no fields at all.
 
 On failure the result carries a humanized, **leak-free** message that names the
@@ -51,14 +54,31 @@ try:  # pragma: no cover - exercised indirectly depending on import availability
 except Exception:  # ImportError (module not present yet) or any partial-import issue
     _map_field_type = None
 
-#: The six supported lowercase field types (the local fallback / documentation
-#: of the accepted set). Mirrors ``field_mapping`` exactly.
+#: The supported lowercase field types (the local fallback / documentation of
+#: the accepted set). Mirrors ``field_mapping`` exactly: the original six plus
+#: the four advanced types (number / radio / checkbox / dropdown).
 SUPPORTED_FIELD_TYPES: frozenset[str] = frozenset(
-    {"signature", "initials", "name", "date", "email", "text"}
+    {
+        "signature",
+        "initials",
+        "name",
+        "date",
+        "email",
+        "text",
+        "number",
+        "radio",
+        "checkbox",
+        "dropdown",
+    }
 )
 
 #: The signature-type field — the one a signer must carry at least one of (R6.1).
 SIGNATURE_FIELD_TYPE = "signature"
+
+#: The field types that require a sender-authored options list (≥1 non-empty
+#: option) before they can be sent. ``checkbox`` is a single box and needs no
+#: options; ``number`` behaves like ``text``.
+OPTION_BEARING_FIELD_TYPES: frozenset[str] = frozenset({"radio", "dropdown"})
 
 # Bounds tolerance: coordinates are normalized percent in [0, 100]. A tiny
 # epsilon absorbs floating-point drift on the ``x + w <= 100`` / ``y + h <= 100``
@@ -77,6 +97,7 @@ CODE_FIELD_UNASSIGNED = "field_unassigned"
 CODE_FIELD_OUT_OF_BOUNDS = "field_out_of_bounds"
 CODE_INVALID_FIELD_TYPE = "invalid_field_type"
 CODE_SIGNATURE_FIELD_MISSING = "signature_field_missing"
+CODE_FIELD_OPTIONS_MISSING = "field_options_missing"
 
 
 @dataclass(frozen=True)
@@ -100,6 +121,7 @@ class FieldIn:
     required: bool = True
     label: str | None = None
     placeholder: str | None = None
+    options: list[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -178,6 +200,20 @@ def _in_bounds(field: Any) -> bool:
     if x + w > 100 + _BOUNDS_EPS or y + h > 100 + _BOUNDS_EPS:
         return False
     return True
+
+
+def _has_nonempty_option(field: Any) -> bool:
+    """Return ``True`` when a field carries at least one non-empty option.
+
+    Options arrive as a list of strings (``radio`` / ``dropdown``). An option is
+    "non-empty" when, coerced to ``str`` and stripped, it is not blank. A
+    missing/empty/non-iterable options value yields ``False``. Pure, never
+    raises.
+    """
+    options = _get(field, "options")
+    if not isinstance(options, (list, tuple)):
+        return False
+    return any(str(option).strip() for option in options)
 
 
 def _page_label(field: Any) -> str:
@@ -284,6 +320,18 @@ def validate_field_set(
                     f"A field on page {_page_label(field)} extends past the edge "
                     "of the page. Move it fully onto the page."
                 ),
+                field_index=index,
+            )
+
+        # A radio/dropdown field MUST carry at least one non-empty option, so a
+        # recipient is never shown an empty chooser. ``checkbox`` (a single box)
+        # and ``number`` (text-like) need no options.
+        field_type = _get(field, "type")
+        if field_type in OPTION_BEARING_FIELD_TYPES and not _has_nonempty_option(field):
+            return ValidationResult(
+                ok=False,
+                code=CODE_FIELD_OPTIONS_MISSING,
+                message=f"Add at least one option to the {field_type} field.",
                 field_index=index,
             )
 

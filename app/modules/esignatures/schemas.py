@@ -43,10 +43,26 @@ OriginatingEntityType = Literal["invoice", "quote", "staff"]
 # Documenso role (SIGNER / VIEWER) in the client/service layer before send.
 SigningRole = Literal["signer", "viewer"]
 
-# The six supported field types, accepted from the API in lowercase and mapped
-# to their UPPERCASE Documenso types (SIGNATURE / INITIALS / NAME / DATE /
-# EMAIL / TEXT) by ``field_mapping.map_field_type`` in the service layer (R2.1).
-FieldType = Literal["signature", "initials", "name", "date", "email", "text"]
+# The supported field types, accepted from the API in lowercase and mapped to
+# their UPPERCASE Documenso types (SIGNATURE / INITIALS / NAME / DATE / EMAIL /
+# TEXT / NUMBER / RADIO / CHECKBOX / DROPDOWN) by ``field_mapping.map_field_type``
+# in the service layer (R2.1). The first six are the original palette; the four
+# advanced types (number / radio / checkbox / dropdown) extend it to Documenso's
+# full palette. ``number`` behaves like ``text`` (label/placeholder); ``radio`` /
+# ``dropdown`` carry a sender-authored ``options`` list; ``checkbox`` is a single
+# box. All additive — the original six are unchanged.
+FieldType = Literal[
+    "signature",
+    "initials",
+    "name",
+    "date",
+    "email",
+    "text",
+    "number",
+    "radio",
+    "checkbox",
+    "dropdown",
+]
 
 # Signing-order mode (R15). ``parallel`` (the existing default behaviour) lets
 # every signer sign at once; ``sequential`` invites each signer only after the
@@ -96,8 +112,13 @@ class FieldIn(BaseModel):
     width: float = Field(gt=0, le=100)
     height: float = Field(gt=0, le=100)
     required: bool = True  # R5.1 — per-field required flag
-    label: str | None = None  # R5.2 — text-field label (optional)
-    placeholder: str | None = None  # R5.2 — text-field placeholder (optional)
+    label: str | None = None  # R5.2 — text/number-field label (optional)
+    placeholder: str | None = None  # R5.2 — text/number-field placeholder (optional)
+    # Sender-authored option list for ``radio`` / ``dropdown`` fields. Each
+    # option is a plain string; the service builds the Documenso ``fieldMeta``
+    # ``values`` from these (``field_mapping.build_field_meta``). Additive and
+    # optional: the other field types never carry options.
+    options: list[str] | None = None
     # Stable per-field key used to reference this field from a Field_Dependency
     # (``DependencyIn.dependent_client_id`` / ``trigger_client_id``, R14).
     # Additive and optional: sends without dependencies never need it.

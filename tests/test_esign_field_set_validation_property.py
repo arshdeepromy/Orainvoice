@@ -54,7 +54,10 @@ PBT_SETTINGS = settings(max_examples=300, deadline=None)
 # The six supported lowercase types and a pool of clearly-unsupported strings
 # (each rejected by field_mapping.map_field_type: wrong case / unknown / blank).
 SUPPORTED_TYPES = ["signature", "initials", "name", "date", "email", "text"]
-UNSUPPORTED_TYPES = ["SIGNATURE", "Signature", "checkbox", "radio", "sign", "", "Text"]
+# Clearly-unsupported strings (each rejected by field_mapping.map_field_type:
+# wrong case / unknown / blank). ``checkbox`` / ``radio`` are now SUPPORTED, so
+# they are deliberately excluded here.
+UNSUPPORTED_TYPES = ["SIGNATURE", "Signature", "sign", "slider", "", "Text"]
 
 # A safe alphabet for recipient names so the stripped name is a clean substring
 # of the humanized message (no punctuation that collides with the list join).

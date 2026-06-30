@@ -78,6 +78,10 @@ const FIELD_TYPE_LABELS: Record<FieldType, string> = {
   date: 'Date',
   email: 'Email',
   text: 'Text',
+  number: 'Number',
+  radio: 'Radio',
+  checkbox: 'Checkbox',
+  dropdown: 'Dropdown',
 }
 
 /** Default placed-field overlay size, as a fraction of the page width / a fixed height. */

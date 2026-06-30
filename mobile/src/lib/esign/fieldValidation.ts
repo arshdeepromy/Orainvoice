@@ -49,6 +49,7 @@ export type FieldValidationCode =
   | 'invalid_field_type'
   | 'field_out_of_bounds'
   | 'signature_field_missing'
+  | 'field_options_missing'
 
 /**
  * The minimal recipient shape the validator needs: a stable `key` (matching a
@@ -92,6 +93,19 @@ const SUPPORTED_FIELD_TYPES: ReadonlySet<string> = new Set(FIELD_TYPES)
 
 /** The signature-type field a signer must carry at least one of (R6.1). */
 const SIGNATURE_FIELD_TYPE: FieldType = 'signature'
+
+/**
+ * The field types that require a sender-authored options list (≥1 non-empty
+ * option) before they can be sent. `checkbox` is a single box and needs no
+ * options; `number` behaves like `text`. Mirrors the server's
+ * `OPTION_BEARING_FIELD_TYPES`.
+ */
+const OPTION_BEARING_FIELD_TYPES: ReadonlySet<string> = new Set<FieldType>(['radio', 'dropdown'])
+
+/** Return `true` when a field carries at least one non-empty option. */
+function hasNonEmptyOption(field: PlacedField): boolean {
+  return (field.options ?? []).some((option) => typeof option === 'string' && option.trim() !== '')
+}
 
 /**
  * Bounds tolerance. Coordinates are normalized percent in [0, 100]; a tiny
@@ -183,6 +197,16 @@ export function validateFieldSet(
       issues.push({
         code: 'field_out_of_bounds',
         message: `A field on page ${field.page} extends past the edge of the page. Move it fully onto the page.`,
+        clientId: field.clientId,
+      })
+    }
+
+    // A radio/dropdown field must carry at least one non-empty option (mirrors
+    // the server rule) so a recipient is never shown an empty chooser.
+    if (OPTION_BEARING_FIELD_TYPES.has(field.type) && !hasNonEmptyOption(field)) {
+      issues.push({
+        code: 'field_options_missing',
+        message: `Add at least one option to the ${field.type} field.`,
         clientId: field.clientId,
       })
     }
