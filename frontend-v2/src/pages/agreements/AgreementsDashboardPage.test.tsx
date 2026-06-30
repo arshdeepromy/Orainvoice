@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import AgreementsDashboardPage from './AgreementsDashboardPage'
 import {
@@ -77,6 +77,9 @@ beforeEach(() => {
   mockGetEnvelope.mockResolvedValue(sampleEnvelope())
   mockDownloadSignedDocument.mockResolvedValue(new Blob())
   mockVoidEnvelope.mockResolvedValue(sampleEnvelope({ status: 'voided' }))
+  // jsdom does not implement object-URL APIs the preview/download paths use.
+  window.URL.createObjectURL = vi.fn(() => 'blob:mock-url')
+  window.URL.revokeObjectURL = vi.fn()
 })
 
 describe('AgreementsDashboardPage — empty state', () => {
@@ -124,9 +127,61 @@ describe('AgreementsDashboardPage — error + retry', () => {
     // The retry re-issued the request and the error cleared into a real row.
     await waitFor(() => expect(mockListEnvelopes).toHaveBeenCalledTimes(2))
     expect(await screen.findByRole('table')).toBeInTheDocument()
-    expect(screen.getByText('Sales Agreement')).toBeInTheDocument()
+    // Scope to the table: the agreement type now also appears as a Type-filter
+    // chip, so assert the row cell specifically.
+    expect(within(screen.getByRole('table')).getByText('Sales Agreement')).toBeInTheDocument()
     expect(
       screen.queryByText('We could not load your agreements. Please try again.'),
     ).toBeNull()
+  })
+})
+
+describe('AgreementsDashboardPage — type filter', () => {
+  it('filters rows client-side by agreement type', async () => {
+    const user = userEvent.setup()
+    mockListEnvelopes.mockResolvedValue({
+      items: [
+        sampleEnvelope({ id: 'env-nda', agreement_type: 'nda' }),
+        sampleEnvelope({ id: 'env-sales', agreement_type: 'sales_agreement' }),
+      ],
+      total: 2,
+      error: null,
+    })
+
+    render(<AgreementsDashboardPage />)
+
+    const table = await screen.findByRole('table')
+    // Both rows present initially.
+    expect(within(table).getByText('Nda')).toBeInTheDocument()
+    expect(within(table).getByText('Sales Agreement')).toBeInTheDocument()
+
+    // Activate the "Nda" type chip (inside the type-filter group).
+    const typeGroup = screen.getByRole('group', { name: 'Filter by type' })
+    await user.click(within(typeGroup).getByRole('button', { name: 'Nda' }))
+
+    // Only the NDA row remains; no extra list request was issued (client-side).
+    expect(within(screen.getByRole('table')).queryByText('Sales Agreement')).toBeNull()
+    expect(within(screen.getByRole('table')).getByText('Nda')).toBeInTheDocument()
+    expect(mockListEnvelopes).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('AgreementsDashboardPage — signed-document preview', () => {
+  it('opens a preview modal and renders the fetched signed PDF for a completed row', async () => {
+    const user = userEvent.setup()
+    mockListEnvelopes.mockResolvedValue({
+      items: [sampleEnvelope({ id: 'env-done', status: 'completed', agreement_type: 'nda' })],
+      total: 1,
+      error: null,
+    })
+
+    render(<AgreementsDashboardPage />)
+
+    await screen.findByRole('table')
+    await user.click(screen.getByRole('button', { name: /Preview signed Nda document/i }))
+
+    // The preview fetched the blob and rendered the inline PDF viewer.
+    await waitFor(() => expect(mockDownloadSignedDocument).toHaveBeenCalledWith('env-done', expect.any(AbortSignal)))
+    expect(await screen.findByTestId('signed-document-preview')).toBeInTheDocument()
   })
 })

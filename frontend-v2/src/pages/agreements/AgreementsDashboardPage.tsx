@@ -37,7 +37,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Badge, Button } from '@/components/ui'
+import { Badge, Button, Modal } from '@/components/ui'
 import type { BadgeVariant } from '@/components/ui'
 import VoidAgreementModal from '@/components/esign/VoidAgreementModal'
 import {
@@ -145,6 +145,10 @@ export default function AgreementsDashboardPage() {
   /** Set on the fail-closed filter path (R11.6): empty items + humanized error. */
   const [filterError, setFilterError] = useState<EsignError | null>(null)
   const [statusFilter, setStatusFilter] = useState<EnvelopeStatus | null>(null)
+  /** Client-side agreement-type filter over the loaded rows (null = all types). */
+  const [typeFilter, setTypeFilter] = useState<string | null>(null)
+  /** When set, the signed-document preview modal is open for this envelope. */
+  const [previewEnvelope, setPreviewEnvelope] = useState<EnvelopeOut | null>(null)
   /** Bumping this re-issues the list request (Retry + post-action refresh). */
   const [reloadKey, setReloadKey] = useState(0)
 
@@ -282,6 +286,20 @@ export default function AgreementsDashboardPage() {
 
   const hasRows = (items?.length ?? 0) > 0
 
+  /** Distinct agreement types present in the loaded rows, for the Type filter. */
+  const availableTypes = useMemo(() => {
+    const seen = new Set<string>()
+    for (const e of items) if (e.agreement_type) seen.add(e.agreement_type)
+    return Array.from(seen).sort()
+  }, [items])
+
+  /** Rows after applying the client-side Type filter (status is server-side). */
+  const displayedItems = useMemo(
+    () => (typeFilter ? items.filter((e) => e.agreement_type === typeFilter) : items),
+    [items, typeFilter],
+  )
+  const hasDisplayedRows = (displayedItems?.length ?? 0) > 0
+
   return (
     <div className="px-4 py-6 sm:px-6 lg:px-8">
       {/* Page header */}
@@ -312,6 +330,28 @@ export default function AgreementsDashboardPage() {
         ))}
       </div>
 
+      {/* Type filter chips — client-side, over the loaded rows */}
+      {availableTypes.length > 0 && (
+        <div
+          className="mb-5 flex flex-wrap items-center gap-2"
+          role="group"
+          aria-label="Filter by type"
+        >
+          <span className="mr-1 text-xs font-medium uppercase tracking-wider text-muted">
+            Type
+          </span>
+          <FilterChip label="All" active={typeFilter === null} onClick={() => setTypeFilter(null)} />
+          {availableTypes.map((type) => (
+            <FilterChip
+              key={type}
+              label={humanizeToken(type)}
+              active={typeFilter === type}
+              onClick={() => setTypeFilter(type)}
+            />
+          ))}
+        </div>
+      )}
+
       {/* Fetch error state (R: human-readable + Retry) */}
       {error && (
         <div className="mb-6 rounded-card border border-danger/30 bg-danger-soft p-4" role="alert">
@@ -339,12 +379,12 @@ export default function AgreementsDashboardPage() {
       {loading && <ListSkeleton />}
 
       {/* Empty state */}
-      {!loading && !error && !filterError && !hasRows && (
-        <EmptyState filtered={statusFilter !== null} />
+      {!loading && !error && !filterError && !hasDisplayedRows && (
+        <EmptyState filtered={statusFilter !== null || typeFilter !== null} />
       )}
 
       {/* Envelope list */}
-      {!loading && hasRows && (
+      {!loading && hasDisplayedRows && (
         <div className="overflow-hidden rounded-card border border-border bg-card">
           <table className="min-w-full divide-y divide-border text-sm">
             <thead className="bg-canvas">
@@ -358,7 +398,7 @@ export default function AgreementsDashboardPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {items.map((envelope) => (
+              {displayedItems.map((envelope) => (
                 <tr key={envelope.id} className="hover:bg-canvas/60">
                   <td className="px-4 py-3 font-medium text-text">
                     {humanizeToken(envelope.agreement_type)}
@@ -376,14 +416,26 @@ export default function AgreementsDashboardPage() {
                     {formatTimestamp(envelope.updated_at)}
                   </td>
                   <td className="px-4 py-3 text-right">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => openDetail(envelope)}
-                      aria-label={`Open ${humanizeToken(envelope.agreement_type)} agreement`}
-                    >
-                      View
-                    </Button>
+                    <div className="flex items-center justify-end gap-1">
+                      {(envelope.status ?? '').toLowerCase() === 'completed' && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setPreviewEnvelope(envelope)}
+                          aria-label={`Preview signed ${humanizeToken(envelope.agreement_type)} document`}
+                        >
+                          Preview
+                        </Button>
+                      )}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => openDetail(envelope)}
+                        aria-label={`Open ${humanizeToken(envelope.agreement_type)} agreement`}
+                      >
+                        View
+                      </Button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -405,7 +457,17 @@ export default function AgreementsDashboardPage() {
           onClose={closeDetail}
           onRetry={() => setDetailReloadKey((k) => k + 1)}
           onDownload={() => detail && handleDownload(detail)}
+          onPreview={() => detail && setPreviewEnvelope(detail)}
           onVoidRequest={() => detail && setVoidCandidate(detail)}
+        />
+      )}
+
+      {/* Signed-document preview modal — fetches the PDF blob and renders it
+          inline (R11.5 extends the download-only flow with an in-app preview). */}
+      {previewEnvelope && (
+        <SignedDocumentPreviewModal
+          envelope={previewEnvelope}
+          onClose={() => setPreviewEnvelope(null)}
         />
       )}
 
@@ -511,6 +573,7 @@ function DetailDrawer({
   onClose,
   onRetry,
   onDownload,
+  onPreview,
   onVoidRequest,
 }: {
   envelope: EnvelopeOut | null
@@ -523,6 +586,7 @@ function DetailDrawer({
   onClose: () => void
   onRetry: () => void
   onDownload: () => void
+  onPreview: () => void
   onVoidRequest: () => void
 }) {
   const recipients = envelope?.recipients ?? []
@@ -630,15 +694,24 @@ function DetailDrawer({
                 </h3>
                 {envelope.signed_document_url ? (
                   <>
-                    <Button
-                      variant="quiet"
-                      size="sm"
-                      onClick={onDownload}
-                      disabled={downloading}
-                      aria-busy={downloading}
-                    >
-                      {downloading ? 'Downloading…' : 'Download signed PDF'}
-                    </Button>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        onClick={onPreview}
+                      >
+                        Preview signed PDF
+                      </Button>
+                      <Button
+                        variant="quiet"
+                        size="sm"
+                        onClick={onDownload}
+                        disabled={downloading}
+                        aria-busy={downloading}
+                      >
+                        {downloading ? 'Downloading…' : 'Download'}
+                      </Button>
+                    </div>
                     {downloadError && (
                       <p className="mt-2 text-sm text-danger" role="alert">
                         {downloadError}
@@ -671,5 +744,89 @@ function DetailDrawer({
         )}
       </aside>
     </div>
+  )
+}
+
+/**
+ * SignedDocumentPreviewModal — fetch the stored signed PDF for an envelope and
+ * render it inline in a large modal (an in-app alternative to downloading).
+ *
+ * The PDF bytes are fetched as a blob via the org-checked
+ * `downloadSignedDocument` endpoint, turned into an object URL, and shown in an
+ * `<iframe>` (the browser's native PDF viewer). The object URL is revoked on
+ * close/unmount and the fetch is bound to an AbortController.
+ */
+function SignedDocumentPreviewModal({
+  envelope,
+  onClose,
+}: {
+  envelope: EnvelopeOut
+  onClose: () => void
+}) {
+  const [url, setUrl] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    const controller = new AbortController()
+    let objectUrl: string | null = null
+
+    const load = async () => {
+      setLoading(true)
+      setError('')
+      try {
+        const blob = await downloadSignedDocument(envelope.id, controller.signal)
+        if (controller.signal.aborted) return
+        objectUrl = window.URL.createObjectURL(blob)
+        setUrl(objectUrl)
+      } catch {
+        if (!controller.signal.aborted) {
+          setError('We could not load the signed document for preview. Please try again.')
+        }
+      } finally {
+        if (!controller.signal.aborted) setLoading(false)
+      }
+    }
+
+    load()
+    return () => {
+      controller.abort()
+      if (objectUrl) window.URL.revokeObjectURL(objectUrl)
+    }
+  }, [envelope.id])
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title={`${humanizeToken(envelope.agreement_type)} — signed document`}
+      className="h-[90vh] w-[92vw] max-w-5xl"
+      bodyClassName="flex min-h-0 flex-1 flex-col overflow-hidden p-0"
+    >
+      {loading && (
+        <div
+          className="flex flex-1 items-center justify-center py-10 text-sm text-muted"
+          role="status"
+          aria-live="polite"
+        >
+          Loading signed document…
+        </div>
+      )}
+      {!loading && error && (
+        <div className="flex flex-1 items-center justify-center p-6">
+          <p className="text-sm text-danger" role="alert">
+            {error}
+          </p>
+        </div>
+      )}
+      {!loading && !error && url && (
+        <iframe
+          title="Signed document preview"
+          src={url}
+          className="h-full w-full flex-1 border-0"
+          data-testid="signed-document-preview"
+        />
+      )}
+    </Modal>
   )
 }
