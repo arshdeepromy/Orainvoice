@@ -114,6 +114,23 @@ _SWEEP_RETRY_STATUSES = (_SIGNED_STATUS_NONE, _SIGNED_STATUS_PENDING)
 _SWEEP_BATCH_SIZE = 200
 
 
+def _pdf_is_signed(pdf_bytes: bytes) -> bool:
+    """Return True if ``pdf_bytes`` carries a PDF digital signature.
+
+    Documenso applies its platform signing certificate ("Signed by Documenso")
+    on completion, which embeds a signature dictionary with a ``/ByteRange`` and
+    ``/Sig`` entry. The *unsigned* original upload has neither. We use this to
+    avoid persisting a pre-seal snapshot: a ``DOCUMENT_COMPLETED`` event can race
+    ahead of Documenso finishing the sealed PDF, and the download endpoint then
+    returns the still-unsigned original. When that happens we defer (mark
+    pending) so the scheduled sweep re-fetches once the sealed version exists,
+    rather than storing the original as the final signed document.
+    """
+    if not pdf_bytes:
+        return False
+    return b"/ByteRange" in pdf_bytes or b"adbe.pkcs7" in pdf_bytes
+
+
 # ---------------------------------------------------------------------------
 # Outcome value object
 # ---------------------------------------------------------------------------
@@ -344,6 +361,29 @@ async def retrieve_and_store_signed_document(
                     if not signed_bytes:
                         raise DocumensoError(
                             "The signing service returned an empty signed document."
+                        )
+
+                    # Guard against a completion/seal race: if the bytes are not
+                    # yet digitally signed, Documenso hasn't finished sealing the
+                    # document and is still serving the unsigned original. Defer
+                    # (mark pending) so the sweep re-fetches the sealed version,
+                    # rather than storing the original as the final signed PDF.
+                    if not _pdf_is_signed(signed_bytes):
+                        logger.warning(
+                            "esign: downloaded document for envelope %s (org %s) "
+                            "has no signature yet (%d bytes); deferring retrieval",
+                            envelope.id,
+                            org_id,
+                            len(signed_bytes),
+                        )
+                        if created_http is not None:
+                            await created_http.aclose()
+                            created_http = None
+                        return await _mark_pending(
+                            session,
+                            envelope=envelope,
+                            org_id=org_id,
+                            message="The signed document is still being finalised by the signing service.",
                         )
 
                     file_key = await _store_via_encrypted_pipeline(

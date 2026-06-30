@@ -219,7 +219,14 @@ def _patched_seams(session, store_fn):
 # Generators
 # ---------------------------------------------------------------------------
 
-_PDF_BYTES = st.binary(min_size=1, max_size=64)
+# Generated signed-PDF bytes. They must carry a ``/ByteRange`` marker so they
+# pass the retrieval signed-ness guard (which defers storing a still-unsigned
+# pre-seal snapshot); the random tail keeps the encrypted round-trip exercised
+# over varied payloads.
+_PDF_BYTES = st.builds(
+    lambda tail: b"%PDF-1.7\n/ByteRange[0 1 2 3]\n" + tail,
+    st.binary(min_size=1, max_size=64),
+)
 
 
 @st.composite

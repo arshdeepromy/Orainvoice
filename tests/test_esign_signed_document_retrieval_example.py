@@ -63,8 +63,10 @@ from app.modules.esignatures.models import (  # noqa: E402
     EsignWebhookEvent,
 )
 
-# A minimal genuine signed-PDF byte string (starts with the %PDF magic marker).
-_SIGNED_PDF_BYTES = b"%PDF-1.7\nsigned-agreement\n%%EOF\n"
+# A minimal genuine signed-PDF byte string (starts with the %PDF magic marker and
+# carries a /ByteRange entry, the hallmark of a PDF digital signature, so it
+# passes the retrieval signed-ness guard).
+_SIGNED_PDF_BYTES = b"%PDF-1.7\n/ByteRange[0 1 2 3]\nsigned-agreement\n%%EOF\n"
 
 
 # ===========================================================================
@@ -419,3 +421,56 @@ def test_trigger_drives_download_signed_with_mocked_client():
     # The retrieval completed: the envelope is now marked stored.
     assert envelope.signed_doc_status == "stored"
     assert envelope.signed_doc_file_key is not None
+
+
+class _MockUnsignedDocumensoClient:
+    """A mocked client whose download returns a still-UNSIGNED PDF (no /ByteRange)."""
+
+    def __init__(self) -> None:
+        self.download_calls: list[str] = []
+
+    async def download_signed(self, document_id: str) -> bytes:
+        self.download_calls.append(document_id)
+        # The unsigned original — what Documenso serves before it finishes
+        # sealing the completed document (the seal/completion race).
+        return b"%PDF-1.7\noriginal-unsigned\n%%EOF\n"
+
+
+def test_unsigned_download_is_deferred_not_stored():
+    """If the downloaded bytes are not yet digitally signed (no signature
+    dictionary), retrieval defers (marks ``pending_retrieval``) and stores
+    nothing — guarding against persisting a pre-seal snapshot of the original."""
+    org_id = uuid.uuid4()
+    envelope = _build_envelope(org_id, status="completed", document_id="doc-not-sealed")
+    envelope.signed_doc_status = "none"
+
+    session = _FakeRetrievalSession(envelope)
+    mock_client = _MockUnsignedDocumensoClient()
+
+    async def _fake_resolve_client(_session, *, org_id, client, client_factory, http):
+        return mock_client, None
+
+    async def _fail_store(_session, *, org_id, envelope_id, pdf_bytes):  # pragma: no cover
+        raise AssertionError("must not store an unsigned pre-seal snapshot")
+
+    async def _run_coro(_db, _what, coro):
+        await coro
+
+    async def _go():
+        return await sd.retrieve_and_store_signed_document(
+            envelope_id=envelope.id, org_id=org_id
+        )
+
+    with patch.object(sd, "async_session_factory", lambda: _FakeSessionFactoryCtx(session)), patch.object(
+        sd, "_set_rls_org_id", _noop
+    ), patch.object(sd, "_resolve_client", _fake_resolve_client), patch.object(
+        sd, "_store_via_encrypted_pipeline", _fail_store
+    ), patch.object(sd, "write_audit_log", _noop), patch.object(sd, "_run_best_effort", _run_coro):
+        outcome = asyncio.run(_go())
+
+    # The download was attempted, but nothing was stored: the envelope is left
+    # for the sweep to retry once Documenso has sealed the signed PDF.
+    assert mock_client.download_calls == ["doc-not-sealed"]
+    assert outcome.status == "pending_retrieval"
+    assert envelope.signed_doc_status == "pending_retrieval"
+    assert envelope.signed_doc_file_key is None
