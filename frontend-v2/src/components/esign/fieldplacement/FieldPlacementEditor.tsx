@@ -722,7 +722,7 @@ export function FieldPlacementEditor({
 
   return (
     <div
-      className={['flex flex-col gap-3', className].filter(Boolean).join(' ')}
+      className={['flex min-h-0 flex-col gap-3', className].filter(Boolean).join(' ')}
       data-testid="field-placement-editor"
     >
       {/* ── Render failure blocks the send (R1.4) ───────────────────────── */}
@@ -784,9 +784,9 @@ export function FieldPlacementEditor({
         </AlertBanner>
       )}
 
-      <div className="flex flex-col gap-4 lg:flex-row">
+      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto lg:flex-row lg:overflow-hidden">
         {/* ── Left rail: palette + recipient legend ─────────────────────── */}
-        <aside className="flex shrink-0 flex-col gap-5 lg:w-56">
+        <aside className="flex shrink-0 flex-col gap-5 lg:w-56 lg:min-h-0 lg:overflow-y-auto lg:pr-1">
           <FieldPalette armedType={armedType} onArm={handleArm} disabled={editingDisabled} />
           <RecipientLegend
             recipients={legendRecipients}
@@ -808,7 +808,7 @@ export function FieldPlacementEditor({
         {/* ── Centre: the rendered page list with field overlays ────────── */}
         <div
           ref={pageColumnRef}
-          className="flex min-w-0 flex-1 flex-col items-center gap-4 overflow-auto rounded-ctl bg-canvas-2 p-4"
+          className="flex min-w-0 flex-1 flex-col items-center gap-4 overflow-auto rounded-ctl bg-canvas-2 p-4 lg:min-h-0"
           // Reserve the scrollbar gutter so the vertical scrollbar appearing
           // once pages render never changes clientWidth — that width change
           // used to feed back through the ResizeObserver and reload the PDF in
@@ -884,59 +884,70 @@ export function FieldPlacementEditor({
             })}
         </div>
 
-        {/* ── Right rail: the selected-field inspector + conditional rules ── */}
-        <aside className="flex shrink-0 flex-col gap-4 lg:w-64">
-          <FieldInspector
-            field={selectedField}
-            recipients={inspectorRecipients}
-            onAssign={assignField}
-            onSetRequired={setRequired}
-            onSetTextMeta={setTextMeta}
-            onDelete={(clientId) => {
-              deleteField(clientId)
-              setSelectedClientId((cur) => (cur === clientId ? null : cur))
-            }}
-          />
-          {/* Advisory conditional / dependent fields (R14.1, R14.7). */}
-          <DependencyInspector
-            field={selectedField}
-            fields={fields}
-            dependencies={dependencies}
-            onAddDependency={handleAddDependency}
-            onRemoveDependency={handleRemoveDependency}
-          />
+        {/* ── Right rail: inspector + conditional rules + pinned actions ── */}
+        <aside className="flex shrink-0 flex-col gap-4 lg:w-72 lg:min-h-0 lg:overflow-hidden">
+          {/* Scrollable inspector region — scrolls independently of the PDF. */}
+          <div className="flex flex-col gap-4 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:pr-1">
+            <FieldInspector
+              field={selectedField}
+              recipients={inspectorRecipients}
+              onAssign={assignField}
+              onSetRequired={setRequired}
+              onSetTextMeta={setTextMeta}
+              onDelete={(clientId) => {
+                deleteField(clientId)
+                setSelectedClientId((cur) => (cur === clientId ? null : cur))
+              }}
+            />
+            {/* Advisory conditional / dependent fields (R14.1, R14.7). */}
+            <DependencyInspector
+              field={selectedField}
+              fields={fields}
+              dependencies={dependencies}
+              onAddDependency={handleAddDependency}
+              onRemoveDependency={handleRemoveDependency}
+            />
+
+            {/* Inline "finish these before sending" guidance. */}
+            {!validation.ok && issueMessages.length > 0 && !hasRenderError && !notEditable && (
+              <div
+                className="rounded-ctl border border-border bg-card p-3"
+                data-testid="validation-issues"
+              >
+                <p className="mb-1 text-[12.5px] font-medium text-text">
+                  Finish these before sending:
+                </p>
+                <ul className="list-disc pl-5 text-[12.5px] text-muted">
+                  {issueMessages.map((message, i) => (
+                    <li key={i}>{message}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+
+          {/* Pinned action footer — always visible on the side, never scrolls
+              away with the document (R9, R13). */}
+          <div className="flex shrink-0 flex-col gap-2 border-t border-border pt-3">
+            <Button
+              onClick={() => void handleSend()}
+              loading={sending}
+              disabled={!canSend}
+              data-testid="send-for-signature"
+              className="w-full justify-center"
+            >
+              {isEditMode ? 'Save changes' : 'Send for signature'}
+            </Button>
+            <Button
+              variant="ghost"
+              onClick={handleCancel}
+              disabled={sending}
+              className="w-full justify-center"
+            >
+              Cancel
+            </Button>
+          </div>
         </aside>
-      </div>
-
-      {/* ── Validation guidance + send/cancel actions ───────────────────── */}
-      {!validation.ok && issueMessages.length > 0 && !hasRenderError && !notEditable && (
-        <div
-          className="rounded-ctl border border-border bg-card p-3"
-          data-testid="validation-issues"
-        >
-          <p className="mb-1 text-[12.5px] font-medium text-text">
-            Finish these before sending:
-          </p>
-          <ul className="list-disc pl-5 text-[12.5px] text-muted">
-            {issueMessages.map((message, i) => (
-              <li key={i}>{message}</li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      <div className="flex items-center justify-end gap-3 border-t border-border pt-4">
-        <Button variant="ghost" onClick={handleCancel} disabled={sending}>
-          Cancel
-        </Button>
-        <Button
-          onClick={() => void handleSend()}
-          loading={sending}
-          disabled={!canSend}
-          data-testid="send-for-signature"
-        >
-          {isEditMode ? 'Save changes' : 'Send for signature'}
-        </Button>
       </div>
     </div>
   )

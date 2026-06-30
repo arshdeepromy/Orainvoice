@@ -495,7 +495,14 @@ export function SendForSignatureModal({
       open={open}
       onClose={onClose}
       title={isEdit ? 'Edit fields' : 'Send for signature'}
-      className={step === 'place' ? 'max-w-6xl' : 'max-w-xl'}
+      className={
+        step === 'place'
+          ? 'max-w-[1500px] w-[96vw] h-[90vh]'
+          : 'max-w-xl'
+      }
+      bodyClassName={
+        step === 'place' ? 'flex min-h-0 flex-1 flex-col overflow-hidden px-4 py-3' : undefined
+      }
     >
       {step === 'compose' ? (
         <>
@@ -639,9 +646,9 @@ export function SendForSignatureModal({
           </div>
         </>
       ) : (
-        <div className="flex flex-col gap-3">
+        <div className="flex min-h-0 flex-1 flex-col gap-3">
           {/* ── Back to step 1 (edit document / recipients) ──────────────── */}
-          <div className="flex items-center justify-between">
+          <div className="flex shrink-0 items-center justify-between">
             <Button variant="quiet" size="sm" onClick={() => setStep('compose')}>
               ← Back to details
             </Button>
@@ -652,6 +659,7 @@ export function SendForSignatureModal({
 
           {file ? (
             <FieldPlacementEditor
+              className="min-h-0 flex-1"
               file={file}
               recipients={editorRecipients}
               envelopeId={activeEnvelopeId}

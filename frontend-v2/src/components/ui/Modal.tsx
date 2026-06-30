@@ -28,6 +28,13 @@ interface ModalProps {
   title: string
   children: ReactNode
   className?: string
+  /**
+   * Optional override for the scrollable body wrapper. Defaults to the standard
+   * padded, vertically-scrolling body. Pass a full-height flex layout (e.g.
+   * `flex min-h-0 flex-1 ... overflow-hidden`) when the content manages its own
+   * internal scroll regions (such as the field-placement editor).
+   */
+  bodyClassName?: string
 }
 
 /** Keep Tab focus cycling within `container`; returns a cleanup function. */
@@ -56,7 +63,7 @@ function trapFocus(container: HTMLElement): () => void {
   return () => container.removeEventListener('keydown', handleKeyDown)
 }
 
-export function Modal({ open, onClose, title, children, className = '' }: ModalProps) {
+export function Modal({ open, onClose, title, children, className = '', bodyClassName = '' }: ModalProps) {
   const dialogRef = useRef<HTMLDivElement>(null)
   const previousFocusRef = useRef<HTMLElement | null>(null)
 
@@ -116,7 +123,7 @@ export function Modal({ open, onClose, title, children, className = '' }: ModalP
             <span aria-hidden="true" className="text-xl leading-none">×</span>
           </button>
         </div>
-        <div className="overflow-y-auto px-6 py-4">{children}</div>
+        <div className={bodyClassName || 'overflow-y-auto px-6 py-4'}>{children}</div>
       </div>
     </div>
   )
